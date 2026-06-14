@@ -1,0 +1,33 @@
+# Python virtual environments
+.venv/
+
+# Python bytecode/cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Test, lint, type-check, coverage cache
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Build/package output
+dist/
+build/
+*.egg-info/
+
+# Local IDE state
+.idea/
+.vscode/
+
+# Local runtime data
+*.db
+*.sqlite
+*.sqlite3
+*.log
+
+# OS noise
+.DS_Store
+Thumbs.db

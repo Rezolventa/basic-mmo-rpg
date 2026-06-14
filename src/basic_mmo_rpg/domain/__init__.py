@@ -1,0 +1,2 @@
+"""Pure game-domain logic."""
+
