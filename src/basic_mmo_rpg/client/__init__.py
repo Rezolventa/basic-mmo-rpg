@@ -1,2 +1,1 @@
-"""Pygame client package."""
-
+"""Пакет pygame-клиента."""

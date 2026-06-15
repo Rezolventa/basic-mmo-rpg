@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Iterable
+
 import pygame
 
 from basic_mmo_rpg.client.camera import Camera
@@ -12,16 +14,18 @@ GRID_LINE = (24, 26, 29)
 PLAYER_BODY = (198, 64, 52)
 PLAYER_TUNIC = (218, 191, 105)
 PLAYER_OUTLINE = (36, 24, 22)
+REMOTE_PLAYER_BODY = (61, 113, 196)
+REMOTE_PLAYER_TUNIC = (132, 198, 225)
 
 
 class Renderer:
     """
-    Отвечает за отрисовку карты и игрока средствами pygame.
+    Отрисовывает тайловую карту и сущности игроков средствами pygame.
     """
 
     def __init__(self, tile_map: TileMap) -> None:
         """
-        Создает рендерер и подготавливает поверхности тайлов для карты.
+        Создает рендерер и подготавливает кэшированные поверхности тайлов карты.
         """
         self.tile_map = tile_map
         self.tile_surfaces = {
@@ -29,17 +33,37 @@ class Renderer:
             for key, definition in tile_map.definitions.items()
         }
 
-    def draw(self, screen: pygame.Surface, camera: Camera, player: PlayerState) -> None:
+    def draw(
+        self,
+        screen: pygame.Surface,
+        camera: Camera,
+        player: PlayerState,
+        other_players: Iterable[PlayerState] = (),
+    ) -> None:
         """
         Рисует полный игровой кадр на переданной поверхности.
         """
         screen.fill(BACKGROUND)
         self._draw_map(screen, camera)
-        self._draw_player(screen, camera, player)
+        for other_player in other_players:
+            self._draw_player(
+                screen,
+                camera,
+                other_player,
+                body_color=REMOTE_PLAYER_BODY,
+                tunic_color=REMOTE_PLAYER_TUNIC,
+            )
+        self._draw_player(
+            screen,
+            camera,
+            player,
+            body_color=PLAYER_BODY,
+            tunic_color=PLAYER_TUNIC,
+        )
 
     def _draw_map(self, screen: pygame.Surface, camera: Camera) -> None:
         """
-        Рисует видимую часть тайловой карты с учетом положения камеры.
+        Рисует видимую часть тайловой карты с учетом текущего смещения камеры.
         """
         tile_size = self.tile_map.tile_size
         viewport_width, viewport_height = screen.get_size()
@@ -57,9 +81,16 @@ class Renderer:
                 screen_position = camera.world_to_screen(world_position)
                 screen.blit(surface, screen_position)
 
-    def _draw_player(self, screen: pygame.Surface, camera: Camera, player: PlayerState) -> None:
+    def _draw_player(
+        self,
+        screen: pygame.Surface,
+        camera: Camera,
+        player: PlayerState,
+        body_color: tuple[int, int, int],
+        tunic_color: tuple[int, int, int],
+    ) -> None:
         """
-        Рисует локального игрока в экранных координатах.
+        Рисует одного игрока в экранных координатах с заданными цветами.
         """
         player_rect = player.rect
         screen_position = camera.world_to_screen(player.position)
@@ -70,14 +101,14 @@ class Renderer:
             int(player_rect.height),
         )
         pygame.draw.rect(screen, PLAYER_OUTLINE, body.inflate(4, 4), border_radius=3)
-        pygame.draw.rect(screen, PLAYER_BODY, body, border_radius=3)
+        pygame.draw.rect(screen, body_color, body, border_radius=3)
 
         tunic = pygame.Rect(body.left + 4, body.top + 10, body.width - 8, body.height - 12)
-        pygame.draw.rect(screen, PLAYER_TUNIC, tunic, border_radius=2)
+        pygame.draw.rect(screen, tunic_color, tunic, border_radius=2)
 
     def _create_tile_surface(self, base_color: tuple[int, int, int]) -> pygame.Surface:
         """
-        Создает простую декоративную поверхность тайла по базовому цвету.
+        Создает простую декоративную поверхность тайла на основе базового цвета.
         """
         size = self.tile_map.tile_size
         surface = pygame.Surface((size, size)).convert()

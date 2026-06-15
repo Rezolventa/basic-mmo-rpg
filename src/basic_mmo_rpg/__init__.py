@@ -1,2 +1,1 @@
-"""Basic MMO RPG prototype package."""
-
+"""Пакет прототипа Basic MMO RPG."""

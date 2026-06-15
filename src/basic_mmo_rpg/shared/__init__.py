@@ -1,2 +1,1 @@
-"""Shared protocol primitives for client and server."""
-
+"""Общие протокольные примитивы для клиента и сервера."""

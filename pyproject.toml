@@ -22,6 +22,7 @@ dev = [
 
 [project.scripts]
 mmo-client = "basic_mmo_rpg.client.app:main"
+mmo-server = "basic_mmo_rpg.server.app:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
@@ -42,4 +43,3 @@ python_version = "3.12"
 packages = ["basic_mmo_rpg"]
 strict = true
 warn_unused_ignores = true
-

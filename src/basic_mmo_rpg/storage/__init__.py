@@ -1,2 +1,1 @@
-"""Persistence and asset-loading package."""
-
+"""Пакет хранения данных и загрузки ресурсов."""

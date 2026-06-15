@@ -1,2 +1,1 @@
-"""Future asyncio/websockets authoritative server package."""
-
+"""Пакет authoritative-сервера на asyncio и websockets."""
