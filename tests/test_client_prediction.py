@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+from collections import deque
+from types import SimpleNamespace
+
+import pygame
+
 from basic_mmo_rpg.client.app import GameClient, RemotePlayerView, _smooth_player_toward
 from basic_mmo_rpg.domain.geometry import Vec2
 from basic_mmo_rpg.domain.movement import PlayerState
@@ -35,6 +40,7 @@ def test_remote_player_view_interpolates_to_snapshot_target() -> None:
     Проверяет, что удаленный игрок плавно движется к позиции из server snapshot-а.
     """
     view = RemotePlayerView(
+        name="Bob",
         rendered=PlayerState(entity_id="p2", position=Vec2(0, 0)),
         target=PlayerState(entity_id="p2", position=Vec2(30, 0)),
     )
@@ -61,6 +67,43 @@ def test_smooth_player_toward_keeps_current_position_without_elapsed_time() -> N
     )
 
     assert smoothed == current
+
+
+def test_client_applies_chat_message_to_log_and_bubble() -> None:
+    """
+    Проверяет, что клиент показывает серверное сообщение в журнале и над игроком.
+    """
+    client = object.__new__(GameClient)
+    client.player_names = {}
+    client.chat_lines = deque(maxlen=50)
+    client.speech_bubbles = {}
+
+    client._apply_chat_message(
+        {
+            "player_id": "p2",
+            "name": "Bob",
+            "text": "Привет",
+            "created_at": 123.0,
+        }
+    )
+
+    assert client.player_names["p2"] == "Bob"
+    assert client.chat_lines[-1].text == "Привет"
+    assert client.speech_bubbles["p2"].text == "Привет"
+
+
+def test_chat_input_escape_cancels_input() -> None:
+    """
+    Проверяет, что Esc отменяет активный ввод чата.
+    """
+    client = object.__new__(GameClient)
+    client.chat_input_active = True
+    client.chat_input_text = "Черновик"
+
+    client._handle_chat_input_key(SimpleNamespace(key=pygame.K_ESCAPE, unicode=""))
+
+    assert client.chat_input_active is False
+    assert client.chat_input_text == ""
 
 
 def _client_without_pygame(player: PlayerState) -> GameClient:

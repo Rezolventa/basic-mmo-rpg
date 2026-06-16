@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import time
+from pathlib import Path
 
 from websockets.asyncio.server import serve
 
@@ -10,7 +11,12 @@ from basic_mmo_rpg.client.network import NetworkClient
 from basic_mmo_rpg.domain.movement import MovementIntent, PlayerState
 from basic_mmo_rpg.server.app import MultiplayerServer
 from basic_mmo_rpg.server.world import MultiplayerWorld
-from basic_mmo_rpg.shared.protocol import ServerMessageType, players_from_snapshot_payload
+from basic_mmo_rpg.shared.protocol import (
+    ProtocolMessage,
+    ServerMessageType,
+    players_from_snapshot_payload,
+)
+from basic_mmo_rpg.storage.characters import CharacterRepository
 from basic_mmo_rpg.storage.map_loader import tile_map_from_dict
 
 
@@ -34,25 +40,49 @@ def _open_map() -> object:
     }
 
 
-def test_network_client_connects_and_receives_authoritative_snapshots() -> None:
+def test_network_client_connects_and_receives_authoritative_snapshots(tmp_path: Path) -> None:
     """
     Проверяет, что NetworkClient подключается к серверу и получает snapshot-ы.
     """
-    asyncio.run(_network_client_smoke())
+    asyncio.run(_network_client_smoke(tmp_path))
 
 
-async def _network_client_smoke() -> None:
+def test_network_client_stops_reconnect_after_duplicate_name_kick() -> None:
+    """
+    Проверяет, что кик из-за одинакового имени не запускает бесконечное переподключение.
+    """
+    network_client = NetworkClient("ws://127.0.0.1:1", character_name="Alice")
+    message = ProtocolMessage(
+        type=ServerMessageType.ERROR,
+        payload={"message": "character connected elsewhere"},
+    )
+
+    assert network_client._is_terminal_server_error(message) is True
+
+
+async def _network_client_smoke(tmp_path: Path) -> None:
     """
     Запускает сервер и проверяет обмен сообщениями через NetworkClient.
     """
+    repository = CharacterRepository(tmp_path / "characters.sqlite3")
+    repository.initialize()
     world = MultiplayerWorld(tile_map=tile_map_from_dict(_open_map()))
-    multiplayer_server = MultiplayerServer(world=world, tick_rate=30.0, snapshot_rate=20.0)
+    multiplayer_server = MultiplayerServer(
+        world=world,
+        character_repository=repository,
+        tick_rate=30.0,
+        snapshot_rate=20.0,
+    )
 
     async with serve(multiplayer_server._handle_connection, "127.0.0.1", 0) as websocket_server:
         sockets = websocket_server.sockets
         assert sockets is not None
         port = sockets[0].getsockname()[1]
-        network_client = NetworkClient(f"ws://127.0.0.1:{port}", reconnect_delay=0.1)
+        network_client = NetworkClient(
+            f"ws://127.0.0.1:{port}",
+            character_name="Alice",
+            reconnect_delay=0.1,
+        )
         game_loop = asyncio.create_task(multiplayer_server._game_loop())
 
         try:

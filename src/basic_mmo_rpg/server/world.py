@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 from basic_mmo_rpg.domain.geometry import Rect, Vec2
 from basic_mmo_rpg.domain.movement import MovementIntent, PlayerState, move_player
 from basic_mmo_rpg.domain.tiles import TileMap
-from basic_mmo_rpg.shared.protocol import world_snapshot_payload
+from basic_mmo_rpg.shared.protocol import PlayerSnapshot, world_snapshot_payload
 
 
 @dataclass(slots=True)
@@ -16,14 +16,22 @@ class MultiplayerWorld:
 
     tile_map: TileMap
     players: dict[str, PlayerState] = field(default_factory=dict)
+    names: dict[str, str] = field(default_factory=dict)
     intents: dict[str, MovementIntent] = field(default_factory=dict)
 
-    def add_player(self, player_id: str) -> PlayerState:
+    def add_player(
+        self,
+        player_id: str,
+        name: str,
+        position: Vec2 | None = None,
+    ) -> PlayerState:
         """
         Добавляет нового игрока в мир и возвращает его состояние после spawn-а.
         """
-        player = PlayerState(entity_id=player_id, position=self._next_spawn_position())
+        spawn_position = self._select_spawn_position(position)
+        player = PlayerState(entity_id=player_id, position=spawn_position)
         self.players[player_id] = player
+        self.names[player_id] = name
         self.intents[player_id] = MovementIntent()
         return player
 
@@ -32,6 +40,7 @@ class MultiplayerWorld:
         Удаляет игрока и его последнее намерение движения из мира.
         """
         self.players.pop(player_id, None)
+        self.names.pop(player_id, None)
         self.intents.pop(player_id, None)
 
     def set_intent(self, player_id: str, intent: MovementIntent) -> None:
@@ -53,7 +62,22 @@ class MultiplayerWorld:
         """
         Возвращает JSON-готовый payload snapshot-а для всех подключенных игроков.
         """
-        return world_snapshot_payload(list(self.players.values()))
+        snapshots = [
+            PlayerSnapshot(
+                state=player,
+                name=self.names.get(player.entity_id, player.entity_id),
+            )
+            for player in self.players.values()
+        ]
+        return world_snapshot_payload(snapshots)
+
+    def _select_spawn_position(self, preferred_position: Vec2 | None) -> Vec2:
+        """
+        Выбирает сохраненную позицию или ближайший свободный spawn.
+        """
+        if preferred_position is not None and self._is_spawn_position_available(preferred_position):
+            return preferred_position
+        return self._next_spawn_position()
 
     def _next_spawn_position(self) -> Vec2:
         """

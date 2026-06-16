@@ -32,8 +32,8 @@ def test_world_spawns_players_and_returns_snapshot() -> None:
     """
     world = MultiplayerWorld(tile_map=tile_map_from_dict(_open_map()))
 
-    first = world.add_player("p1")
-    second = world.add_player("p2")
+    first = world.add_player("p1", "Alice")
+    second = world.add_player("p2", "Bob")
     players = players_from_snapshot_payload(world.snapshot_payload())
 
     assert first.entity_id == "p1"
@@ -46,7 +46,7 @@ def test_world_applies_latest_movement_intent_on_tick() -> None:
     Проверяет, что серверный мир двигает игрока по последнему intent-у.
     """
     world = MultiplayerWorld(tile_map=tile_map_from_dict(_open_map()))
-    player = world.add_player("p1")
+    player = world.add_player("p1", "Alice")
 
     world.set_intent("p1", MovementIntent(right=True))
     world.tick(0.5)
@@ -60,7 +60,7 @@ def test_world_removes_player_and_ignores_missing_intent() -> None:
     Проверяет, что удаленный игрок исчезает и больше не принимает intent-ы.
     """
     world = MultiplayerWorld(tile_map=tile_map_from_dict(_open_map()))
-    world.add_player("p1")
+    world.add_player("p1", "Alice")
 
     world.remove_player("p1")
     world.set_intent("p1", MovementIntent(right=True))
@@ -75,10 +75,10 @@ def test_world_reuses_only_unoccupied_spawn_positions() -> None:
     """
     world = MultiplayerWorld(tile_map=tile_map_from_dict(_open_map()))
 
-    first = world.add_player("p1")
-    second = world.add_player("p2")
+    first = world.add_player("p1", "Alice")
+    second = world.add_player("p2", "Bob")
     world.remove_player("p1")
-    third = world.add_player("p3")
+    third = world.add_player("p3", "Cara")
 
     assert first.position == third.position
     assert third.position != second.position

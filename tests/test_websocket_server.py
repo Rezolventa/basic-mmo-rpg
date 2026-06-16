@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import time
+from pathlib import Path
 from typing import NoReturn
 
 import pytest
@@ -16,11 +17,14 @@ from basic_mmo_rpg.shared.protocol import (
     ClientMessageType,
     ProtocolMessage,
     ServerMessageType,
+    chat_sent_payload,
     decode_message,
     encode_message,
+    join_request_payload,
     movement_intent_to_payload,
     players_from_snapshot_payload,
 )
+from basic_mmo_rpg.storage.characters import CharacterRepository
 from basic_mmo_rpg.storage.map_loader import tile_map_from_dict
 
 
@@ -44,26 +48,46 @@ def _open_map() -> object:
     }
 
 
-def test_websocket_server_accepts_two_clients_and_broadcasts_movement() -> None:
+def test_websocket_server_accepts_two_clients_and_broadcasts_movement(tmp_path: Path) -> None:
     """
     Проверяет websocket-сценарий с двумя клиентами и серверной обработкой движения.
     """
-    asyncio.run(_websocket_server_smoke())
+    asyncio.run(_websocket_server_smoke(tmp_path))
 
 
-def test_server_cleans_up_player_when_initial_send_fails() -> None:
+def test_server_cleans_up_player_when_initial_send_fails(tmp_path: Path) -> None:
     """
     Проверяет, что сервер удаляет игрока, если соединение падает во время первого send.
     """
-    asyncio.run(_initial_send_failure_smoke())
+    asyncio.run(_initial_send_failure_smoke(tmp_path))
 
 
-async def _websocket_server_smoke() -> None:
+def test_websocket_server_restores_saved_position_on_reconnect(tmp_path: Path) -> None:
+    """
+    Проверяет, что повторный вход тем же именем восстанавливает сохраненную позицию.
+    """
+    asyncio.run(_reconnect_restores_position_smoke(tmp_path))
+
+
+def test_websocket_server_kicks_old_session_for_duplicate_name(tmp_path: Path) -> None:
+    """
+    Проверяет, что повторный вход тем же именем отключает старую сессию.
+    """
+    asyncio.run(_duplicate_name_kicks_old_session_smoke(tmp_path))
+
+
+def test_websocket_server_broadcasts_chat_messages(tmp_path: Path) -> None:
+    """
+    Проверяет, что сервер принимает сообщение чата и рассылает его клиентам.
+    """
+    asyncio.run(_chat_broadcast_smoke(tmp_path))
+
+
+async def _websocket_server_smoke(tmp_path: Path) -> None:
     """
     Запускает сервер на временном порту и проверяет обмен snapshot-ами.
     """
-    world = MultiplayerWorld(tile_map=tile_map_from_dict(_open_map()))
-    multiplayer_server = MultiplayerServer(world=world, tick_rate=30.0, snapshot_rate=20.0)
+    multiplayer_server = _server_for_test(tmp_path)
 
     async with serve(multiplayer_server._handle_connection, "127.0.0.1", 0) as websocket_server:
         sockets = websocket_server.sockets
@@ -74,6 +98,8 @@ async def _websocket_server_smoke() -> None:
         game_loop = asyncio.create_task(multiplayer_server._game_loop())
         try:
             async with connect(uri) as first_client, connect(uri) as second_client:
+                await _send_join(first_client, "Alice")
+                await _send_join(second_client, "Bob")
                 first_id = await _recv_player_id(first_client)
                 await _recv_player_id(second_client)
 
@@ -98,18 +124,139 @@ async def _websocket_server_smoke() -> None:
                 await game_loop
 
 
-async def _initial_send_failure_smoke() -> None:
+async def _initial_send_failure_smoke(tmp_path: Path) -> None:
     """
     Имитирует падение websocket-а на connection_accepted и проверяет cleanup.
     """
-    world = MultiplayerWorld(tile_map=tile_map_from_dict(_open_map()))
-    multiplayer_server = MultiplayerServer(world=world)
+    multiplayer_server = _server_for_test(tmp_path)
 
     with pytest.raises(ConnectionError):
         await multiplayer_server._handle_connection(_FailingWebSocket())
 
-    assert world.players == {}
+    assert multiplayer_server.world.players == {}
     assert multiplayer_server.connections == {}
+
+
+async def _reconnect_restores_position_smoke(tmp_path: Path) -> None:
+    """
+    Запускает сервер и проверяет восстановление позиции после disconnect/reconnect.
+    """
+    multiplayer_server = _server_for_test(tmp_path)
+
+    async with _running_test_server(multiplayer_server) as uri:
+        async with connect(uri) as first_client:
+            await _send_join(first_client, "Alice")
+            first_id = await _recv_player_id(first_client)
+            initial_players = await _recv_snapshot(first_client, expected_players=1)
+            initial_player = _find_player(initial_players, first_id)
+
+            await first_client.send(
+                encode_message(
+                    ProtocolMessage(
+                        type=ClientMessageType.MOVE_REQUESTED,
+                        payload=movement_intent_to_payload(MovementIntent(right=True)),
+                    )
+                )
+            )
+            moved_player = await _recv_moved_player(
+                first_client,
+                first_id,
+                initial_player,
+                expected_players=1,
+            )
+
+        await _wait_for_world_player_count(multiplayer_server, expected_players=0)
+
+        async with connect(uri) as second_client:
+            await _send_join(second_client, "Alice")
+            second_id = await _recv_player_id(second_client)
+            restored_players = await _recv_snapshot(second_client, expected_players=1)
+            restored_player = _find_player(restored_players, second_id)
+
+        assert restored_player.position.x >= moved_player.position.x
+        assert restored_player.position.y == moved_player.position.y
+
+
+async def _duplicate_name_kicks_old_session_smoke(tmp_path: Path) -> None:
+    """
+    Запускает сервер и проверяет, что одна активная сессия соответствует одному имени.
+    """
+    multiplayer_server = _server_for_test(tmp_path)
+
+    async with _running_test_server(multiplayer_server) as uri, connect(uri) as first_client:
+        await _send_join(first_client, "Alice")
+        first_id = await _recv_player_id(first_client)
+
+        async with connect(uri) as second_client:
+            await _send_join(second_client, "Alice")
+            second_id = await _recv_player_id(second_client)
+            error = await _recv_message_type(first_client, ServerMessageType.ERROR)
+            players = await _recv_snapshot(second_client, expected_players=1)
+
+        assert first_id != second_id
+        assert error.payload.get("message") == "character connected elsewhere"
+        assert [player.entity_id for player in players] == [second_id]
+
+
+async def _chat_broadcast_smoke(tmp_path: Path) -> None:
+    """
+    Запускает сервер и проверяет доставку chat_message второму клиенту.
+    """
+    multiplayer_server = _server_for_test(tmp_path)
+
+    async with _running_test_server(multiplayer_server) as uri:
+        async with connect(uri) as first_client, connect(uri) as second_client:
+            await _send_join(first_client, "Alice")
+            await _send_join(second_client, "Bob")
+            first_id = await _recv_player_id(first_client)
+            await _recv_player_id(second_client)
+
+            await first_client.send(
+                encode_message(
+                    ProtocolMessage(
+                        type=ClientMessageType.CHAT_SENT,
+                        payload=chat_sent_payload("Привет"),
+                    )
+                )
+            )
+            message = await _recv_message_type(second_client, ServerMessageType.CHAT_MESSAGE)
+
+        assert message.payload["player_id"] == first_id
+        assert message.payload["name"] == "Alice"
+        assert message.payload["text"] == "Привет"
+        assert isinstance(message.payload["created_at"], int | float)
+
+
+@contextlib.asynccontextmanager
+async def _running_test_server(multiplayer_server: MultiplayerServer):
+    """
+    Запускает тестовый websocket-сервер и игровой цикл на время блока.
+    """
+    async with serve(multiplayer_server._handle_connection, "127.0.0.1", 0) as websocket_server:
+        sockets = websocket_server.sockets
+        assert sockets is not None
+        port = sockets[0].getsockname()[1]
+        game_loop = asyncio.create_task(multiplayer_server._game_loop())
+        try:
+            yield f"ws://127.0.0.1:{port}"
+        finally:
+            game_loop.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await game_loop
+
+
+def _server_for_test(tmp_path: Path) -> MultiplayerServer:
+    """
+    Создает тестовый сервер с временной SQLite-базой.
+    """
+    repository = CharacterRepository(tmp_path / "characters.sqlite3")
+    repository.initialize()
+    return MultiplayerServer(
+        world=MultiplayerWorld(tile_map=tile_map_from_dict(_open_map())),
+        character_repository=repository,
+        tick_rate=30.0,
+        snapshot_rate=20.0,
+    )
 
 
 class _FailingWebSocket:
@@ -117,11 +264,36 @@ class _FailingWebSocket:
     Имитирует websocket, который падает при первой отправке сообщения.
     """
 
+    async def recv(self) -> str:
+        """
+        Возвращает корректный join_requested перед падением отправки.
+        """
+        return encode_message(
+            ProtocolMessage(
+                type=ClientMessageType.JOIN_REQUESTED,
+                payload=join_request_payload("Alice"),
+            )
+        )
+
     async def send(self, message: str) -> NoReturn:
         """
         Всегда выбрасывает ошибку соединения при отправке сообщения.
         """
         raise ConnectionError("connection closed before first server message")
+
+
+async def _send_join(websocket: object, name: str) -> None:
+    """
+    Отправляет join_requested для тестового websocket-клиента.
+    """
+    await websocket.send(
+        encode_message(
+            ProtocolMessage(
+                type=ClientMessageType.JOIN_REQUESTED,
+                payload=join_request_payload(name),
+            )
+        )
+    )
 
 
 async def _recv_player_id(websocket: object) -> str:
@@ -152,22 +324,57 @@ async def _recv_snapshot(websocket: object, expected_players: int) -> list[Playe
     raise AssertionError(msg)
 
 
+async def _recv_message_type(
+    websocket: object,
+    message_type: ServerMessageType,
+) -> ProtocolMessage:
+    """
+    Получает сообщения, пока не придет сообщение нужного серверного типа.
+    """
+    deadline = time.monotonic() + 2.0
+    while time.monotonic() < deadline:
+        message = decode_message(await asyncio.wait_for(websocket.recv(), timeout=0.5))
+        if message.type == message_type:
+            return message
+
+    msg = f"server did not send {message_type} in time"
+    raise AssertionError(msg)
+
+
 async def _recv_moved_player(
     websocket: object,
     player_id: str,
     initial_player: PlayerState,
+    expected_players: int = 2,
 ) -> PlayerState:
     """
     Получает snapshot-ы, пока нужный игрок не сдвинется вправо.
     """
     deadline = time.monotonic() + 2.0
     while time.monotonic() < deadline:
-        players = await _recv_snapshot(websocket, expected_players=2)
+        players = await _recv_snapshot(websocket, expected_players=expected_players)
         moved_player = _find_player(players, player_id)
         if moved_player.position.x > initial_player.position.x:
             return moved_player
 
     msg = "server did not broadcast moved player in time"
+    raise AssertionError(msg)
+
+
+async def _wait_for_world_player_count(
+    multiplayer_server: MultiplayerServer,
+    expected_players: int,
+) -> None:
+    """
+    Ждет, пока runtime-мир сервера не будет содержать ожидаемое число игроков.
+    """
+    deadline = time.monotonic() + 2.0
+    while time.monotonic() < deadline:
+        if len(multiplayer_server.world.players) == expected_players:
+            return
+        await asyncio.sleep(0.01)
+
+    msg = f"server world did not reach {expected_players} players in time"
     raise AssertionError(msg)
 
 

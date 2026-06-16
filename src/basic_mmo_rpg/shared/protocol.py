@@ -15,6 +15,7 @@ class ClientMessageType(StrEnum):
     Перечисляет типы сообщений, которые клиент может отправить серверу.
     """
 
+    JOIN_REQUESTED = "join_requested"
     MOVE_REQUESTED = "move_requested"
     CHAT_SENT = "chat_sent"
     INTERACT_REQUESTED = "interact_requested"
@@ -55,6 +56,16 @@ class ProtocolMessage:
         Преобразует сообщение в словарь, пригодный для JSON-сериализации.
         """
         return {"type": self.type, "payload": self.payload}
+
+
+@dataclass(frozen=True, slots=True)
+class PlayerSnapshot:
+    """
+    Хранит сетевое представление игрока вместе с именем персонажа.
+    """
+
+    state: PlayerState
+    name: str
 
 
 def encode_message(message: ProtocolMessage) -> str:
@@ -114,12 +125,82 @@ def movement_intent_from_payload(payload: Mapping[str, Any]) -> MovementIntent:
     )
 
 
-def player_to_payload(player: PlayerState) -> dict[str, Any]:
+def join_request_payload(name: str) -> dict[str, Any]:
+    """
+    Создает payload запроса входа персонажа в мир.
+    """
+    return {"name": name}
+
+
+def character_name_from_payload(payload: Mapping[str, Any]) -> str:
+    """
+    Извлекает и нормализует имя персонажа из payload-а сообщения.
+    """
+    raw_name = payload.get("name")
+    if not isinstance(raw_name, str):
+        msg = "character name must be a string"
+        raise ProtocolError(msg)
+
+    name = raw_name.strip()
+    if not name:
+        msg = "character name must not be empty"
+        raise ProtocolError(msg)
+    if len(name) > 24:
+        msg = "character name must be at most 24 characters"
+        raise ProtocolError(msg)
+    return name
+
+
+def chat_sent_payload(text: str) -> dict[str, Any]:
+    """
+    Создает payload клиентского сообщения чата.
+    """
+    return {"text": text}
+
+
+def chat_text_from_payload(payload: Mapping[str, Any]) -> str:
+    """
+    Извлекает и проверяет текст сообщения чата из payload-а.
+    """
+    raw_text = payload.get("text")
+    if not isinstance(raw_text, str):
+        msg = "chat text must be a string"
+        raise ProtocolError(msg)
+
+    text = raw_text.strip()
+    if not text:
+        msg = "chat text must not be empty"
+        raise ProtocolError(msg)
+    if len(text) > 160:
+        msg = "chat text must be at most 160 characters"
+        raise ProtocolError(msg)
+    return text
+
+
+def chat_message_payload(
+    player_id: str,
+    name: str,
+    text: str,
+    created_at: float,
+) -> dict[str, Any]:
+    """
+    Создает payload серверного сообщения чата.
+    """
+    return {
+        "player_id": player_id,
+        "name": name,
+        "text": text,
+        "created_at": created_at,
+    }
+
+
+def player_to_payload(player: PlayerState, name: str | None = None) -> dict[str, Any]:
     """
     Преобразует состояние игрока в JSON-готовый элемент payload-а snapshot-а.
     """
     return {
         "id": player.entity_id,
+        "name": name or player.entity_id,
         "x": player.position.x,
         "y": player.position.y,
         "width": player.width,
@@ -149,29 +230,54 @@ def player_from_payload(payload: Mapping[str, Any]) -> PlayerState:
     )
 
 
-def players_from_snapshot_payload(payload: Mapping[str, Any]) -> list[PlayerState]:
+def player_snapshot_to_payload(snapshot: PlayerSnapshot) -> dict[str, Any]:
     """
-    Извлекает состояния игроков из декодированного payload-а snapshot-а мира.
+    Преобразует сетевое представление игрока в payload snapshot-а.
+    """
+    return player_to_payload(snapshot.state, snapshot.name)
+
+
+def player_snapshot_from_payload(payload: Mapping[str, Any]) -> PlayerSnapshot:
+    """
+    Создает сетевое представление игрока из payload-а snapshot-а.
+    """
+    name = payload.get("name")
+    if not isinstance(name, str):
+        msg = "player name must be a string"
+        raise ProtocolError(msg)
+    return PlayerSnapshot(state=player_from_payload(payload), name=name)
+
+
+def player_snapshots_from_payload(payload: Mapping[str, Any]) -> list[PlayerSnapshot]:
+    """
+    Извлекает сетевые представления игроков из payload-а snapshot-а мира.
     """
     raw_players = payload.get("players")
     if not isinstance(raw_players, list):
         msg = "world snapshot players must be a list"
         raise ProtocolError(msg)
 
-    players: list[PlayerState] = []
+    snapshots: list[PlayerSnapshot] = []
     for raw_player in raw_players:
         if not isinstance(raw_player, dict):
             msg = "world snapshot player item must be an object"
             raise ProtocolError(msg)
-        players.append(player_from_payload(raw_player))
-    return players
+        snapshots.append(player_snapshot_from_payload(raw_player))
+    return snapshots
 
 
-def world_snapshot_payload(players: list[PlayerState]) -> dict[str, Any]:
+def players_from_snapshot_payload(payload: Mapping[str, Any]) -> list[PlayerState]:
+    """
+    Извлекает состояния игроков из декодированного payload-а snapshot-а мира.
+    """
+    return [snapshot.state for snapshot in player_snapshots_from_payload(payload)]
+
+
+def world_snapshot_payload(players: list[PlayerSnapshot]) -> dict[str, Any]:
     """
     Преобразует состояния игроков в JSON-готовый payload snapshot-а мира.
     """
-    return {"players": [player_to_payload(player) for player in players]}
+    return {"players": [player_snapshot_to_payload(player) for player in players]}
 
 
 def _bool_field(payload: Mapping[str, Any], key: str) -> bool:

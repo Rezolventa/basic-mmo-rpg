@@ -12,8 +12,11 @@ from basic_mmo_rpg.shared.protocol import (
     ClientMessageType,
     ProtocolError,
     ProtocolMessage,
+    ServerMessageType,
+    chat_sent_payload,
     decode_message,
     encode_message,
+    join_request_payload,
     movement_intent_to_payload,
 )
 
@@ -26,6 +29,7 @@ class NetworkClient:
     def __init__(
         self,
         server_url: str,
+        character_name: str,
         send_rate: float = 30.0,
         reconnect_delay: float = 1.0,
     ) -> None:
@@ -33,9 +37,11 @@ class NetworkClient:
         Инициализирует сетевые очереди, настройки таймингов и потокобезопасное состояние.
         """
         self.server_url = server_url
+        self.character_name = character_name
         self.send_rate = send_rate
         self.reconnect_delay = reconnect_delay
         self._incoming: queue.Queue[ProtocolMessage] = queue.Queue()
+        self._outgoing: queue.Queue[ProtocolMessage] = queue.Queue()
         self._latest_intent = MovementIntent()
         self._intent_lock = threading.Lock()
         self._status_lock = threading.Lock()
@@ -73,6 +79,17 @@ class NetworkClient:
         """
         with self._intent_lock:
             self._latest_intent = intent
+
+    def send_chat_message(self, text: str) -> None:
+        """
+        Ставит сообщение чата в очередь отправки на сервер.
+        """
+        self._outgoing.put(
+            ProtocolMessage(
+                type=ClientMessageType.CHAT_SENT,
+                payload=chat_sent_payload(text),
+            )
+        )
 
     def drain_messages(self) -> list[ProtocolMessage]:
         """
@@ -113,6 +130,14 @@ class NetworkClient:
             try:
                 self._set_status(connected=False, status="connecting")
                 async with connect(self.server_url) as websocket:
+                    await websocket.send(
+                        encode_message(
+                            ProtocolMessage(
+                                type=ClientMessageType.JOIN_REQUESTED,
+                                payload=join_request_payload(self.character_name),
+                            )
+                        )
+                    )
                     self._set_status(connected=True, status="connected")
                     sender = asyncio.create_task(self._send_loop(websocket))
                     receiver = asyncio.create_task(self._receive_loop(websocket))
@@ -138,12 +163,24 @@ class NetworkClient:
         """
         interval = 1.0 / self.send_rate
         while not self._stop_event.is_set():
+            await self._send_queued_messages(websocket)
             message = ProtocolMessage(
                 type=ClientMessageType.MOVE_REQUESTED,
                 payload=movement_intent_to_payload(self._current_intent()),
             )
             await websocket.send(encode_message(message))
             await asyncio.sleep(interval)
+
+    async def _send_queued_messages(self, websocket: Any) -> None:
+        """
+        Отправляет все накопленные одноразовые сообщения на сервер.
+        """
+        while True:
+            try:
+                message = self._outgoing.get_nowait()
+            except queue.Empty:
+                return
+            await websocket.send(encode_message(message))
 
     async def _receive_loop(self, websocket: Any) -> None:
         """
@@ -153,9 +190,13 @@ class NetworkClient:
             if isinstance(raw_message, bytes):
                 raw_message = raw_message.decode("utf-8")
             try:
-                self._incoming.put(decode_message(raw_message))
+                message = decode_message(raw_message)
             except (ProtocolError, UnicodeDecodeError):
                 continue
+            self._incoming.put(message)
+            if self._is_terminal_server_error(message):
+                self._stop_event.set()
+                return
 
     def _current_intent(self) -> MovementIntent:
         """
@@ -171,3 +212,11 @@ class NetworkClient:
         with self._status_lock:
             self._connected = connected
             self._status = status
+
+    def _is_terminal_server_error(self, message: ProtocolMessage) -> bool:
+        """
+        Проверяет, должен ли клиент прекратить автопереподключение после ошибки сервера.
+        """
+        if message.type != ServerMessageType.ERROR:
+            return False
+        return message.payload.get("message") == "character connected elsewhere"
