@@ -67,3 +67,18 @@ def test_world_removes_player_and_ignores_missing_intent() -> None:
     world.tick(0.5)
 
     assert world.players == {}
+
+
+def test_world_reuses_only_unoccupied_spawn_positions() -> None:
+    """
+    Проверяет, что новый игрок не появляется поверх оставшегося игрока после disconnect-а.
+    """
+    world = MultiplayerWorld(tile_map=tile_map_from_dict(_open_map()))
+
+    first = world.add_player("p1")
+    second = world.add_player("p2")
+    world.remove_player("p1")
+    third = world.add_player("p3")
+
+    assert first.position == third.position
+    assert third.position != second.position

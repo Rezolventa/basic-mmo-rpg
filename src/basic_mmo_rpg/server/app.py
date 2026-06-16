@@ -63,16 +63,16 @@ class MultiplayerServer:
         self.world.add_player(player_id)
         self.connections[player_id] = websocket
 
-        await self._send(
-            websocket,
-            ProtocolMessage(
-                type=ServerMessageType.CONNECTION_ACCEPTED,
-                payload={"player_id": player_id},
-            ),
-        )
-        await self._broadcast_snapshot()
-
         try:
+            await self._send(
+                websocket,
+                ProtocolMessage(
+                    type=ServerMessageType.CONNECTION_ACCEPTED,
+                    payload={"player_id": player_id},
+                ),
+            )
+            await self._broadcast_snapshot()
+
             async for raw_message in websocket:
                 await self._handle_raw_message(player_id, raw_message)
         finally:

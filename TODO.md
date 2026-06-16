@@ -11,11 +11,8 @@
 3. `src/basic_mmo_rpg/shared/protocol.py`
    Протокол уже умеет JSON encode/decode и минимальную проверку формы сообщения, но пока нет строгих схем для каждого типа сообщения и версионирования протокола.
 
-4. `src/basic_mmo_rpg/server/world.py`
-   Spawn игроков пока простой и не учитывает занятые позиции другими игроками.
-
-5. `src/basic_mmo_rpg/client/app.py`
+4. `src/basic_mmo_rpg/client/app.py`
    Для локального игрока нужен client-side prediction: клиент должен сразу применять ввод локально, отправлять intent на сервер и мягко корректировать позицию по authoritative snapshot-ам.
 
-6. `src/basic_mmo_rpg/client/app.py`
+5. `src/basic_mmo_rpg/client/app.py`
    Для других игроков нужна interpolation: клиент должен плавно вести удаленные сущности от предыдущей позиции к новой позиции из server snapshot-а, чтобы движение не выглядело ступенчатым.

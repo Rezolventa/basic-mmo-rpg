@@ -3,7 +3,9 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import time
+from typing import NoReturn
 
+import pytest
 from websockets.asyncio.client import connect
 from websockets.asyncio.server import serve
 
@@ -49,6 +51,13 @@ def test_websocket_server_accepts_two_clients_and_broadcasts_movement() -> None:
     asyncio.run(_websocket_server_smoke())
 
 
+def test_server_cleans_up_player_when_initial_send_fails() -> None:
+    """
+    Проверяет, что сервер удаляет игрока, если соединение падает во время первого send.
+    """
+    asyncio.run(_initial_send_failure_smoke())
+
+
 async def _websocket_server_smoke() -> None:
     """
     Запускает сервер на временном порту и проверяет обмен snapshot-ами.
@@ -87,6 +96,32 @@ async def _websocket_server_smoke() -> None:
             game_loop.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await game_loop
+
+
+async def _initial_send_failure_smoke() -> None:
+    """
+    Имитирует падение websocket-а на connection_accepted и проверяет cleanup.
+    """
+    world = MultiplayerWorld(tile_map=tile_map_from_dict(_open_map()))
+    multiplayer_server = MultiplayerServer(world=world)
+
+    with pytest.raises(ConnectionError):
+        await multiplayer_server._handle_connection(_FailingWebSocket())
+
+    assert world.players == {}
+    assert multiplayer_server.connections == {}
+
+
+class _FailingWebSocket:
+    """
+    Имитирует websocket, который падает при первой отправке сообщения.
+    """
+
+    async def send(self, message: str) -> NoReturn:
+        """
+        Всегда выбрасывает ошибку соединения при отправке сообщения.
+        """
+        raise ConnectionError("connection closed before first server message")
 
 
 async def _recv_player_id(websocket: object) -> str:
