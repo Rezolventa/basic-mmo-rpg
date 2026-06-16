@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from dataclasses import dataclass
 from pathlib import Path
 
 import pygame
@@ -21,6 +22,41 @@ DEFAULT_MAP_PATH = Path(__file__).resolve().parents[3] / "assets" / "maps" / "st
 DEFAULT_SERVER_URL = "ws://127.0.0.1:8765"
 WINDOW_SIZE = (960, 640)
 PLAYER_ID = "local-player"
+LOCAL_RECONCILE_RATE = 8.0
+LOCAL_RECONCILE_DEAD_ZONE = 3.0
+LOCAL_SNAP_DISTANCE = 96.0
+REMOTE_INTERPOLATION_RATE = 14.0
+REMOTE_INTERPOLATION_DEAD_ZONE = 0.25
+REMOTE_SNAP_DISTANCE = 128.0
+
+
+@dataclass(slots=True)
+class RemotePlayerView:
+    """
+    Хранит отображаемое и целевое состояние удаленного игрока для интерполяции.
+    """
+
+    rendered: PlayerState
+    target: PlayerState
+
+    def set_target(self, target: PlayerState) -> None:
+        """
+        Обновляет целевое authoritative-состояние удаленного игрока.
+        """
+        self.target = target
+
+    def update(self, delta_seconds: float) -> None:
+        """
+        Плавно приближает отображаемое состояние к последнему server snapshot-у.
+        """
+        self.rendered = _smooth_player_toward(
+            current=self.rendered,
+            target=self.target,
+            delta_seconds=delta_seconds,
+            rate=REMOTE_INTERPOLATION_RATE,
+            snap_distance=REMOTE_SNAP_DISTANCE,
+            dead_zone=REMOTE_INTERPOLATION_DEAD_ZONE,
+        )
 
 
 class GameClient:
@@ -45,7 +81,9 @@ class GameClient:
             entity_id=PLAYER_ID,
             position=self.tile_map.spawn,
         )
-        self.other_players: dict[str, PlayerState] = {}
+        self.authoritative_player: PlayerState | None = None
+        self.local_correction_offset = Vec2(0, 0)
+        self.other_players: dict[str, RemotePlayerView] = {}
         self.local_player_id: str | None = PLAYER_ID
         self.camera = Camera()
         self.renderer = Renderer(self.tile_map)
@@ -85,6 +123,9 @@ class GameClient:
         else:
             self.network_client.send_movement_intent(intent)
             self._apply_network_messages()
+            self._predict_local_player(intent, delta_seconds)
+            self._reconcile_local_player(delta_seconds)
+            self._update_remote_players(delta_seconds)
 
         viewport = Vec2(*self.screen.get_size())
         self.camera.follow(
@@ -97,7 +138,8 @@ class GameClient:
         """
         Отрисовывает текущий кадр и показывает его на экране.
         """
-        self.renderer.draw(self.screen, self.camera, self.player, self.other_players.values())
+        other_players = [player_view.rendered for player_view in self.other_players.values()]
+        self.renderer.draw(self.screen, self.camera, self.player, other_players)
         pygame.display.flip()
 
     def _read_movement_intent(self) -> MovementIntent:
@@ -139,10 +181,106 @@ class GameClient:
         next_other_players: dict[str, PlayerState] = {}
         for player in players:
             if player.entity_id == self.local_player_id:
-                self.player = player
+                self._receive_authoritative_local_player(player)
             else:
                 next_other_players[player.entity_id] = player
-        self.other_players = next_other_players
+        self._receive_remote_players(next_other_players)
+
+    def _predict_local_player(self, intent: MovementIntent, delta_seconds: float) -> None:
+        """
+        Сразу применяет локальный ввод игрока до получения подтверждения сервера.
+        """
+        self.player = move_player(self.player, intent, delta_seconds, self.tile_map)
+
+    def _reconcile_local_player(self, delta_seconds: float) -> None:
+        """
+        Мягко подтягивает предсказанную позицию локального игрока к authoritative-позиции.
+        """
+        distance = self.local_correction_offset.length
+        if distance <= LOCAL_RECONCILE_DEAD_ZONE or delta_seconds <= 0:
+            self.local_correction_offset = Vec2(0, 0)
+            return
+
+        alpha = min(1.0, LOCAL_RECONCILE_RATE * delta_seconds)
+        correction = self.local_correction_offset * alpha
+        self.player = _player_with_position(self.player, self.player.position + correction)
+        self.local_correction_offset = self.local_correction_offset - correction
+
+    def _receive_authoritative_local_player(self, player: PlayerState) -> None:
+        """
+        Сохраняет authoritative-состояние локального игрока из server snapshot-а.
+        """
+        self.authoritative_player = player
+        if self.player.entity_id != player.entity_id:
+            self.player = player
+            self.local_correction_offset = Vec2(0, 0)
+            return
+
+        difference = player.position - self.player.position
+        distance = difference.length
+        if distance >= LOCAL_SNAP_DISTANCE:
+            self.player = player
+            self.local_correction_offset = Vec2(0, 0)
+        elif distance > LOCAL_RECONCILE_DEAD_ZONE:
+            self.local_correction_offset = difference
+        else:
+            self.local_correction_offset = Vec2(0, 0)
+
+    def _receive_remote_players(self, players: dict[str, PlayerState]) -> None:
+        """
+        Обновляет целевые состояния удаленных игроков и удаляет пропавшие сущности.
+        """
+        for player_id, player in players.items():
+            if player_id in self.other_players:
+                self.other_players[player_id].set_target(player)
+            else:
+                self.other_players[player_id] = RemotePlayerView(rendered=player, target=player)
+
+        for player_id in set(self.other_players) - set(players):
+            del self.other_players[player_id]
+
+    def _update_remote_players(self, delta_seconds: float) -> None:
+        """
+        Обновляет интерполированные позиции всех удаленных игроков.
+        """
+        for player_view in self.other_players.values():
+            player_view.update(delta_seconds)
+
+
+def _smooth_player_toward(
+    current: PlayerState,
+    target: PlayerState,
+    delta_seconds: float,
+    rate: float,
+    snap_distance: float,
+    dead_zone: float,
+) -> PlayerState:
+    """
+    Возвращает состояние игрока, плавно сдвинутое от текущей позиции к целевой.
+    """
+    difference = target.position - current.position
+    distance = difference.length
+    if distance <= dead_zone or distance >= snap_distance:
+        return target
+    if delta_seconds <= 0:
+        return current
+
+    alpha = min(1.0, rate * delta_seconds)
+    position = current.position + difference * alpha
+    return _player_with_position(target, position)
+
+
+def _player_with_position(player: PlayerState, position: Vec2) -> PlayerState:
+    """
+    Создает копию состояния игрока с новой позицией.
+    """
+    return PlayerState(
+        entity_id=player.entity_id,
+        position=position,
+        width=player.width,
+        height=player.height,
+        speed=player.speed,
+    )
 
 
 def parse_args() -> argparse.Namespace:
