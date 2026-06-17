@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from basic_mmo_rpg.domain.geometry import Vec2
+from basic_mmo_rpg.domain.geometry import Rect, Vec2
 from basic_mmo_rpg.domain.movement import MovementIntent, PlayerState, move_player
 from basic_mmo_rpg.storage.map_loader import tile_map_from_dict
 
@@ -59,3 +59,16 @@ def test_player_slides_along_blocked_axis() -> None:
 
     assert moved.position.x == player.position.x
     assert moved.position.y > player.position.y
+
+
+def test_player_cannot_move_into_extra_blocker() -> None:
+    """
+    Проверяет, что игрок не может пройти через дополнительный коллизионный объект.
+    """
+    tile_map = tile_map_from_dict(_test_map())
+    player = PlayerState(entity_id="p1", position=Vec2(32, 68), speed=32)
+    blocker = Rect(64, 68, 24, 28)
+
+    moved = move_player(player, MovementIntent(right=True), 1.0, tile_map, [blocker])
+
+    assert moved.position == player.position

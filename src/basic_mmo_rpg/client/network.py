@@ -16,6 +16,7 @@ from basic_mmo_rpg.shared.protocol import (
     chat_sent_payload,
     decode_message,
     encode_message,
+    interact_requested_payload,
     join_request_payload,
     movement_intent_to_payload,
 )
@@ -88,6 +89,17 @@ class NetworkClient:
             ProtocolMessage(
                 type=ClientMessageType.CHAT_SENT,
                 payload=chat_sent_payload(text),
+            )
+        )
+
+    def send_interaction_request(self, target_id: str) -> None:
+        """
+        Ставит запрос взаимодействия с объектом мира в очередь отправки на сервер.
+        """
+        self._outgoing.put(
+            ProtocolMessage(
+                type=ClientMessageType.INTERACT_REQUESTED,
+                payload=interact_requested_payload(target_id),
             )
         )
 

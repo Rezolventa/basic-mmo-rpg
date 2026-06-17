@@ -2,10 +2,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from basic_mmo_rpg.domain.geometry import Rect, Vec2
+from basic_mmo_rpg.domain.entities import WorldEntity
+from basic_mmo_rpg.domain.geometry import Vec2
 from basic_mmo_rpg.domain.movement import MovementIntent, PlayerState, move_player
 from basic_mmo_rpg.domain.tiles import TileMap
-from basic_mmo_rpg.shared.protocol import PlayerSnapshot, world_snapshot_payload
+from basic_mmo_rpg.shared.protocol import EntitySnapshot, PlayerSnapshot, world_snapshot_payload
 
 
 @dataclass(slots=True)
@@ -18,6 +19,13 @@ class MultiplayerWorld:
     players: dict[str, PlayerState] = field(default_factory=dict)
     names: dict[str, str] = field(default_factory=dict)
     intents: dict[str, MovementIntent] = field(default_factory=dict)
+
+    @property
+    def entities(self) -> tuple[WorldEntity, ...]:
+        """
+        Возвращает статичные объекты мира, загруженные из карты.
+        """
+        return self.tile_map.entities
 
     def add_player(
         self,
@@ -54,9 +62,16 @@ class MultiplayerWorld:
         """
         Продвигает authoritative-симуляцию мира на один серверный тик.
         """
+        blockers = self.tile_map.solid_entity_rects
         for player_id, player in list(self.players.items()):
             intent = self.intents.get(player_id, MovementIntent())
-            self.players[player_id] = move_player(player, intent, delta_seconds, self.tile_map)
+            self.players[player_id] = move_player(
+                player,
+                intent,
+                delta_seconds,
+                self.tile_map,
+                blockers,
+            )
 
     def snapshot_payload(self) -> dict[str, object]:
         """
@@ -69,7 +84,17 @@ class MultiplayerWorld:
             )
             for player in self.players.values()
         ]
-        return world_snapshot_payload(snapshots)
+        entity_snapshots = [EntitySnapshot(state=entity) for entity in self.entities]
+        return world_snapshot_payload(snapshots, entity_snapshots)
+
+    def get_entity(self, entity_id: str) -> WorldEntity | None:
+        """
+        Возвращает объект мира по id или `None`, если такого объекта нет.
+        """
+        for entity in self.entities:
+            if entity.entity_id == entity_id:
+                return entity
+        return None
 
     def _select_spawn_position(self, preferred_position: Vec2 | None) -> Vec2:
         """
@@ -99,22 +124,10 @@ class MultiplayerWorld:
         Проверяет, что позиция spawn-а проходима и не занята другим игроком.
         """
         candidate_rect = PlayerState(entity_id="spawn-check", position=position).rect
-        if self.tile_map.is_rect_blocked(candidate_rect):
+        if self.tile_map.is_rect_blocked(candidate_rect, self.tile_map.solid_entity_rects):
             return False
 
         return all(
-            not _rects_overlap(candidate_rect, existing_player.rect)
+            not candidate_rect.intersects(existing_player.rect)
             for existing_player in self.players.values()
         )
-
-
-def _rects_overlap(left: Rect, right: Rect) -> bool:
-    """
-    Проверяет, пересекаются ли два прямоугольника.
-    """
-    return (
-        left.left < right.right
-        and left.right > right.left
-        and left.top < right.bottom
-        and left.bottom > right.top
-    )

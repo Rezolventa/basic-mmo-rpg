@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any
 
+from basic_mmo_rpg.domain.entities import EntityKind, WorldEntity
 from basic_mmo_rpg.domain.geometry import Vec2
 from basic_mmo_rpg.domain.movement import MovementIntent, PlayerState
 
@@ -30,6 +31,7 @@ class ServerMessageType(StrEnum):
     CONNECTION_ACCEPTED = "connection_accepted"
     PLAYER_MOVED = "player_moved"
     CHAT_MESSAGE = "chat_message"
+    INTERACTION_RESULT = "interaction_result"
     ENTITY_SPAWNED = "entity_spawned"
     ENTITY_REMOVED = "entity_removed"
     INVENTORY_UPDATED = "inventory_updated"
@@ -66,6 +68,15 @@ class PlayerSnapshot:
 
     state: PlayerState
     name: str
+
+
+@dataclass(frozen=True, slots=True)
+class EntitySnapshot:
+    """
+    Хранит сетевое представление объекта мира.
+    """
+
+    state: WorldEntity
 
 
 def encode_message(message: ProtocolMessage) -> str:
@@ -194,6 +205,43 @@ def chat_message_payload(
     }
 
 
+def interact_requested_payload(target_id: str) -> dict[str, Any]:
+    """
+    Создает payload клиентского запроса взаимодействия с объектом мира.
+    """
+    return {"target_id": target_id}
+
+
+def interaction_target_from_payload(payload: Mapping[str, Any]) -> str:
+    """
+    Извлекает id цели из payload-а запроса взаимодействия.
+    """
+    target_id = payload.get("target_id")
+    if not isinstance(target_id, str) or not target_id:
+        msg = "interaction target_id must be a non-empty string"
+        raise ProtocolError(msg)
+    return target_id
+
+
+def interaction_result_payload(
+    actor_id: str,
+    target_id: str,
+    target_name: str,
+    text: str,
+    created_at: float,
+) -> dict[str, Any]:
+    """
+    Создает payload серверного результата взаимодействия.
+    """
+    return {
+        "actor_id": actor_id,
+        "target_id": target_id,
+        "target_name": target_name,
+        "text": text,
+        "created_at": created_at,
+    }
+
+
 def player_to_payload(player: PlayerState, name: str | None = None) -> dict[str, Any]:
     """
     Преобразует состояние игрока в JSON-готовый элемент payload-а snapshot-а.
@@ -248,6 +296,76 @@ def player_snapshot_from_payload(payload: Mapping[str, Any]) -> PlayerSnapshot:
     return PlayerSnapshot(state=player_from_payload(payload), name=name)
 
 
+def entity_to_payload(entity: WorldEntity) -> dict[str, Any]:
+    """
+    Преобразует объект мира в JSON-готовый элемент payload-а snapshot-а.
+    """
+    return {
+        "id": entity.entity_id,
+        "kind": entity.kind.value,
+        "name": entity.name,
+        "x": entity.position.x,
+        "y": entity.position.y,
+        "width": entity.width,
+        "height": entity.height,
+        "interaction_radius": entity.interaction_radius,
+        "solid": entity.solid,
+    }
+
+
+def entity_from_payload(payload: Mapping[str, Any]) -> WorldEntity:
+    """
+    Создает объект мира из одного декодированного элемента payload-а snapshot-а.
+    """
+    entity_id = payload.get("id")
+    if not isinstance(entity_id, str):
+        msg = "entity id must be a string"
+        raise ProtocolError(msg)
+
+    raw_kind = payload.get("kind")
+    if not isinstance(raw_kind, str):
+        msg = "entity kind must be a string"
+        raise ProtocolError(msg)
+    try:
+        kind = EntityKind(raw_kind)
+    except ValueError as exc:
+        msg = f"unsupported entity kind: {raw_kind!r}"
+        raise ProtocolError(msg) from exc
+
+    name = payload.get("name")
+    if not isinstance(name, str):
+        msg = "entity name must be a string"
+        raise ProtocolError(msg)
+
+    return WorldEntity(
+        entity_id=entity_id,
+        kind=kind,
+        name=name,
+        position=Vec2(
+            x=_number_field(payload, "x"),
+            y=_number_field(payload, "y"),
+        ),
+        width=int(_number_field(payload, "width")),
+        height=int(_number_field(payload, "height")),
+        interaction_radius=_number_field(payload, "interaction_radius"),
+        solid=_bool_field(payload, "solid"),
+    )
+
+
+def entity_snapshot_to_payload(snapshot: EntitySnapshot) -> dict[str, Any]:
+    """
+    Преобразует сетевое представление объекта мира в payload snapshot-а.
+    """
+    return entity_to_payload(snapshot.state)
+
+
+def entity_snapshot_from_payload(payload: Mapping[str, Any]) -> EntitySnapshot:
+    """
+    Создает сетевое представление объекта мира из payload-а snapshot-а.
+    """
+    return EntitySnapshot(state=entity_from_payload(payload))
+
+
 def player_snapshots_from_payload(payload: Mapping[str, Any]) -> list[PlayerSnapshot]:
     """
     Извлекает сетевые представления игроков из payload-а snapshot-а мира.
@@ -266,6 +384,24 @@ def player_snapshots_from_payload(payload: Mapping[str, Any]) -> list[PlayerSnap
     return snapshots
 
 
+def entity_snapshots_from_payload(payload: Mapping[str, Any]) -> list[EntitySnapshot]:
+    """
+    Извлекает сетевые представления объектов мира из payload-а snapshot-а.
+    """
+    raw_entities = payload.get("entities", [])
+    if not isinstance(raw_entities, list):
+        msg = "world snapshot entities must be a list"
+        raise ProtocolError(msg)
+
+    snapshots: list[EntitySnapshot] = []
+    for raw_entity in raw_entities:
+        if not isinstance(raw_entity, dict):
+            msg = "world snapshot entity item must be an object"
+            raise ProtocolError(msg)
+        snapshots.append(entity_snapshot_from_payload(raw_entity))
+    return snapshots
+
+
 def players_from_snapshot_payload(payload: Mapping[str, Any]) -> list[PlayerState]:
     """
     Извлекает состояния игроков из декодированного payload-а snapshot-а мира.
@@ -273,11 +409,25 @@ def players_from_snapshot_payload(payload: Mapping[str, Any]) -> list[PlayerStat
     return [snapshot.state for snapshot in player_snapshots_from_payload(payload)]
 
 
-def world_snapshot_payload(players: list[PlayerSnapshot]) -> dict[str, Any]:
+def entities_from_snapshot_payload(payload: Mapping[str, Any]) -> list[WorldEntity]:
     """
-    Преобразует состояния игроков в JSON-готовый payload snapshot-а мира.
+    Извлекает объекты мира из декодированного payload-а snapshot-а.
     """
-    return {"players": [player_snapshot_to_payload(player) for player in players]}
+    return [snapshot.state for snapshot in entity_snapshots_from_payload(payload)]
+
+
+def world_snapshot_payload(
+    players: list[PlayerSnapshot],
+    entities: list[EntitySnapshot] | None = None,
+) -> dict[str, Any]:
+    """
+    Преобразует состояния игроков и объектов в JSON-готовый payload snapshot-а мира.
+    """
+    entity_snapshots = entities or []
+    return {
+        "players": [player_snapshot_to_payload(player) for player in players],
+        "entities": [entity_snapshot_to_payload(entity) for entity in entity_snapshots],
+    }
 
 
 def _bool_field(payload: Mapping[str, Any], key: str) -> bool:

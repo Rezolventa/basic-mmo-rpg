@@ -20,6 +20,7 @@ from basic_mmo_rpg.shared.protocol import (
     chat_sent_payload,
     decode_message,
     encode_message,
+    interact_requested_payload,
     join_request_payload,
     movement_intent_to_payload,
     players_from_snapshot_payload,
@@ -32,7 +33,17 @@ def _open_map() -> object:
     """
     Возвращает открытую карту для websocket-интеграционного теста.
     """
-    return {
+    return _open_map_with_entities()
+
+
+def _open_map_with_entities(
+    npc_position: list[int] | None = None,
+    interaction_radius: int = 64,
+) -> object:
+    """
+    Возвращает открытую карту с опциональным NPC для websocket-тестов.
+    """
+    raw_map: dict[str, object] = {
         "tile_size": 32,
         "spawn": [32, 32],
         "legend": {
@@ -46,6 +57,20 @@ def _open_map() -> object:
             "..........",
         ],
     }
+    if npc_position is not None:
+        raw_map["entities"] = [
+            {
+                "id": "npc-funday",
+                "kind": "npc",
+                "name": "Funday",
+                "position": npc_position,
+                "size": [24, 30],
+                "interaction_radius": interaction_radius,
+                "dialogue": "Hello, developer",
+                "solid": True,
+            }
+        ]
+    return raw_map
 
 
 def test_websocket_server_accepts_two_clients_and_broadcasts_movement(tmp_path: Path) -> None:
@@ -81,6 +106,20 @@ def test_websocket_server_broadcasts_chat_messages(tmp_path: Path) -> None:
     Проверяет, что сервер принимает сообщение чата и рассылает его клиентам.
     """
     asyncio.run(_chat_broadcast_smoke(tmp_path))
+
+
+def test_websocket_server_sends_interaction_result_only_to_actor(tmp_path: Path) -> None:
+    """
+    Проверяет, что результат взаимодействия с NPC получает только инициатор.
+    """
+    asyncio.run(_interaction_result_only_to_actor_smoke(tmp_path))
+
+
+def test_websocket_server_ignores_interaction_when_target_is_too_far(tmp_path: Path) -> None:
+    """
+    Проверяет, что сервер молчит, если игрок слишком далеко от NPC.
+    """
+    asyncio.run(_interaction_too_far_smoke(tmp_path))
 
 
 async def _websocket_server_smoke(tmp_path: Path) -> None:
@@ -227,6 +266,63 @@ async def _chat_broadcast_smoke(tmp_path: Path) -> None:
         assert isinstance(message.payload["created_at"], int | float)
 
 
+async def _interaction_result_only_to_actor_smoke(tmp_path: Path) -> None:
+    """
+    Запускает сервер и проверяет успешное взаимодействие с NPC.
+    """
+    multiplayer_server = _server_for_test(
+        tmp_path,
+        raw_map=_open_map_with_entities(npc_position=[64, 32]),
+    )
+
+    async with _running_test_server(multiplayer_server) as uri:
+        async with connect(uri) as first_client, connect(uri) as second_client:
+            await _send_join(first_client, "Alice")
+            await _send_join(second_client, "Bob")
+            first_id = await _recv_player_id(first_client)
+            await _recv_player_id(second_client)
+
+            await first_client.send(
+                encode_message(
+                    ProtocolMessage(
+                        type=ClientMessageType.INTERACT_REQUESTED,
+                        payload=interact_requested_payload("npc-funday"),
+                    )
+                )
+            )
+            message = await _recv_message_type(first_client, ServerMessageType.INTERACTION_RESULT)
+            await _assert_no_message_type(second_client, ServerMessageType.INTERACTION_RESULT)
+
+        assert message.payload["actor_id"] == first_id
+        assert message.payload["target_id"] == "npc-funday"
+        assert message.payload["target_name"] == "Funday"
+        assert message.payload["text"] == "Hello, developer"
+
+
+async def _interaction_too_far_smoke(tmp_path: Path) -> None:
+    """
+    Запускает сервер и проверяет отсутствие ответа при слишком большой дистанции.
+    """
+    multiplayer_server = _server_for_test(
+        tmp_path,
+        raw_map=_open_map_with_entities(npc_position=[220, 32], interaction_radius=16),
+    )
+
+    async with _running_test_server(multiplayer_server) as uri, connect(uri) as first_client:
+        await _send_join(first_client, "Alice")
+        await _recv_player_id(first_client)
+
+        await first_client.send(
+            encode_message(
+                ProtocolMessage(
+                    type=ClientMessageType.INTERACT_REQUESTED,
+                    payload=interact_requested_payload("npc-funday"),
+                )
+            )
+        )
+        await _assert_no_message_type(first_client, ServerMessageType.INTERACTION_RESULT)
+
+
 @contextlib.asynccontextmanager
 async def _running_test_server(multiplayer_server: MultiplayerServer):
     """
@@ -245,14 +341,17 @@ async def _running_test_server(multiplayer_server: MultiplayerServer):
                 await game_loop
 
 
-def _server_for_test(tmp_path: Path) -> MultiplayerServer:
+def _server_for_test(
+    tmp_path: Path,
+    raw_map: object | None = None,
+) -> MultiplayerServer:
     """
     Создает тестовый сервер с временной SQLite-базой.
     """
     repository = CharacterRepository(tmp_path / "characters.sqlite3")
     repository.initialize()
     return MultiplayerServer(
-        world=MultiplayerWorld(tile_map=tile_map_from_dict(_open_map())),
+        world=MultiplayerWorld(tile_map=tile_map_from_dict(raw_map or _open_map())),
         character_repository=repository,
         tick_rate=30.0,
         snapshot_rate=20.0,
@@ -339,6 +438,25 @@ async def _recv_message_type(
 
     msg = f"server did not send {message_type} in time"
     raise AssertionError(msg)
+
+
+async def _assert_no_message_type(
+    websocket: object,
+    message_type: ServerMessageType,
+) -> None:
+    """
+    Проверяет, что за короткое время websocket не получает сообщение нужного типа.
+    """
+    deadline = time.monotonic() + 0.25
+    while time.monotonic() < deadline:
+        try:
+            raw_message = await asyncio.wait_for(websocket.recv(), timeout=0.05)
+        except TimeoutError:
+            continue
+        message = decode_message(raw_message)
+        if message.type == message_type:
+            msg = f"server unexpectedly sent {message_type}"
+            raise AssertionError(msg)
 
 
 async def _recv_moved_player(

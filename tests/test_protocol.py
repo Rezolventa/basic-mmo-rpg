@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import pytest
 
+from basic_mmo_rpg.domain.entities import EntityKind, WorldEntity
 from basic_mmo_rpg.domain.geometry import Vec2
 from basic_mmo_rpg.domain.movement import MovementIntent, PlayerState
 from basic_mmo_rpg.shared.protocol import (
     ClientMessageType,
+    EntitySnapshot,
     PlayerSnapshot,
     ProtocolError,
     ProtocolMessage,
@@ -13,6 +15,10 @@ from basic_mmo_rpg.shared.protocol import (
     chat_text_from_payload,
     decode_message,
     encode_message,
+    entities_from_snapshot_payload,
+    entity_snapshots_from_payload,
+    interact_requested_payload,
+    interaction_target_from_payload,
     join_request_payload,
     movement_intent_from_payload,
     movement_intent_to_payload,
@@ -58,6 +64,36 @@ def test_world_snapshot_payload_round_trips_players() -> None:
 
     assert decoded_players == [player]
     assert decoded_snapshots == [snapshot]
+
+
+def test_world_snapshot_payload_round_trips_entities() -> None:
+    """
+    Проверяет, что объекты мира сериализуются и восстанавливаются из snapshot-а.
+    """
+    entity = WorldEntity(
+        entity_id="npc-funday",
+        kind=EntityKind.NPC,
+        name="Funday",
+        position=Vec2(64, 32),
+        width=24,
+        height=30,
+        interaction_radius=64,
+        solid=True,
+    )
+    payload = world_snapshot_payload([], [EntitySnapshot(state=entity)])
+
+    assert entities_from_snapshot_payload(payload) == [entity]
+    assert entity_snapshots_from_payload(payload) == [EntitySnapshot(state=entity)]
+
+
+def test_interaction_target_payload_is_validated() -> None:
+    """
+    Проверяет payload запроса взаимодействия с объектом мира.
+    """
+    assert interaction_target_from_payload(interact_requested_payload("npc-funday")) == "npc-funday"
+
+    with pytest.raises(ProtocolError):
+        interaction_target_from_payload({"target_id": ""})
 
 
 def test_character_name_payload_is_trimmed_and_limited() -> None:

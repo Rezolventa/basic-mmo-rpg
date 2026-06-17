@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from math import floor
 from types import MappingProxyType
 
+from basic_mmo_rpg.domain.entities import WorldEntity
 from basic_mmo_rpg.domain.geometry import Rect, Vec2
 
 EDGE_EPSILON = 0.0001
@@ -32,6 +33,7 @@ class TileMap:
     tiles: tuple[tuple[str, ...], ...]
     definitions: Mapping[str, TileDefinition]
     spawn: Vec2
+    entities: tuple[WorldEntity, ...] = ()
 
     def __post_init__(self) -> None:
         """
@@ -59,6 +61,15 @@ class TileMap:
             msg = f"map references unknown tile keys: {sorted(missing)!r}"
             raise ValueError(msg)
 
+        entity_ids = [entity.entity_id for entity in self.entities]
+        if len(entity_ids) != len(set(entity_ids)):
+            msg = "map entities must have unique ids"
+            raise ValueError(msg)
+        for entity in self.entities:
+            if self._is_rect_blocked_by_tiles(entity.rect):
+                msg = f"map entity {entity.entity_id!r} overlaps blocked tiles or map bounds"
+                raise ValueError(msg)
+
         object.__setattr__(self, "definitions", MappingProxyType(dict(self.definitions)))
 
     @property
@@ -81,6 +92,13 @@ class TileMap:
         Возвращает размер карты в пикселях.
         """
         return Vec2(self.width * self.tile_size, self.height * self.tile_size)
+
+    @property
+    def solid_entity_rects(self) -> tuple[Rect, ...]:
+        """
+        Возвращает прямоугольники коллизионных объектов карты.
+        """
+        return tuple(entity.rect for entity in self.entities if entity.solid)
 
     def in_bounds(self, tile_x: int, tile_y: int) -> bool:
         """
@@ -106,9 +124,17 @@ class TileMap:
         tile_key = self.tile_at(tile_x, tile_y)
         return self.definitions[tile_key].solid
 
-    def is_rect_blocked(self, rect: Rect) -> bool:
+    def is_rect_blocked(self, rect: Rect, blockers: Iterable[Rect] = ()) -> bool:
         """
         Проверяет, пересекается ли прямоугольник с препятствием или границей мира.
+        """
+        if self._is_rect_blocked_by_tiles(rect):
+            return True
+        return any(rect.intersects(blocker) for blocker in blockers)
+
+    def _is_rect_blocked_by_tiles(self, rect: Rect) -> bool:
+        """
+        Проверяет, пересекается ли прямоугольник с тайловыми препятствиями.
         """
         if rect.left < 0 or rect.top < 0:
             return True

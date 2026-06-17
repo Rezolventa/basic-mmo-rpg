@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import pygame
 
 from basic_mmo_rpg.client.app import GameClient, RemotePlayerView, _smooth_player_toward
+from basic_mmo_rpg.domain.entities import EntityKind, WorldEntity
 from basic_mmo_rpg.domain.geometry import Vec2
 from basic_mmo_rpg.domain.movement import PlayerState
 
@@ -104,6 +105,51 @@ def test_chat_input_escape_cancels_input() -> None:
 
     assert client.chat_input_active is False
     assert client.chat_input_text == ""
+
+
+def test_client_applies_interaction_result_to_log_and_entity_bubble() -> None:
+    """
+    Проверяет, что клиент показывает результат взаимодействия в журнале и над объектом.
+    """
+    client = object.__new__(GameClient)
+    client.chat_lines = deque(maxlen=50)
+    client.entity_speech_bubbles = {}
+
+    client._apply_interaction_result(
+        {
+            "actor_id": "p1",
+            "target_id": "npc-funday",
+            "target_name": "Funday",
+            "text": "Hello, developer",
+            "created_at": 123.0,
+        }
+    )
+
+    assert client.chat_lines[-1].name == "Funday"
+    assert client.chat_lines[-1].text == "Hello, developer"
+    assert client.entity_speech_bubbles["npc-funday"].text == "Hello, developer"
+
+
+def test_client_finds_entity_strictly_under_cursor() -> None:
+    """
+    Проверяет выбор объекта мира по экранной позиции курсора.
+    """
+    client = object.__new__(GameClient)
+    client.camera = SimpleNamespace(screen_to_world=lambda position: Vec2(*position))
+    entity = WorldEntity(
+        entity_id="npc-funday",
+        kind=EntityKind.NPC,
+        name="Funday",
+        position=Vec2(64, 32),
+        width=24,
+        height=30,
+    )
+    client.world_entities = {entity.entity_id: entity}
+
+    assert client._entity_at_screen_position((70, 40)) == entity
+    assert client._entity_at_screen_position((88, 40)) is None
+    assert client._entity_at_screen_position((70, 62)) is None
+    assert client._entity_at_screen_position((20, 20)) is None
 
 
 def _client_without_pygame(player: PlayerState) -> GameClient:

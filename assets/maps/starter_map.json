@@ -54,6 +54,17 @@
     "#......................................#",
     "#...........................T..........#",
     "########################################"
+  ],
+  "entities": [
+    {
+      "id": "npc-funday",
+      "kind": "npc",
+      "name": "Funday",
+      "position": [640, 288],
+      "size": [24, 30],
+      "interaction_radius": 64,
+      "dialogue": "Hello, developer",
+      "solid": true
+    }
   ]
 }
-

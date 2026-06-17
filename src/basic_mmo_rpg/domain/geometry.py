@@ -100,6 +100,23 @@ class Rect:
         """
         return Rect(self.x + delta.x, self.y + delta.y, self.width, self.height)
 
+    def intersects(self, other: Rect) -> bool:
+        """
+        Проверяет, пересекается ли прямоугольник с другим прямоугольником.
+        """
+        return (
+            self.left < other.right
+            and self.right > other.left
+            and self.top < other.bottom
+            and self.bottom > other.top
+        )
+
+    def contains_point(self, point: Vec2) -> bool:
+        """
+        Проверяет, находится ли точка внутри прямоугольника.
+        """
+        return self.left <= point.x < self.right and self.top <= point.y < self.bottom
+
     def to_pygame(self) -> tuple[int, int, int, int]:
         """
         Преобразует прямоугольник в кортеж координат для pygame.

@@ -11,6 +11,7 @@ from pathlib import Path
 
 from websockets.asyncio.server import ServerConnection, serve
 
+from basic_mmo_rpg.domain.entities import EntityKind
 from basic_mmo_rpg.server.world import MultiplayerWorld
 from basic_mmo_rpg.shared.protocol import (
     ClientMessageType,
@@ -22,6 +23,8 @@ from basic_mmo_rpg.shared.protocol import (
     chat_text_from_payload,
     decode_message,
     encode_message,
+    interaction_result_payload,
+    interaction_target_from_payload,
     movement_intent_from_payload,
 )
 from basic_mmo_rpg.storage.characters import CharacterRepository
@@ -241,6 +244,8 @@ class MultiplayerServer:
                 )
             elif message.type == ClientMessageType.CHAT_SENT:
                 await self._handle_chat_message(session, message.payload)
+            elif message.type == ClientMessageType.INTERACT_REQUESTED:
+                await self._handle_interaction(session, message.payload)
         except (ProtocolError, UnicodeDecodeError) as exc:
             await self._send_error(session.player_id, str(exc))
             logger.warning("Protocol error from %s: %s", session.character_name, exc)
@@ -265,6 +270,62 @@ class MultiplayerServer:
                     created_at=time.time(),
                 ),
             )
+        )
+
+    async def _handle_interaction(
+        self,
+        session: PlayerSession,
+        payload: dict[str, object],
+    ) -> None:
+        """
+        Проверяет запрос взаимодействия и отправляет результат только инициатору.
+        """
+        target_id = interaction_target_from_payload(payload)
+        player = self.world.players.get(session.player_id)
+        target = self.world.get_entity(target_id)
+        if player is None or target is None:
+            logger.info(
+                "Interaction ignored: name=%s target_id=%s reason=missing_target",
+                session.character_name,
+                target_id,
+            )
+            return
+        if target.kind != EntityKind.NPC:
+            logger.info(
+                "Interaction ignored: name=%s target_id=%s reason=unsupported_kind",
+                session.character_name,
+                target_id,
+            )
+            return
+
+        distance = (player.center - target.center).length
+        if distance > target.interaction_radius:
+            logger.info(
+                "Interaction ignored: name=%s target_id=%s distance=%.2f radius=%.2f",
+                session.character_name,
+                target_id,
+                distance,
+                target.interaction_radius,
+            )
+            return
+
+        logger.info(
+            "Interaction accepted: name=%s target_id=%s",
+            session.character_name,
+            target_id,
+        )
+        await self._send(
+            session.websocket,
+            ProtocolMessage(
+                type=ServerMessageType.INTERACTION_RESULT,
+                payload=interaction_result_payload(
+                    actor_id=session.player_id,
+                    target_id=target.entity_id,
+                    target_name=target.name,
+                    text=target.dialogue,
+                    created_at=time.time(),
+                ),
+            ),
         )
 
     async def _game_loop(self) -> None:

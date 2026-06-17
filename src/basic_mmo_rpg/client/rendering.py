@@ -6,6 +6,7 @@ import pygame
 
 from basic_mmo_rpg.client.camera import Camera
 from basic_mmo_rpg.client.ui import ChatLine
+from basic_mmo_rpg.domain.entities import WorldEntity
 from basic_mmo_rpg.domain.geometry import Rect, Vec2
 from basic_mmo_rpg.domain.movement import PlayerState
 from basic_mmo_rpg.domain.tiles import TileMap
@@ -17,6 +18,10 @@ PLAYER_TUNIC = (218, 191, 105)
 PLAYER_OUTLINE = (36, 24, 22)
 REMOTE_PLAYER_BODY = (61, 113, 196)
 REMOTE_PLAYER_TUNIC = (132, 198, 225)
+NPC_BODY = (76, 96, 74)
+NPC_TUNIC = (197, 178, 112)
+NPC_OUTLINE = (28, 35, 28)
+HOVER_OUTLINE = (238, 216, 112)
 TEXT_COLOR = (236, 238, 241)
 MUTED_TEXT_COLOR = (180, 187, 196)
 BUBBLE_BACKGROUND = (20, 22, 26)
@@ -48,9 +53,12 @@ class Renderer:
         camera: Camera,
         player: PlayerState,
         other_players: Iterable[PlayerState] = (),
+        world_entities: Iterable[WorldEntity] = (),
         player_names: Mapping[str, str] | None = None,
         speech_bubbles: Mapping[str, str] | None = None,
         name_tags: Mapping[str, str] | None = None,
+        entity_speech_bubbles: Mapping[str, str] | None = None,
+        hovered_entity_id: str | None = None,
         chat_lines: Sequence[ChatLine] = (),
         chat_input_active: bool = False,
         chat_input_text: str = "",
@@ -63,9 +71,18 @@ class Renderer:
         player_names = player_names or {}
         speech_bubbles = speech_bubbles or {}
         name_tags = name_tags or {}
+        entity_speech_bubbles = entity_speech_bubbles or {}
+        entity_list = list(world_entities)
 
         screen.fill(BACKGROUND)
         self._draw_map(screen, camera)
+        for entity in entity_list:
+            self._draw_entity(
+                screen,
+                camera,
+                entity,
+                hovered=entity.entity_id == hovered_entity_id,
+            )
         for other_player in other_player_list:
             self._draw_player(
                 screen,
@@ -88,6 +105,13 @@ class Renderer:
             player_names=player_names,
             speech_bubbles=speech_bubbles,
             name_tags=name_tags,
+        )
+        self._draw_entity_floating_texts(
+            screen=screen,
+            camera=camera,
+            entities=entity_list,
+            speech_bubbles=entity_speech_bubbles,
+            hovered_entity_id=hovered_entity_id,
         )
         if chat_journal_visible:
             self._draw_chat_journal(screen, chat_lines)
@@ -132,6 +156,26 @@ class Renderer:
         tunic = pygame.Rect(body.left + 4, body.top + 10, body.width - 8, body.height - 12)
         pygame.draw.rect(screen, tunic_color, tunic, border_radius=2)
 
+    def _draw_entity(
+        self,
+        screen: pygame.Surface,
+        camera: Camera,
+        entity: WorldEntity,
+        hovered: bool,
+    ) -> None:
+        """
+        Рисует один объект мира в экранных координатах.
+        """
+        body = self._entity_screen_rect(camera, entity)
+        outline_color = HOVER_OUTLINE if hovered else NPC_OUTLINE
+        pygame.draw.rect(screen, outline_color, body.inflate(6, 6), border_radius=3)
+        pygame.draw.rect(screen, NPC_BODY, body, border_radius=3)
+
+        tunic = pygame.Rect(body.left + 4, body.top + 9, body.width - 8, body.height - 11)
+        pygame.draw.rect(screen, NPC_TUNIC, tunic, border_radius=2)
+        face = pygame.Rect(body.left + 7, body.top + 4, body.width - 14, 7)
+        pygame.draw.rect(screen, TEXT_COLOR, face, border_radius=2)
+
     def _draw_floating_texts(
         self,
         screen: pygame.Surface,
@@ -164,6 +208,30 @@ class Renderer:
                     y_offset,
                 )
 
+    def _draw_entity_floating_texts(
+        self,
+        screen: pygame.Surface,
+        camera: Camera,
+        entities: Sequence[WorldEntity],
+        speech_bubbles: Mapping[str, str],
+        hovered_entity_id: str | None,
+    ) -> None:
+        """
+        Рисует временные реплики и hover-имена над объектами мира.
+        """
+        for entity in entities:
+            y_offset = 0
+            body = self._entity_screen_rect(camera, entity)
+            if entity.entity_id in speech_bubbles:
+                y_offset = self._draw_bubble_above_rect(
+                    screen,
+                    body,
+                    speech_bubbles[entity.entity_id],
+                    y_offset,
+                )
+            if entity.entity_id == hovered_entity_id:
+                self._draw_name_tag_above_rect(screen, body, entity.name, y_offset)
+
     def _draw_bubble(
         self,
         screen: pygame.Surface,
@@ -175,11 +243,24 @@ class Renderer:
         """
         Рисует одну реплику над головой игрока и возвращает занятое смещение.
         """
+        body = self._player_screen_rect(camera, player)
+        return self._draw_bubble_above_rect(screen, body, text, y_offset)
+
+    def _draw_bubble_above_rect(
+        self,
+        screen: pygame.Surface,
+        body: pygame.Rect,
+        text: str,
+        y_offset: int,
+    ) -> int:
+        """
+        Рисует реплику над прямоугольником и возвращает занятое смещение.
+        """
         lines = self._wrap_text(text, max_width=260, font=self.font)
         line_surfaces = [self.font.render(line, True, TEXT_COLOR) for line in lines]
         width = max(surface.get_width() for surface in line_surfaces) + 16
         height = len(line_surfaces) * self.font.get_linesize() + 12
-        anchor = self._floating_anchor(camera, player, height + y_offset)
+        anchor = self._floating_anchor_for_rect(body, height + y_offset)
         rect = pygame.Rect(anchor[0] - width // 2, anchor[1], width, height)
 
         pygame.draw.rect(screen, BUBBLE_BACKGROUND, rect, border_radius=6)
@@ -201,10 +282,23 @@ class Renderer:
         """
         Рисует временный никнейм над головой игрока.
         """
+        body = self._player_screen_rect(camera, player)
+        self._draw_name_tag_above_rect(screen, body, name, y_offset)
+
+    def _draw_name_tag_above_rect(
+        self,
+        screen: pygame.Surface,
+        body: pygame.Rect,
+        name: str,
+        y_offset: int,
+    ) -> None:
+        """
+        Рисует временное имя над прямоугольником.
+        """
         surface = self.small_font.render(name, True, TEXT_COLOR)
         width = surface.get_width() + 10
         height = surface.get_height() + 6
-        anchor = self._floating_anchor(camera, player, height + y_offset)
+        anchor = self._floating_anchor_for_rect(body, height + y_offset)
         rect = pygame.Rect(anchor[0] - width // 2, anchor[1], width, height)
         pygame.draw.rect(screen, INPUT_BACKGROUND, rect, border_radius=4)
         pygame.draw.rect(screen, BUBBLE_BORDER, rect, width=1, border_radius=4)
@@ -270,6 +364,19 @@ class Renderer:
             int(player_rect.height),
         )
 
+    def _entity_screen_rect(self, camera: Camera, entity: WorldEntity) -> pygame.Rect:
+        """
+        Возвращает прямоугольник объекта мира в экранных координатах.
+        """
+        entity_rect = entity.rect
+        screen_position = camera.world_to_screen(entity.position)
+        return pygame.Rect(
+            screen_position[0],
+            screen_position[1],
+            int(entity_rect.width),
+            int(entity_rect.height),
+        )
+
     def _floating_anchor(
         self,
         camera: Camera,
@@ -280,6 +387,16 @@ class Renderer:
         Возвращает точку привязки текста над головой игрока.
         """
         body = self._player_screen_rect(camera, player)
+        return self._floating_anchor_for_rect(body, height_with_offset)
+
+    def _floating_anchor_for_rect(
+        self,
+        body: pygame.Rect,
+        height_with_offset: int,
+    ) -> tuple[int, int]:
+        """
+        Возвращает точку привязки текста над экранным прямоугольником.
+        """
         return body.centerx, body.top - height_with_offset - 8
 
     def _wrap_text(

@@ -12,11 +12,13 @@ from basic_mmo_rpg.client.camera import Camera
 from basic_mmo_rpg.client.network import NetworkClient
 from basic_mmo_rpg.client.rendering import Renderer
 from basic_mmo_rpg.client.ui import ChatLine, TimedText
-from basic_mmo_rpg.domain.geometry import Vec2
+from basic_mmo_rpg.domain.entities import WorldEntity
+from basic_mmo_rpg.domain.geometry import Rect, Vec2
 from basic_mmo_rpg.domain.movement import MovementIntent, PlayerState, move_player
 from basic_mmo_rpg.shared.protocol import (
     ProtocolError,
     ServerMessageType,
+    entities_from_snapshot_payload,
     player_snapshots_from_payload,
 )
 from basic_mmo_rpg.storage.map_loader import load_tile_map
@@ -69,32 +71,25 @@ class RemotePlayerView:
 
 class GameClient:
     """
-    Управляет pygame-клиентом, локальным рендером и опциональной сетевой игрой.
+    Управляет pygame-клиентом, локальным рендером и сетевой игрой.
     """
 
     def __init__(
         self,
         map_path: Path,
-        server_url: str | None = None,
-        character_name: str | None = None,
+        server_url: str,
+        character_name: str,
     ) -> None:
         """
-        Инициализирует окно, карту, состояние игрока, камеру, рендерер и сетевой режим.
+        Инициализирует окно, карту, состояние игрока, камеру, рендерер и сетевой клиент.
         """
-        if server_url is not None and character_name is None:
-            msg = "character_name is required for multiplayer mode"
-            raise ValueError(msg)
-
         pygame.init()
-        window_title = (
-            "Basic MMO RPG - multiplayer MVP" if server_url else "Basic MMO RPG - local MVP"
-        )
-        pygame.display.set_caption(window_title)
+        pygame.display.set_caption("Basic MMO RPG - multiplayer MVP")
 
         self.screen = pygame.display.set_mode(WINDOW_SIZE, pygame.RESIZABLE)
         self.clock = pygame.time.Clock()
         self.tile_map = load_tile_map(map_path)
-        self.local_character_name = character_name or PLAYER_ID
+        self.local_character_name = character_name
         self.player = PlayerState(
             entity_id=PLAYER_ID,
             position=self.tile_map.spawn,
@@ -102,6 +97,10 @@ class GameClient:
         self.authoritative_player: PlayerState | None = None
         self.local_correction_offset = Vec2(0, 0)
         self.other_players: dict[str, RemotePlayerView] = {}
+        self.world_entities: dict[str, WorldEntity] = {
+            entity.entity_id: entity for entity in self.tile_map.entities
+        }
+        self.hovered_entity_id: str | None = None
         self.local_player_id: str | None = PLAYER_ID
         self.player_names: dict[str, str] = {PLAYER_ID: self.local_character_name}
         self.chat_input_active = False
@@ -109,18 +108,13 @@ class GameClient:
         self.chat_journal_visible = False
         self.chat_lines: deque[ChatLine] = deque(maxlen=MAX_CHAT_LOG_MESSAGES)
         self.speech_bubbles: dict[str, TimedText] = {}
+        self.entity_speech_bubbles: dict[str, TimedText] = {}
         self.name_tags: dict[str, TimedText] = {}
         self.camera = Camera()
         self.renderer = Renderer(self.tile_map)
-        self.network_client = (
-            NetworkClient(server_url, character_name=self.local_character_name)
-            if server_url
-            else None
-        )
-
-        if self.network_client is not None:
-            self.local_player_id = None
-            self.network_client.start()
+        self.network_client = NetworkClient(server_url, character_name=self.local_character_name)
+        self.local_player_id = None
+        self.network_client.start()
 
     def run(self) -> None:
         """
@@ -138,8 +132,7 @@ class GameClient:
             self._update(delta_seconds)
             self._draw()
 
-        if self.network_client is not None:
-            self.network_client.stop()
+        self.network_client.stop()
         pygame.quit()
 
     def _update(self, delta_seconds: float) -> None:
@@ -147,15 +140,13 @@ class GameClient:
         Обновляет локальный ввод, состояние игрока и камеру за один кадр.
         """
         self._prune_timed_texts(time.monotonic())
+        self._update_hovered_entity()
         intent = self._read_movement_intent()
-        if self.network_client is None:
-            self.player = move_player(self.player, intent, delta_seconds, self.tile_map)
-        else:
-            self.network_client.send_movement_intent(intent)
-            self._apply_network_messages()
-            self._predict_local_player(intent, delta_seconds)
-            self._reconcile_local_player(delta_seconds)
-            self._update_remote_players(delta_seconds)
+        self.network_client.send_movement_intent(intent)
+        self._apply_network_messages()
+        self._predict_local_player(intent, delta_seconds)
+        self._reconcile_local_player(delta_seconds)
+        self._update_remote_players(delta_seconds)
 
         viewport = Vec2(*self.screen.get_size())
         self.camera.follow(
@@ -174,9 +165,12 @@ class GameClient:
             camera=self.camera,
             player=self.player,
             other_players=other_players,
+            world_entities=self.world_entities.values(),
             player_names=self.player_names,
             speech_bubbles=_timed_text_values(self.speech_bubbles),
             name_tags=_timed_text_values(self.name_tags),
+            entity_speech_bubbles=_timed_text_values(self.entity_speech_bubbles),
+            hovered_entity_id=self.hovered_entity_id,
             chat_lines=list(self.chat_lines),
             chat_input_active=self.chat_input_active,
             chat_input_text=self.chat_input_text,
@@ -206,6 +200,8 @@ class GameClient:
             self.chat_input_text = ""
         elif event.key == pygame.K_j:
             self.chat_journal_visible = not self.chat_journal_visible
+        elif event.key == pygame.K_f:
+            self._send_interaction_under_cursor()
 
     def _handle_chat_input_key(self, event: pygame.event.Event) -> None:
         """
@@ -232,7 +228,7 @@ class GameClient:
         text = self.chat_input_text.strip()
         self.chat_input_active = False
         self.chat_input_text = ""
-        if not text or self.network_client is None:
+        if not text:
             return
         self.network_client.send_chat_message(text)
 
@@ -248,6 +244,15 @@ class GameClient:
                     expires_at=now + FLOATING_TEXT_SECONDS,
                 )
                 return
+
+    def _send_interaction_under_cursor(self) -> None:
+        """
+        Отправляет запрос взаимодействия с объектом, который находится строго под курсором.
+        """
+        entity = self._entity_at_screen_position(pygame.mouse.get_pos())
+        if entity is None:
+            return
+        self.network_client.send_interaction_request(entity.entity_id)
 
     def _read_movement_intent(self) -> MovementIntent:
         """
@@ -268,9 +273,6 @@ class GameClient:
         """
         Применяет все сообщения сервера, полученные фоновым сетевым клиентом.
         """
-        if self.network_client is None:
-            return
-
         for message in self.network_client.drain_messages():
             if message.type == ServerMessageType.CONNECTION_ACCEPTED:
                 player_id = message.payload.get("player_id")
@@ -284,6 +286,8 @@ class GameClient:
                 self._apply_world_snapshot(message.payload)
             elif message.type == ServerMessageType.CHAT_MESSAGE:
                 self._apply_chat_message(message.payload)
+            elif message.type == ServerMessageType.INTERACTION_RESULT:
+                self._apply_interaction_result(message.payload)
             elif message.type == ServerMessageType.ENTITY_REMOVED:
                 player_id = message.payload.get("id")
                 if isinstance(player_id, str):
@@ -298,9 +302,11 @@ class GameClient:
         """
         try:
             snapshots = player_snapshots_from_payload(payload)
+            entities = entities_from_snapshot_payload(payload)
         except ProtocolError:
             return
 
+        self.world_entities = {entity.entity_id: entity for entity in entities}
         next_other_players: dict[str, PlayerState] = {}
         next_other_names: dict[str, str] = {}
         for snapshot in snapshots:
@@ -341,11 +347,45 @@ class GameClient:
             expires_at=time.monotonic() + FLOATING_TEXT_SECONDS,
         )
 
+    def _apply_interaction_result(self, payload: dict[str, object]) -> None:
+        """
+        Добавляет результат взаимодействия в журнал и показывает реплику над объектом.
+        """
+        target_id = payload.get("target_id")
+        target_name = payload.get("target_name")
+        text = payload.get("text")
+        created_at = payload.get("created_at")
+        if not isinstance(target_id, str) or not isinstance(target_name, str):
+            return
+        if not isinstance(text, str):
+            return
+        if not isinstance(created_at, int | float):
+            created_at = time.time()
+
+        self.chat_lines.append(
+            ChatLine(
+                player_id=target_id,
+                name=target_name,
+                text=text,
+                created_at=float(created_at),
+            )
+        )
+        self.entity_speech_bubbles[target_id] = TimedText(
+            text=text,
+            expires_at=time.monotonic() + FLOATING_TEXT_SECONDS,
+        )
+
     def _predict_local_player(self, intent: MovementIntent, delta_seconds: float) -> None:
         """
         Сразу применяет локальный ввод игрока до получения подтверждения сервера.
         """
-        self.player = move_player(self.player, intent, delta_seconds, self.tile_map)
+        self.player = move_player(
+            self.player,
+            intent,
+            delta_seconds,
+            self.tile_map,
+            self._solid_entity_rects(),
+        )
 
     def _reconcile_local_player(self, delta_seconds: float) -> None:
         """
@@ -414,6 +454,7 @@ class GameClient:
         Удаляет истекшие временные реплики и никнеймы.
         """
         self.speech_bubbles = _active_timed_texts(self.speech_bubbles, now)
+        self.entity_speech_bubbles = _active_timed_texts(self.entity_speech_bubbles, now)
         self.name_tags = _active_timed_texts(self.name_tags, now)
 
     def _player_screen_rect(self, player: PlayerState) -> pygame.Rect:
@@ -422,6 +463,29 @@ class GameClient:
         """
         x, y = self.camera.world_to_screen(player.position)
         return pygame.Rect(x, y, player.width, player.height)
+
+    def _update_hovered_entity(self) -> None:
+        """
+        Обновляет id объекта мира, который находится под курсором мыши.
+        """
+        entity = self._entity_at_screen_position(pygame.mouse.get_pos())
+        self.hovered_entity_id = entity.entity_id if entity is not None else None
+
+    def _entity_at_screen_position(self, position: tuple[int, int]) -> WorldEntity | None:
+        """
+        Возвращает объект мира под экранной позицией курсора.
+        """
+        world_position = self.camera.screen_to_world(position)
+        for entity in self.world_entities.values():
+            if entity.rect.contains_point(world_position):
+                return entity
+        return None
+
+    def _solid_entity_rects(self) -> tuple[Rect, ...]:
+        """
+        Возвращает прямоугольники коллизионных объектов, известных клиенту.
+        """
+        return tuple(entity.rect for entity in self.world_entities.values() if entity.solid)
 
 
 def _smooth_player_toward(
@@ -491,17 +555,15 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--server",
-        default=None,
-        help=f"Connect to a websocket server, for example {DEFAULT_SERVER_URL}.",
+        default=DEFAULT_SERVER_URL,
+        help=f"Websocket server URL. Defaults to {DEFAULT_SERVER_URL}.",
     )
     parser.add_argument(
         "--name",
-        default=None,
+        required=True,
         help="Character name for multiplayer mode.",
     )
     args = parser.parse_args()
-    if args.server is not None and args.name is None:
-        parser.error("--name is required when --server is used")
     return args
 
 

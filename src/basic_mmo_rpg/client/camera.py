@@ -31,3 +31,9 @@ class Camera:
         Переводит мировую позицию в позицию относительно текущего экрана.
         """
         return int(position.x - self.offset.x), int(position.y - self.offset.y)
+
+    def screen_to_world(self, position: tuple[int, int]) -> Vec2:
+        """
+        Переводит экранную позицию в мировые координаты.
+        """
+        return Vec2(position[0] + self.offset.x, position[1] + self.offset.y)
