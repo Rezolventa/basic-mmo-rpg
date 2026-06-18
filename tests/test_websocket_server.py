@@ -10,6 +10,7 @@ import pytest
 from websockets.asyncio.client import connect
 from websockets.asyncio.server import serve
 
+from basic_mmo_rpg.domain.inventory import FISHING_ROD_ITEM_ID
 from basic_mmo_rpg.domain.movement import MovementIntent, PlayerState
 from basic_mmo_rpg.server.app import MultiplayerServer
 from basic_mmo_rpg.server.world import MultiplayerWorld
@@ -21,6 +22,7 @@ from basic_mmo_rpg.shared.protocol import (
     decode_message,
     encode_message,
     interact_requested_payload,
+    inventory_items_from_payload,
     join_request_payload,
     movement_intent_to_payload,
     players_from_snapshot_payload,
@@ -66,7 +68,7 @@ def _open_map_with_entities(
                 "position": npc_position,
                 "size": [24, 30],
                 "interaction_radius": interaction_radius,
-                "dialogue": "Hello, developer",
+                "dialogue": "Иди и поймай мне рыбу",
                 "solid": True,
             }
         ]
@@ -249,6 +251,11 @@ async def _chat_broadcast_smoke(tmp_path: Path) -> None:
             await _send_join(second_client, "Bob")
             first_id = await _recv_player_id(first_client)
             await _recv_player_id(second_client)
+            initial_inventory = await _recv_message_type(
+                first_client,
+                ServerMessageType.INVENTORY_UPDATED,
+            )
+            assert inventory_items_from_payload(initial_inventory.payload) == []
 
             await first_client.send(
                 encode_message(
@@ -291,12 +298,22 @@ async def _interaction_result_only_to_actor_smoke(tmp_path: Path) -> None:
                 )
             )
             message = await _recv_message_type(first_client, ServerMessageType.INTERACTION_RESULT)
+            inventory_message = await _recv_message_type(
+                first_client,
+                ServerMessageType.INVENTORY_UPDATED,
+            )
             await _assert_no_message_type(second_client, ServerMessageType.INTERACTION_RESULT)
 
         assert message.payload["actor_id"] == first_id
         assert message.payload["target_id"] == "npc-funday"
         assert message.payload["target_name"] == "Funday"
-        assert message.payload["text"] == "Hello, developer"
+        assert message.payload["text"] == "Иди и поймай мне рыбу"
+        inventory = inventory_items_from_payload(inventory_message.payload)
+        persisted_inventory = multiplayer_server.character_repository.load_inventory("Alice")
+        assert len(inventory) == 1
+        assert inventory[0].item_id == FISHING_ROD_ITEM_ID
+        assert inventory[0].quantity == 1
+        assert persisted_inventory == inventory
 
 
 async def _interaction_too_far_smoke(tmp_path: Path) -> None:

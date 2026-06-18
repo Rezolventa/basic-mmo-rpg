@@ -12,6 +12,7 @@ from pathlib import Path
 from websockets.asyncio.server import ServerConnection, serve
 
 from basic_mmo_rpg.domain.entities import EntityKind
+from basic_mmo_rpg.domain.inventory import FISHING_ROD_ITEM_ID
 from basic_mmo_rpg.server.world import MultiplayerWorld
 from basic_mmo_rpg.shared.protocol import (
     ClientMessageType,
@@ -25,6 +26,7 @@ from basic_mmo_rpg.shared.protocol import (
     encode_message,
     interaction_result_payload,
     interaction_target_from_payload,
+    inventory_updated_payload,
     movement_intent_from_payload,
 )
 from basic_mmo_rpg.storage.characters import CharacterRepository
@@ -108,6 +110,7 @@ class MultiplayerServer:
                     },
                 ),
             )
+            await self._send_inventory_update(session)
             await self._broadcast_snapshot()
 
             async for raw_message in websocket:
@@ -325,6 +328,38 @@ class MultiplayerServer:
                     text=target.dialogue,
                     created_at=time.time(),
                 ),
+            ),
+        )
+        await self._grant_fishing_rod_if_needed(session)
+
+    async def _grant_fishing_rod_if_needed(self, session: PlayerSession) -> None:
+        """
+        Выдает персонажу удочку, если ее еще нет в инвентаре.
+        """
+        _, granted = self.character_repository.add_item_if_absent(
+            session.character_name,
+            FISHING_ROD_ITEM_ID,
+        )
+        if not granted:
+            return
+
+        logger.info(
+            "Inventory item granted: name=%s item_id=%s",
+            session.character_name,
+            FISHING_ROD_ITEM_ID,
+        )
+        await self._send_inventory_update(session)
+
+    async def _send_inventory_update(self, session: PlayerSession) -> None:
+        """
+        Отправляет актуальное состояние инвентаря одному клиенту.
+        """
+        inventory = self.character_repository.load_inventory(session.character_name)
+        await self._send(
+            session.websocket,
+            ProtocolMessage(
+                type=ServerMessageType.INVENTORY_UPDATED,
+                payload=inventory_updated_payload(inventory),
             ),
         )
 

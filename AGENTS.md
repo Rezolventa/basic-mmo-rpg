@@ -8,7 +8,7 @@
 
 ## Текущий статус
 
-Текущий этап: MVP 4.
+Текущий этап: MVP 5.
 
 Уже есть:
 
@@ -30,7 +30,10 @@
 - NPC `Funday` на стартовой карте;
 - `interact_requested` по клавише `F`;
 - серверная проверка дистанции взаимодействия;
-- ответ NPC `Hello, developer` только инициатору взаимодействия.
+- ответ NPC только инициатору взаимодействия;
+- stack-based persistent inventory;
+- UI инвентаря по клавише `B`;
+- выдача предмета `Удочка` при взаимодействии с Funday, если у персонажа ее еще нет.
 
 ## Важное решение: локальный режим не поддерживаем
 
@@ -75,6 +78,7 @@ server -> client: connection_accepted
 server -> client: world_snapshot
 server -> client: chat_message
 server -> client: interaction_result
+server -> client: inventory_updated
 server -> client: entity_removed
 server -> client: error
 ```
@@ -106,6 +110,7 @@ server -> client: error
 - Повторный `Enter` - отправить сообщение.
 - `Esc` - отменить активный ввод чата.
 - `J` - показать/скрыть журнал сообщений.
+- `B` - показать/скрыть инвентарь.
 - Клик по другому игроку - временно показать его никнейм.
 - Наведение на NPC - показать имя NPC.
 - `F` - отправить `interact_requested` для объекта строго под курсором.

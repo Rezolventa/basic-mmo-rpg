@@ -8,6 +8,7 @@ from basic_mmo_rpg.client.camera import Camera
 from basic_mmo_rpg.client.ui import ChatLine
 from basic_mmo_rpg.domain.entities import WorldEntity
 from basic_mmo_rpg.domain.geometry import Rect, Vec2
+from basic_mmo_rpg.domain.inventory import ItemStack
 from basic_mmo_rpg.domain.movement import PlayerState
 from basic_mmo_rpg.domain.tiles import TileMap
 
@@ -63,6 +64,8 @@ class Renderer:
         chat_input_active: bool = False,
         chat_input_text: str = "",
         chat_journal_visible: bool = False,
+        inventory_items: Sequence[ItemStack] = (),
+        inventory_visible: bool = False,
     ) -> None:
         """
         Рисует полный игровой кадр на переданной поверхности.
@@ -115,6 +118,8 @@ class Renderer:
         )
         if chat_journal_visible:
             self._draw_chat_journal(screen, chat_lines)
+        if inventory_visible:
+            self._draw_inventory(screen, inventory_items)
         if chat_input_active:
             self._draw_chat_input(screen, chat_input_text)
 
@@ -350,6 +355,35 @@ class Renderer:
         text = f"{prefix}{visible_text}"
         surface = self.font.render(text, True, TEXT_COLOR)
         screen.blit(surface, (rect.left + 10, rect.centery - surface.get_height() // 2))
+
+    def _draw_inventory(self, screen: pygame.Surface, items: Sequence[ItemStack]) -> None:
+        """
+        Рисует простую панель инвентаря.
+        """
+        width = 280
+        height = min(320, screen.get_height() - 90)
+        left = screen.get_width() - width - 20
+        panel = pygame.Surface((width, height), pygame.SRCALPHA)
+        panel.fill(PANEL_BACKGROUND)
+        screen.blit(panel, (left, 20))
+
+        title = self.font.render("Инвентарь", True, TEXT_COLOR)
+        screen.blit(title, (left + 12, 30))
+
+        if not items:
+            empty = self.small_font.render("Пусто", True, MUTED_TEXT_COLOR)
+            screen.blit(empty, (left + 12, 62))
+            return
+
+        y = 62
+        for item in items:
+            quantity_suffix = f" x{item.quantity}" if item.quantity > 1 else ""
+            text = f"{item.display_name}{quantity_suffix}"
+            surface = self.small_font.render(text, True, MUTED_TEXT_COLOR)
+            screen.blit(surface, (left + 12, y))
+            y += self.small_font.get_linesize() + 4
+            if y > 20 + height - self.small_font.get_linesize():
+                return
 
     def _player_screen_rect(self, camera: Camera, player: PlayerState) -> pygame.Rect:
         """

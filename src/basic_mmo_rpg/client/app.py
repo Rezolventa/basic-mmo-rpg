@@ -14,11 +14,13 @@ from basic_mmo_rpg.client.rendering import Renderer
 from basic_mmo_rpg.client.ui import ChatLine, TimedText
 from basic_mmo_rpg.domain.entities import WorldEntity
 from basic_mmo_rpg.domain.geometry import Rect, Vec2
+from basic_mmo_rpg.domain.inventory import ItemStack
 from basic_mmo_rpg.domain.movement import MovementIntent, PlayerState, move_player
 from basic_mmo_rpg.shared.protocol import (
     ProtocolError,
     ServerMessageType,
     entities_from_snapshot_payload,
+    inventory_items_from_payload,
     player_snapshots_from_payload,
 )
 from basic_mmo_rpg.storage.map_loader import load_tile_map
@@ -106,6 +108,8 @@ class GameClient:
         self.chat_input_active = False
         self.chat_input_text = ""
         self.chat_journal_visible = False
+        self.inventory_visible = False
+        self.inventory_items: list[ItemStack] = []
         self.chat_lines: deque[ChatLine] = deque(maxlen=MAX_CHAT_LOG_MESSAGES)
         self.speech_bubbles: dict[str, TimedText] = {}
         self.entity_speech_bubbles: dict[str, TimedText] = {}
@@ -175,6 +179,8 @@ class GameClient:
             chat_input_active=self.chat_input_active,
             chat_input_text=self.chat_input_text,
             chat_journal_visible=self.chat_journal_visible,
+            inventory_items=self.inventory_items,
+            inventory_visible=self.inventory_visible,
         )
         pygame.display.flip()
 
@@ -200,6 +206,8 @@ class GameClient:
             self.chat_input_text = ""
         elif event.key == pygame.K_j:
             self.chat_journal_visible = not self.chat_journal_visible
+        elif event.key == pygame.K_b:
+            self.inventory_visible = not self.inventory_visible
         elif event.key == pygame.K_f:
             self._send_interaction_under_cursor()
 
@@ -288,6 +296,8 @@ class GameClient:
                 self._apply_chat_message(message.payload)
             elif message.type == ServerMessageType.INTERACTION_RESULT:
                 self._apply_interaction_result(message.payload)
+            elif message.type == ServerMessageType.INVENTORY_UPDATED:
+                self._apply_inventory_updated(message.payload)
             elif message.type == ServerMessageType.ENTITY_REMOVED:
                 player_id = message.payload.get("id")
                 if isinstance(player_id, str):
@@ -374,6 +384,15 @@ class GameClient:
             text=text,
             expires_at=time.monotonic() + FLOATING_TEXT_SECONDS,
         )
+
+    def _apply_inventory_updated(self, payload: dict[str, object]) -> None:
+        """
+        Обновляет локальное отображение инвентаря из server authoritative payload-а.
+        """
+        try:
+            self.inventory_items = inventory_items_from_payload(payload)
+        except ProtocolError:
+            return
 
     def _predict_local_player(self, intent: MovementIntent, delta_seconds: float) -> None:
         """

@@ -8,7 +8,9 @@ import pygame
 from basic_mmo_rpg.client.app import GameClient, RemotePlayerView, _smooth_player_toward
 from basic_mmo_rpg.domain.entities import EntityKind, WorldEntity
 from basic_mmo_rpg.domain.geometry import Vec2
+from basic_mmo_rpg.domain.inventory import FISHING_ROD_ITEM_ID, ItemStack
 from basic_mmo_rpg.domain.movement import PlayerState
+from basic_mmo_rpg.shared.protocol import inventory_updated_payload
 
 
 def test_local_authoritative_snapshot_creates_correction_offset() -> None:
@@ -107,6 +109,21 @@ def test_chat_input_escape_cancels_input() -> None:
     assert client.chat_input_text == ""
 
 
+def test_inventory_hotkey_toggles_inventory_panel() -> None:
+    """
+    Проверяет, что клавиша B показывает и скрывает инвентарь.
+    """
+    client = object.__new__(GameClient)
+    client.chat_input_active = False
+    client.inventory_visible = False
+
+    client._handle_key_down(SimpleNamespace(key=pygame.K_b, unicode=""))
+    assert client.inventory_visible is True
+
+    client._handle_key_down(SimpleNamespace(key=pygame.K_b, unicode=""))
+    assert client.inventory_visible is False
+
+
 def test_client_applies_interaction_result_to_log_and_entity_bubble() -> None:
     """
     Проверяет, что клиент показывает результат взаимодействия в журнале и над объектом.
@@ -150,6 +167,19 @@ def test_client_finds_entity_strictly_under_cursor() -> None:
     assert client._entity_at_screen_position((88, 40)) is None
     assert client._entity_at_screen_position((70, 62)) is None
     assert client._entity_at_screen_position((20, 20)) is None
+
+
+def test_client_applies_inventory_update() -> None:
+    """
+    Проверяет, что клиент принимает authoritative-обновление инвентаря.
+    """
+    client = object.__new__(GameClient)
+    client.inventory_items = []
+    item = ItemStack(item_id=FISHING_ROD_ITEM_ID, display_name="Удочка", quantity=1)
+
+    client._apply_inventory_updated(inventory_updated_payload([item]))
+
+    assert client.inventory_items == [item]
 
 
 def _client_without_pygame(player: PlayerState) -> GameClient:

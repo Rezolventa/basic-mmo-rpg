@@ -4,6 +4,7 @@ import pytest
 
 from basic_mmo_rpg.domain.entities import EntityKind, WorldEntity
 from basic_mmo_rpg.domain.geometry import Vec2
+from basic_mmo_rpg.domain.inventory import FISHING_ROD_ITEM_ID, ItemStack
 from basic_mmo_rpg.domain.movement import MovementIntent, PlayerState
 from basic_mmo_rpg.shared.protocol import (
     ClientMessageType,
@@ -19,6 +20,8 @@ from basic_mmo_rpg.shared.protocol import (
     entity_snapshots_from_payload,
     interact_requested_payload,
     interaction_target_from_payload,
+    inventory_items_from_payload,
+    inventory_updated_payload,
     join_request_payload,
     movement_intent_from_payload,
     movement_intent_to_payload,
@@ -94,6 +97,17 @@ def test_interaction_target_payload_is_validated() -> None:
 
     with pytest.raises(ProtocolError):
         interaction_target_from_payload({"target_id": ""})
+
+
+def test_inventory_updated_payload_round_trips_items() -> None:
+    """
+    Проверяет, что обновление инвентаря сериализует и восстанавливает стаки предметов.
+    """
+    item = ItemStack(item_id=FISHING_ROD_ITEM_ID, display_name="Удочка", quantity=1)
+
+    payload = inventory_updated_payload([item])
+
+    assert inventory_items_from_payload(payload) == [item]
 
 
 def test_character_name_payload_is_trimmed_and_limited() -> None:

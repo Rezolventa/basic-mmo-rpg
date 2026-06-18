@@ -8,6 +8,7 @@ from typing import Any
 
 from basic_mmo_rpg.domain.entities import EntityKind, WorldEntity
 from basic_mmo_rpg.domain.geometry import Vec2
+from basic_mmo_rpg.domain.inventory import ItemStack
 from basic_mmo_rpg.domain.movement import MovementIntent, PlayerState
 
 
@@ -240,6 +241,61 @@ def interaction_result_payload(
         "text": text,
         "created_at": created_at,
     }
+
+
+def inventory_item_to_payload(item: ItemStack) -> dict[str, Any]:
+    """
+    Преобразует стак предметов в JSON-готовый элемент payload-а инвентаря.
+    """
+    return {
+        "item_id": item.item_id,
+        "display_name": item.display_name,
+        "quantity": item.quantity,
+    }
+
+
+def inventory_item_from_payload(payload: Mapping[str, Any]) -> ItemStack:
+    """
+    Создает стак предметов из одного элемента payload-а инвентаря.
+    """
+    item_id = payload.get("item_id")
+    display_name = payload.get("display_name")
+    quantity = payload.get("quantity")
+    if not isinstance(item_id, str) or not item_id:
+        msg = "inventory item_id must be a non-empty string"
+        raise ProtocolError(msg)
+    if not isinstance(display_name, str) or not display_name:
+        msg = "inventory display_name must be a non-empty string"
+        raise ProtocolError(msg)
+    if not isinstance(quantity, int) or quantity <= 0:
+        msg = "inventory quantity must be a positive integer"
+        raise ProtocolError(msg)
+    return ItemStack(item_id=item_id, display_name=display_name, quantity=quantity)
+
+
+def inventory_updated_payload(items: list[ItemStack]) -> dict[str, Any]:
+    """
+    Создает payload серверного обновления инвентаря.
+    """
+    return {"items": [inventory_item_to_payload(item) for item in items]}
+
+
+def inventory_items_from_payload(payload: Mapping[str, Any]) -> list[ItemStack]:
+    """
+    Извлекает список стаков предметов из payload-а обновления инвентаря.
+    """
+    raw_items = payload.get("items")
+    if not isinstance(raw_items, list):
+        msg = "inventory items must be a list"
+        raise ProtocolError(msg)
+
+    items: list[ItemStack] = []
+    for raw_item in raw_items:
+        if not isinstance(raw_item, dict):
+            msg = "inventory item must be an object"
+            raise ProtocolError(msg)
+        items.append(inventory_item_from_payload(raw_item))
+    return items
 
 
 def player_to_payload(player: PlayerState, name: str | None = None) -> dict[str, Any]:

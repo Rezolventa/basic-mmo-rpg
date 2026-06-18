@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from basic_mmo_rpg.domain.geometry import Vec2
+from basic_mmo_rpg.domain.inventory import ItemStack, item_definition_for, item_stack_for
 
 
 @dataclass(frozen=True, slots=True)
@@ -41,6 +42,18 @@ class CharacterRepository:
                     x REAL NOT NULL,
                     y REAL NOT NULL,
                     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS inventory_items (
+                    character_name TEXT NOT NULL,
+                    item_id TEXT NOT NULL,
+                    quantity INTEGER NOT NULL,
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (character_name, item_id),
+                    FOREIGN KEY (character_name) REFERENCES characters(name)
                 )
                 """
             )
@@ -85,6 +98,85 @@ class CharacterRepository:
                 """,
                 (name, position.x, position.y),
             )
+
+    def load_inventory(self, name: str) -> list[ItemStack]:
+        """
+        Загружает инвентарь персонажа как список стаков предметов.
+        """
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT item_id, quantity
+                FROM inventory_items
+                WHERE character_name = ? AND quantity > 0
+                ORDER BY item_id
+                """,
+                (name,),
+            ).fetchall()
+        return [item_stack_for(str(row["item_id"]), int(row["quantity"])) for row in rows]
+
+    def has_item(self, name: str, item_id: str) -> bool:
+        """
+        Проверяет, есть ли у персонажа хотя бы один предмет с указанным id.
+        """
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT quantity
+                FROM inventory_items
+                WHERE character_name = ? AND item_id = ? AND quantity > 0
+                """,
+                (name, item_id),
+            ).fetchone()
+        return row is not None
+
+    def add_item(self, name: str, item_id: str, quantity: int = 1) -> list[ItemStack]:
+        """
+        Добавляет предмет в инвентарь персонажа и возвращает обновленный инвентарь.
+        """
+        if quantity <= 0:
+            msg = "quantity must be positive"
+            raise ValueError(msg)
+
+        definition = item_definition_for(item_id)
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT quantity
+                FROM inventory_items
+                WHERE character_name = ? AND item_id = ?
+                """,
+                (name, item_id),
+            ).fetchone()
+            current_quantity = int(row["quantity"]) if row is not None else 0
+            next_quantity = current_quantity + quantity
+            if next_quantity > definition.stack_limit:
+                msg = f"item {item_id!r} stack limit exceeded"
+                raise ValueError(msg)
+            connection.execute(
+                """
+                INSERT INTO inventory_items (character_name, item_id, quantity, updated_at)
+                VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(character_name, item_id) DO UPDATE SET
+                    quantity = excluded.quantity,
+                    updated_at = CURRENT_TIMESTAMP
+                """,
+                (name, item_id, next_quantity),
+            )
+        return self.load_inventory(name)
+
+    def add_item_if_absent(
+        self,
+        name: str,
+        item_id: str,
+        quantity: int = 1,
+    ) -> tuple[list[ItemStack], bool]:
+        """
+        Добавляет предмет только если у персонажа еще нет такого item_id.
+        """
+        if self.has_item(name, item_id):
+            return self.load_inventory(name), False
+        return self.add_item(name, item_id, quantity), True
 
     def _connect(self) -> sqlite3.Connection:
         """

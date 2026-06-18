@@ -63,7 +63,7 @@
       "position": [640, 288],
       "size": [24, 30],
       "interaction_radius": 64,
-      "dialogue": "Hello, developer",
+      "dialogue": "Иди и поймай мне рыбу",
       "solid": true
     }
   ]
