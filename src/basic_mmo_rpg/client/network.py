@@ -17,6 +17,7 @@ from basic_mmo_rpg.shared.protocol import (
     decode_message,
     encode_message,
     interact_requested_payload,
+    interact_tile_requested_payload,
     join_request_payload,
     movement_intent_to_payload,
 )
@@ -100,6 +101,17 @@ class NetworkClient:
             ProtocolMessage(
                 type=ClientMessageType.INTERACT_REQUESTED,
                 payload=interact_requested_payload(target_id),
+            )
+        )
+
+    def send_tile_interaction_request(self, tile_x: int, tile_y: int) -> None:
+        """
+        Ставит запрос взаимодействия с тайлом карты в очередь отправки на сервер.
+        """
+        self._outgoing.put(
+            ProtocolMessage(
+                type=ClientMessageType.INTERACT_REQUESTED,
+                payload=interact_tile_requested_payload(tile_x, tile_y),
             )
         )
 

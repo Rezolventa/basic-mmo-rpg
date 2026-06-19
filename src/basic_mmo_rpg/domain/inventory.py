@@ -3,6 +3,20 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 FISHING_ROD_ITEM_ID = "fishing_rod"
+FISH_ITEM_ID = "fish"
+GOLD_ITEM_ID = "gold"
+
+
+class InventoryError(ValueError):
+    """
+    Сообщает о доменной ошибке операции с инвентарем.
+    """
+
+
+class InventoryLimitError(InventoryError):
+    """
+    Сообщает, что операция превысила лимит стака предмета.
+    """
 
 
 @dataclass(frozen=True, slots=True)
@@ -32,7 +46,17 @@ ITEM_DEFINITIONS: dict[str, ItemDefinition] = {
         item_id=FISHING_ROD_ITEM_ID,
         display_name="Удочка",
         stack_limit=1,
-    )
+    ),
+    FISH_ITEM_ID: ItemDefinition(
+        item_id=FISH_ITEM_ID,
+        display_name="Рыба",
+        stack_limit=999,
+    ),
+    GOLD_ITEM_ID: ItemDefinition(
+        item_id=GOLD_ITEM_ID,
+        display_name="Gold",
+        stack_limit=999,
+    ),
 }
 
 

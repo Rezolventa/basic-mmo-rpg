@@ -5,7 +5,12 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from basic_mmo_rpg.domain.geometry import Vec2
-from basic_mmo_rpg.domain.inventory import ItemStack, item_definition_for, item_stack_for
+from basic_mmo_rpg.domain.inventory import (
+    InventoryLimitError,
+    ItemStack,
+    item_definition_for,
+    item_stack_for,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -104,16 +109,7 @@ class CharacterRepository:
         Загружает инвентарь персонажа как список стаков предметов.
         """
         with self._connect() as connection:
-            rows = connection.execute(
-                """
-                SELECT item_id, quantity
-                FROM inventory_items
-                WHERE character_name = ? AND quantity > 0
-                ORDER BY item_id
-                """,
-                (name,),
-            ).fetchall()
-        return [item_stack_for(str(row["item_id"]), int(row["quantity"])) for row in rows]
+            return self._load_inventory(connection, name)
 
     def has_item(self, name: str, item_id: str) -> bool:
         """
@@ -130,6 +126,13 @@ class CharacterRepository:
             ).fetchone()
         return row is not None
 
+    def item_quantity(self, name: str, item_id: str) -> int:
+        """
+        Возвращает количество указанного предмета в инвентаре персонажа.
+        """
+        with self._connect() as connection:
+            return self._item_quantity(connection, name, item_id)
+
     def add_item(self, name: str, item_id: str, quantity: int = 1) -> list[ItemStack]:
         """
         Добавляет предмет в инвентарь персонажа и возвращает обновленный инвентарь.
@@ -140,29 +143,28 @@ class CharacterRepository:
 
         definition = item_definition_for(item_id)
         with self._connect() as connection:
-            row = connection.execute(
-                """
-                SELECT quantity
-                FROM inventory_items
-                WHERE character_name = ? AND item_id = ?
-                """,
-                (name, item_id),
-            ).fetchone()
-            current_quantity = int(row["quantity"]) if row is not None else 0
+            current_quantity = self._item_quantity(connection, name, item_id)
             next_quantity = current_quantity + quantity
             if next_quantity > definition.stack_limit:
                 msg = f"item {item_id!r} stack limit exceeded"
+                raise InventoryLimitError(msg)
+            self._set_item_quantity(connection, name, item_id, next_quantity)
+        return self.load_inventory(name)
+
+    def remove_item(self, name: str, item_id: str, quantity: int = 1) -> list[ItemStack]:
+        """
+        Снимает предмет из инвентаря персонажа и возвращает обновленный инвентарь.
+        """
+        if quantity <= 0:
+            msg = "quantity must be positive"
+            raise ValueError(msg)
+
+        with self._connect() as connection:
+            current_quantity = self._item_quantity(connection, name, item_id)
+            if current_quantity < quantity:
+                msg = f"not enough item {item_id!r}"
                 raise ValueError(msg)
-            connection.execute(
-                """
-                INSERT INTO inventory_items (character_name, item_id, quantity, updated_at)
-                VALUES (?, ?, ?, CURRENT_TIMESTAMP)
-                ON CONFLICT(character_name, item_id) DO UPDATE SET
-                    quantity = excluded.quantity,
-                    updated_at = CURRENT_TIMESTAMP
-                """,
-                (name, item_id, next_quantity),
-            )
+            self._set_item_quantity(connection, name, item_id, current_quantity - quantity)
         return self.load_inventory(name)
 
     def add_item_if_absent(
@@ -178,6 +180,42 @@ class CharacterRepository:
             return self.load_inventory(name), False
         return self.add_item(name, item_id, quantity), True
 
+    def exchange_items(
+        self,
+        name: str,
+        cost_item_id: str,
+        cost_quantity: int,
+        reward_item_id: str,
+        reward_quantity: int = 1,
+    ) -> tuple[list[ItemStack], bool]:
+        """
+        Атомарно списывает один предмет и начисляет другой предмет.
+        """
+        if cost_quantity <= 0 or reward_quantity <= 0:
+            msg = "exchange quantities must be positive"
+            raise ValueError(msg)
+
+        reward_definition = item_definition_for(reward_item_id)
+        with self._connect() as connection:
+            current_cost_quantity = self._item_quantity(connection, name, cost_item_id)
+            if current_cost_quantity < cost_quantity:
+                return self._load_inventory(connection, name), False
+
+            current_reward_quantity = self._item_quantity(connection, name, reward_item_id)
+            next_reward_quantity = current_reward_quantity + reward_quantity
+            if next_reward_quantity > reward_definition.stack_limit:
+                msg = f"item {reward_item_id!r} stack limit exceeded"
+                raise InventoryLimitError(msg)
+
+            self._set_item_quantity(
+                connection,
+                name,
+                cost_item_id,
+                current_cost_quantity - cost_quantity,
+            )
+            self._set_item_quantity(connection, name, reward_item_id, next_reward_quantity)
+            return self._load_inventory(connection, name), True
+
     def _connect(self) -> sqlite3.Connection:
         """
         Открывает SQLite-соединение с удобным доступом к колонкам по имени.
@@ -185,3 +223,68 @@ class CharacterRepository:
         connection = sqlite3.connect(self.database_path)
         connection.row_factory = sqlite3.Row
         return connection
+
+    def _load_inventory(self, connection: sqlite3.Connection, name: str) -> list[ItemStack]:
+        """
+        Загружает инвентарь персонажа через существующее SQLite-соединение.
+        """
+        rows = connection.execute(
+            """
+            SELECT item_id, quantity
+            FROM inventory_items
+            WHERE character_name = ? AND quantity > 0
+            ORDER BY item_id
+            """,
+            (name,),
+        ).fetchall()
+        return [item_stack_for(str(row["item_id"]), int(row["quantity"])) for row in rows]
+
+    def _item_quantity(
+        self,
+        connection: sqlite3.Connection,
+        name: str,
+        item_id: str,
+    ) -> int:
+        """
+        Возвращает количество предмета через существующее SQLite-соединение.
+        """
+        row = connection.execute(
+            """
+            SELECT quantity
+            FROM inventory_items
+            WHERE character_name = ? AND item_id = ?
+            """,
+            (name, item_id),
+        ).fetchone()
+        return int(row["quantity"]) if row is not None else 0
+
+    def _set_item_quantity(
+        self,
+        connection: sqlite3.Connection,
+        name: str,
+        item_id: str,
+        quantity: int,
+    ) -> None:
+        """
+        Записывает количество предмета через существующее SQLite-соединение.
+        """
+        if quantity <= 0:
+            connection.execute(
+                """
+                DELETE FROM inventory_items
+                WHERE character_name = ? AND item_id = ?
+                """,
+                (name, item_id),
+            )
+            return
+
+        connection.execute(
+            """
+            INSERT INTO inventory_items (character_name, item_id, quantity, updated_at)
+            VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(character_name, item_id) DO UPDATE SET
+                quantity = excluded.quantity,
+                updated_at = CURRENT_TIMESTAMP
+            """,
+            (name, item_id, quantity),
+        )

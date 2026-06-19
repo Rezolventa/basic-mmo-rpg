@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import random
 import time
 from pathlib import Path
 from typing import NoReturn
@@ -10,7 +11,8 @@ import pytest
 from websockets.asyncio.client import connect
 from websockets.asyncio.server import serve
 
-from basic_mmo_rpg.domain.inventory import FISHING_ROD_ITEM_ID
+from basic_mmo_rpg.domain.geometry import Vec2
+from basic_mmo_rpg.domain.inventory import FISH_ITEM_ID, FISHING_ROD_ITEM_ID, GOLD_ITEM_ID
 from basic_mmo_rpg.domain.movement import MovementIntent, PlayerState
 from basic_mmo_rpg.server.app import MultiplayerServer
 from basic_mmo_rpg.server.world import MultiplayerWorld
@@ -22,6 +24,7 @@ from basic_mmo_rpg.shared.protocol import (
     decode_message,
     encode_message,
     interact_requested_payload,
+    interact_tile_requested_payload,
     inventory_items_from_payload,
     join_request_payload,
     movement_intent_to_payload,
@@ -75,6 +78,27 @@ def _open_map_with_entities(
     return raw_map
 
 
+def _open_map_with_water() -> object:
+    """
+    Возвращает открытую карту с водой рядом со spawn-ом для тестов рыбалки.
+    """
+    return {
+        "tile_size": 32,
+        "spawn": [32, 32],
+        "legend": {
+            ".": {"name": "floor", "solid": False, "color": [50, 120, 60]},
+            "~": {"name": "water", "solid": True, "color": [43, 91, 151]},
+            "#": {"name": "wall", "solid": True, "color": [90, 90, 90]},
+        },
+        "tiles": [
+            "..........",
+            "..~.......",
+            "..........",
+            "..........",
+        ],
+    }
+
+
 def test_websocket_server_accepts_two_clients_and_broadcasts_movement(tmp_path: Path) -> None:
     """
     Проверяет websocket-сценарий с двумя клиентами и серверной обработкой движения.
@@ -122,6 +146,55 @@ def test_websocket_server_ignores_interaction_when_target_is_too_far(tmp_path: P
     Проверяет, что сервер молчит, если игрок слишком далеко от NPC.
     """
     asyncio.run(_interaction_too_far_smoke(tmp_path))
+
+
+def test_websocket_server_fishing_requires_rod(tmp_path: Path) -> None:
+    """
+    Проверяет, что рыбалка без удочки показывает только локальный пузырь.
+    """
+    asyncio.run(_fishing_requires_rod_smoke(tmp_path))
+
+
+def test_websocket_server_fishing_success_adds_fish(tmp_path: Path) -> None:
+    """
+    Проверяет успешную рыбалку и сохранение рыбы в инвентаре.
+    """
+    asyncio.run(_fishing_success_smoke(tmp_path))
+
+
+def test_websocket_server_fishing_failure_only_sends_result(tmp_path: Path) -> None:
+    """
+    Проверяет неудачную рыбалку без изменения инвентаря.
+    """
+    asyncio.run(_fishing_failure_smoke(tmp_path))
+
+
+def test_websocket_server_funday_exchanges_fish_for_gold(tmp_path: Path) -> None:
+    """
+    Проверяет обмен двух рыб на Gold при взаимодействии с Funday.
+    """
+    asyncio.run(_funday_exchange_smoke(tmp_path))
+
+
+def test_websocket_server_funday_grants_rod_before_exchange(tmp_path: Path) -> None:
+    """
+    Проверяет, что Funday сначала выдает удочку, даже если у игрока уже есть рыба.
+    """
+    asyncio.run(_funday_grants_rod_before_exchange_smoke(tmp_path))
+
+
+def test_websocket_server_fishing_stack_overflow_is_handled(tmp_path: Path) -> None:
+    """
+    Проверяет, что полный стак рыбы не обрывает соединение во время рыбалки.
+    """
+    asyncio.run(_fishing_stack_overflow_smoke(tmp_path))
+
+
+def test_websocket_server_exchange_stack_overflow_is_handled(tmp_path: Path) -> None:
+    """
+    Проверяет, что полный стак Gold не обрывает соединение во время обмена.
+    """
+    asyncio.run(_exchange_stack_overflow_smoke(tmp_path))
 
 
 async def _websocket_server_smoke(tmp_path: Path) -> None:
@@ -340,6 +413,295 @@ async def _interaction_too_far_smoke(tmp_path: Path) -> None:
         await _assert_no_message_type(first_client, ServerMessageType.INTERACTION_RESULT)
 
 
+async def _fishing_requires_rod_smoke(tmp_path: Path) -> None:
+    """
+    Запускает сервер и проверяет ответ на рыбалку без удочки.
+    """
+    multiplayer_server = _server_for_test(tmp_path, raw_map=_open_map_with_water())
+
+    async with _running_test_server(multiplayer_server) as uri, connect(uri) as first_client:
+        await _send_join(first_client, "Alice")
+        first_id = await _recv_player_id(first_client)
+
+        await first_client.send(
+            encode_message(
+                ProtocolMessage(
+                    type=ClientMessageType.INTERACT_REQUESTED,
+                    payload=interact_tile_requested_payload(2, 1),
+                )
+            )
+        )
+        message = await _recv_message_type(first_client, ServerMessageType.INTERACTION_RESULT)
+
+    assert message.payload["actor_id"] == first_id
+    assert message.payload["target_id"] == first_id
+    assert message.payload["target_name"] == "Alice"
+    assert message.payload["text"] == "Нужна удочка"
+    assert message.payload["add_to_journal"] is False
+    assert multiplayer_server.character_repository.load_inventory("Alice") == []
+
+
+async def _fishing_success_smoke(tmp_path: Path) -> None:
+    """
+    Запускает сервер и проверяет успешное получение рыбы из водного тайла.
+    """
+    multiplayer_server = _server_for_test(
+        tmp_path,
+        raw_map=_open_map_with_water(),
+        random_source=random.Random(1),
+    )
+    multiplayer_server.character_repository.load_or_create("Alice", Vec2(32, 32))
+    multiplayer_server.character_repository.add_item("Alice", FISHING_ROD_ITEM_ID)
+
+    async with _running_test_server(multiplayer_server) as uri, connect(uri) as first_client:
+        await _send_join(first_client, "Alice")
+        first_id = await _recv_player_id(first_client)
+        await _recv_message_type(first_client, ServerMessageType.INVENTORY_UPDATED)
+
+        await first_client.send(
+            encode_message(
+                ProtocolMessage(
+                    type=ClientMessageType.INTERACT_REQUESTED,
+                    payload=interact_tile_requested_payload(2, 1),
+                )
+            )
+        )
+        inventory_message = await _recv_message_type(
+            first_client,
+            ServerMessageType.INVENTORY_UPDATED,
+        )
+        result_message = await _recv_message_type(
+            first_client,
+            ServerMessageType.INTERACTION_RESULT,
+        )
+
+    inventory = inventory_items_from_payload(inventory_message.payload)
+    quantities = {item.item_id: item.quantity for item in inventory}
+    assert result_message.payload["actor_id"] == first_id
+    assert result_message.payload["target_id"] == first_id
+    assert result_message.payload["text"] == "Вы поймали рыбу"
+    assert result_message.payload["add_to_journal"] is True
+    assert quantities[FISHING_ROD_ITEM_ID] == 1
+    assert quantities[FISH_ITEM_ID] == 1
+    assert multiplayer_server.character_repository.item_quantity("Alice", FISH_ITEM_ID) == 1
+
+
+async def _fishing_failure_smoke(tmp_path: Path) -> None:
+    """
+    Запускает сервер и проверяет неудачную попытку рыбалки.
+    """
+    multiplayer_server = _server_for_test(
+        tmp_path,
+        raw_map=_open_map_with_water(),
+        random_source=random.Random(0),
+    )
+    multiplayer_server.character_repository.load_or_create("Alice", Vec2(32, 32))
+    multiplayer_server.character_repository.add_item("Alice", FISHING_ROD_ITEM_ID)
+
+    async with _running_test_server(multiplayer_server) as uri, connect(uri) as first_client:
+        await _send_join(first_client, "Alice")
+        first_id = await _recv_player_id(first_client)
+        await _recv_message_type(first_client, ServerMessageType.INVENTORY_UPDATED)
+
+        await first_client.send(
+            encode_message(
+                ProtocolMessage(
+                    type=ClientMessageType.INTERACT_REQUESTED,
+                    payload=interact_tile_requested_payload(2, 1),
+                )
+            )
+        )
+        result_message = await _recv_message_type(
+            first_client,
+            ServerMessageType.INTERACTION_RESULT,
+        )
+        await _assert_no_message_type(first_client, ServerMessageType.INVENTORY_UPDATED)
+
+    assert result_message.payload["actor_id"] == first_id
+    assert result_message.payload["target_id"] == first_id
+    assert result_message.payload["text"] == "Рыба сорвалась"
+    assert result_message.payload["add_to_journal"] is True
+    assert multiplayer_server.character_repository.item_quantity("Alice", FISH_ITEM_ID) == 0
+
+
+async def _funday_exchange_smoke(tmp_path: Path) -> None:
+    """
+    Запускает сервер и проверяет сдачу двух рыб NPC Funday.
+    """
+    multiplayer_server = _server_for_test(
+        tmp_path,
+        raw_map=_open_map_with_entities(npc_position=[64, 32]),
+    )
+    multiplayer_server.character_repository.load_or_create("Alice", Vec2(32, 32))
+    multiplayer_server.character_repository.add_item("Alice", FISHING_ROD_ITEM_ID)
+    multiplayer_server.character_repository.add_item("Alice", FISH_ITEM_ID, quantity=2)
+
+    async with _running_test_server(multiplayer_server) as uri, connect(uri) as first_client:
+        await _send_join(first_client, "Alice")
+        first_id = await _recv_player_id(first_client)
+        await _recv_message_type(first_client, ServerMessageType.INVENTORY_UPDATED)
+
+        await first_client.send(
+            encode_message(
+                ProtocolMessage(
+                    type=ClientMessageType.INTERACT_REQUESTED,
+                    payload=interact_requested_payload("npc-funday"),
+                )
+            )
+        )
+        result_message = await _recv_message_type(
+            first_client,
+            ServerMessageType.INTERACTION_RESULT,
+        )
+        inventory_message = await _recv_message_type(
+            first_client,
+            ServerMessageType.INVENTORY_UPDATED,
+        )
+
+    inventory = inventory_items_from_payload(inventory_message.payload)
+    quantities = {item.item_id: item.quantity for item in inventory}
+    assert result_message.payload["actor_id"] == first_id
+    assert result_message.payload["target_id"] == "npc-funday"
+    assert result_message.payload["target_name"] == "Funday"
+    assert result_message.payload["text"] == "Отличная рыба. Держи Gold."
+    assert quantities[FISHING_ROD_ITEM_ID] == 1
+    assert quantities[GOLD_ITEM_ID] == 1
+    assert FISH_ITEM_ID not in quantities
+    assert multiplayer_server.character_repository.item_quantity("Alice", FISH_ITEM_ID) == 0
+    assert multiplayer_server.character_repository.item_quantity("Alice", GOLD_ITEM_ID) == 1
+
+
+async def _funday_grants_rod_before_exchange_smoke(tmp_path: Path) -> None:
+    """
+    Запускает сервер и проверяет приоритет выдачи удочки над обменом рыбы.
+    """
+    multiplayer_server = _server_for_test(
+        tmp_path,
+        raw_map=_open_map_with_entities(npc_position=[64, 32]),
+    )
+    multiplayer_server.character_repository.load_or_create("Alice", Vec2(32, 32))
+    multiplayer_server.character_repository.add_item("Alice", FISH_ITEM_ID, quantity=2)
+
+    async with _running_test_server(multiplayer_server) as uri, connect(uri) as first_client:
+        await _send_join(first_client, "Alice")
+        first_id = await _recv_player_id(first_client)
+        initial_inventory_message = await _recv_message_type(
+            first_client,
+            ServerMessageType.INVENTORY_UPDATED,
+        )
+
+        await first_client.send(
+            encode_message(
+                ProtocolMessage(
+                    type=ClientMessageType.INTERACT_REQUESTED,
+                    payload=interact_requested_payload("npc-funday"),
+                )
+            )
+        )
+        result_message = await _recv_message_type(
+            first_client,
+            ServerMessageType.INTERACTION_RESULT,
+        )
+        inventory_message = await _recv_message_type(
+            first_client,
+            ServerMessageType.INVENTORY_UPDATED,
+        )
+
+    initial_quantities = {
+        item.item_id: item.quantity
+        for item in inventory_items_from_payload(initial_inventory_message.payload)
+    }
+    quantities = {item.item_id: item.quantity for item in inventory_items_from_payload(
+        inventory_message.payload
+    )}
+    assert result_message.payload["actor_id"] == first_id
+    assert result_message.payload["target_id"] == "npc-funday"
+    assert result_message.payload["text"] == "Иди и поймай мне рыбу"
+    assert initial_quantities[FISH_ITEM_ID] == 2
+    assert quantities[FISH_ITEM_ID] == 2
+    assert quantities[FISHING_ROD_ITEM_ID] == 1
+    assert GOLD_ITEM_ID not in quantities
+    assert multiplayer_server.character_repository.item_quantity("Alice", FISH_ITEM_ID) == 2
+    assert multiplayer_server.character_repository.item_quantity("Alice", GOLD_ITEM_ID) == 0
+
+
+async def _fishing_stack_overflow_smoke(tmp_path: Path) -> None:
+    """
+    Запускает сервер и проверяет отказ рыбалки при полном стаке рыбы.
+    """
+    multiplayer_server = _server_for_test(
+        tmp_path,
+        raw_map=_open_map_with_water(),
+        random_source=random.Random(1),
+    )
+    multiplayer_server.character_repository.load_or_create("Alice", Vec2(32, 32))
+    multiplayer_server.character_repository.add_item("Alice", FISHING_ROD_ITEM_ID)
+    multiplayer_server.character_repository.add_item("Alice", FISH_ITEM_ID, quantity=999)
+
+    async with _running_test_server(multiplayer_server) as uri, connect(uri) as first_client:
+        await _send_join(first_client, "Alice")
+        first_id = await _recv_player_id(first_client)
+        await _recv_message_type(first_client, ServerMessageType.INVENTORY_UPDATED)
+
+        await first_client.send(
+            encode_message(
+                ProtocolMessage(
+                    type=ClientMessageType.INTERACT_REQUESTED,
+                    payload=interact_tile_requested_payload(2, 1),
+                )
+            )
+        )
+        result_message = await _recv_message_type(
+            first_client,
+            ServerMessageType.INTERACTION_RESULT,
+        )
+        await _assert_no_message_type(first_client, ServerMessageType.INVENTORY_UPDATED)
+
+    assert result_message.payload["actor_id"] == first_id
+    assert result_message.payload["target_id"] == first_id
+    assert result_message.payload["text"] == "Инвентарь полон"
+    assert multiplayer_server.character_repository.item_quantity("Alice", FISH_ITEM_ID) == 999
+
+
+async def _exchange_stack_overflow_smoke(tmp_path: Path) -> None:
+    """
+    Запускает сервер и проверяет отказ обмена при полном стаке Gold.
+    """
+    multiplayer_server = _server_for_test(
+        tmp_path,
+        raw_map=_open_map_with_entities(npc_position=[64, 32]),
+    )
+    multiplayer_server.character_repository.load_or_create("Alice", Vec2(32, 32))
+    multiplayer_server.character_repository.add_item("Alice", FISHING_ROD_ITEM_ID)
+    multiplayer_server.character_repository.add_item("Alice", FISH_ITEM_ID, quantity=2)
+    multiplayer_server.character_repository.add_item("Alice", GOLD_ITEM_ID, quantity=999)
+
+    async with _running_test_server(multiplayer_server) as uri, connect(uri) as first_client:
+        await _send_join(first_client, "Alice")
+        first_id = await _recv_player_id(first_client)
+        await _recv_message_type(first_client, ServerMessageType.INVENTORY_UPDATED)
+
+        await first_client.send(
+            encode_message(
+                ProtocolMessage(
+                    type=ClientMessageType.INTERACT_REQUESTED,
+                    payload=interact_requested_payload("npc-funday"),
+                )
+            )
+        )
+        result_message = await _recv_message_type(
+            first_client,
+            ServerMessageType.INTERACTION_RESULT,
+        )
+        await _assert_no_message_type(first_client, ServerMessageType.INVENTORY_UPDATED)
+
+    assert result_message.payload["actor_id"] == first_id
+    assert result_message.payload["target_id"] == "npc-funday"
+    assert result_message.payload["text"] == "Инвентарь полон"
+    assert multiplayer_server.character_repository.item_quantity("Alice", FISH_ITEM_ID) == 2
+    assert multiplayer_server.character_repository.item_quantity("Alice", GOLD_ITEM_ID) == 999
+
+
 @contextlib.asynccontextmanager
 async def _running_test_server(multiplayer_server: MultiplayerServer):
     """
@@ -361,6 +723,7 @@ async def _running_test_server(multiplayer_server: MultiplayerServer):
 def _server_for_test(
     tmp_path: Path,
     raw_map: object | None = None,
+    random_source: random.Random | None = None,
 ) -> MultiplayerServer:
     """
     Создает тестовый сервер с временной SQLite-базой.
@@ -372,6 +735,7 @@ def _server_for_test(
         character_repository=repository,
         tick_rate=30.0,
         snapshot_rate=20.0,
+        random_source=random_source,
     )
 
 

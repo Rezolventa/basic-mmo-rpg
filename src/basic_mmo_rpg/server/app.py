@@ -4,6 +4,7 @@ import argparse
 import asyncio
 import contextlib
 import logging
+import random
 import time
 import uuid
 from dataclasses import dataclass
@@ -12,7 +13,13 @@ from pathlib import Path
 from websockets.asyncio.server import ServerConnection, serve
 
 from basic_mmo_rpg.domain.entities import EntityKind
-from basic_mmo_rpg.domain.inventory import FISHING_ROD_ITEM_ID
+from basic_mmo_rpg.domain.inventory import (
+    FISH_ITEM_ID,
+    FISHING_ROD_ITEM_ID,
+    GOLD_ITEM_ID,
+    InventoryLimitError,
+    ItemStack,
+)
 from basic_mmo_rpg.server.world import MultiplayerWorld
 from basic_mmo_rpg.shared.protocol import (
     ClientMessageType,
@@ -41,6 +48,12 @@ DEFAULT_TICK_RATE = 30.0
 DEFAULT_SNAPSHOT_RATE = 20.0
 DEFAULT_SAVE_INTERVAL = 5.0
 JOIN_TIMEOUT_SECONDS = 5.0
+FISHING_DISTANCE = 64.0
+FISHING_COOLDOWN_SECONDS = 1.0
+FISHING_SUCCESS_CHANCE = 0.5
+FUNDAY_REQUIRED_FISH = 2
+FUNDAY_GOLD_REWARD = 1
+INVENTORY_FULL_TEXT = "Инвентарь полон"
 
 logger = logging.getLogger(__name__)
 
@@ -69,6 +82,7 @@ class MultiplayerServer:
         tick_rate: float = DEFAULT_TICK_RATE,
         snapshot_rate: float = DEFAULT_SNAPSHOT_RATE,
         save_interval: float = DEFAULT_SAVE_INTERVAL,
+        random_source: random.Random | None = None,
     ) -> None:
         """
         Инициализирует состояние сервера, настройки таймингов и хранилище подключений.
@@ -81,6 +95,8 @@ class MultiplayerServer:
         self.connections: dict[str, ServerConnection] = {}
         self.sessions: dict[str, PlayerSession] = {}
         self.active_character_sessions: dict[str, str] = {}
+        self.fishing_available_at: dict[str, float] = {}
+        self.random = random_source or random.Random()
 
     async def run(self, host: str, port: int) -> None:
         """
@@ -283,17 +299,26 @@ class MultiplayerServer:
         """
         Проверяет запрос взаимодействия и отправляет результат только инициатору.
         """
-        target_id = interaction_target_from_payload(payload)
+        target = interaction_target_from_payload(payload)
+        if target.entity_id is not None:
+            await self._handle_entity_interaction(session, target.entity_id)
+        elif target.tile is not None:
+            await self._handle_tile_interaction(session, target.tile)
+
+    async def _handle_entity_interaction(self, session: PlayerSession, target_id: str) -> None:
+        """
+        Проверяет взаимодействие с объектом мира.
+        """
         player = self.world.players.get(session.player_id)
-        target = self.world.get_entity(target_id)
-        if player is None or target is None:
+        entity = self.world.get_entity(target_id)
+        if player is None or entity is None:
             logger.info(
                 "Interaction ignored: name=%s target_id=%s reason=missing_target",
                 session.character_name,
                 target_id,
             )
             return
-        if target.kind != EntityKind.NPC:
+        if entity.kind != EntityKind.NPC:
             logger.info(
                 "Interaction ignored: name=%s target_id=%s reason=unsupported_kind",
                 session.character_name,
@@ -301,14 +326,14 @@ class MultiplayerServer:
             )
             return
 
-        distance = (player.center - target.center).length
-        if distance > target.interaction_radius:
+        distance = (player.center - entity.center).length
+        if distance > entity.interaction_radius:
             logger.info(
                 "Interaction ignored: name=%s target_id=%s distance=%.2f radius=%.2f",
                 session.character_name,
                 target_id,
                 distance,
-                target.interaction_radius,
+                entity.interaction_radius,
             )
             return
 
@@ -317,20 +342,183 @@ class MultiplayerServer:
             session.character_name,
             target_id,
         )
+        if entity.entity_id == "npc-funday":
+            await self._handle_funday_interaction(
+                session,
+                entity.entity_id,
+                entity.name,
+                entity.dialogue,
+            )
+            return
+
         await self._send(
             session.websocket,
             ProtocolMessage(
                 type=ServerMessageType.INTERACTION_RESULT,
                 payload=interaction_result_payload(
                     actor_id=session.player_id,
-                    target_id=target.entity_id,
-                    target_name=target.name,
-                    text=target.dialogue,
+                    target_id=entity.entity_id,
+                    target_name=entity.name,
+                    text=entity.dialogue,
                     created_at=time.time(),
                 ),
             ),
         )
-        await self._grant_fishing_rod_if_needed(session)
+
+    async def _handle_funday_interaction(
+        self,
+        session: PlayerSession,
+        target_id: str,
+        target_name: str,
+        default_dialogue: str,
+    ) -> None:
+        """
+        Обрабатывает туториальную логику NPC Funday.
+        """
+        if not self.character_repository.has_item(session.character_name, FISHING_ROD_ITEM_ID):
+            await self._send_interaction_result(
+                session=session,
+                target_id=target_id,
+                target_name=target_name,
+                text=default_dialogue,
+            )
+            await self._grant_fishing_rod_if_needed(session)
+            return
+
+        fish_quantity = self.character_repository.item_quantity(
+            session.character_name,
+            FISH_ITEM_ID,
+        )
+        if fish_quantity >= FUNDAY_REQUIRED_FISH:
+            try:
+                inventory, exchanged = self.character_repository.exchange_items(
+                    name=session.character_name,
+                    cost_item_id=FISH_ITEM_ID,
+                    cost_quantity=FUNDAY_REQUIRED_FISH,
+                    reward_item_id=GOLD_ITEM_ID,
+                    reward_quantity=FUNDAY_GOLD_REWARD,
+                )
+            except InventoryLimitError as exc:
+                logger.info(
+                    "Inventory limit reached: name=%s error=%s",
+                    session.character_name,
+                    exc,
+                )
+                await self._send_interaction_result(
+                    session=session,
+                    target_id=target_id,
+                    target_name=target_name,
+                    text=INVENTORY_FULL_TEXT,
+                )
+                return
+            if exchanged:
+                await self._send_interaction_result(
+                    session=session,
+                    target_id=target_id,
+                    target_name=target_name,
+                    text="Отличная рыба. Держи Gold.",
+                )
+                await self._send_inventory_update(session, inventory)
+            return
+
+        await self._send_interaction_result(
+            session=session,
+            target_id=target_id,
+            target_name=target_name,
+            text=default_dialogue,
+        )
+
+    async def _handle_tile_interaction(
+        self,
+        session: PlayerSession,
+        tile: tuple[int, int],
+    ) -> None:
+        """
+        Проверяет взаимодействие с тайлом карты.
+        """
+        tile_x, tile_y = tile
+        if not self.world.tile_map.is_water_tile(tile_x, tile_y):
+            return
+
+        player = self.world.players.get(session.player_id)
+        if player is None:
+            return
+
+        tile_center = self.world.tile_map.tile_rect(tile_x, tile_y).center
+        if (player.center - tile_center).length > FISHING_DISTANCE:
+            return
+        if not self.character_repository.has_item(session.character_name, FISHING_ROD_ITEM_ID):
+            await self._send_interaction_result(
+                session=session,
+                target_id=session.player_id,
+                target_name=session.character_name,
+                text="Нужна удочка",
+                add_to_journal=False,
+            )
+            return
+
+        now = time.monotonic()
+        if now < self.fishing_available_at.get(session.character_name, 0.0):
+            return
+        self.fishing_available_at[session.character_name] = now + FISHING_COOLDOWN_SECONDS
+
+        if self.random.random() < FISHING_SUCCESS_CHANCE:
+            try:
+                inventory = self.character_repository.add_item(session.character_name, FISH_ITEM_ID)
+            except InventoryLimitError as exc:
+                logger.info(
+                    "Inventory limit reached: name=%s error=%s",
+                    session.character_name,
+                    exc,
+                )
+                await self._send_interaction_result(
+                    session=session,
+                    target_id=session.player_id,
+                    target_name=session.character_name,
+                    text=INVENTORY_FULL_TEXT,
+                )
+                return
+            await self._send_inventory_update(session, inventory)
+            await self._send_interaction_result(
+                session=session,
+                target_id=session.player_id,
+                target_name=session.character_name,
+                text="Вы поймали рыбу",
+            )
+            return
+
+        await self._send_interaction_result(
+            session=session,
+            target_id=session.player_id,
+            target_name=session.character_name,
+            text="Рыба сорвалась",
+        )
+
+    async def _send_interaction_result(
+        self,
+        session: PlayerSession,
+        target_id: str,
+        target_name: str,
+        text: str,
+        add_to_journal: bool = True,
+    ) -> None:
+        """
+        Отправляет результат взаимодействия одному клиенту.
+        """
+        await self._send(
+            session.websocket,
+            ProtocolMessage(
+                type=ServerMessageType.INTERACTION_RESULT,
+                payload=interaction_result_payload(
+                    actor_id=session.player_id,
+                    target_id=target_id,
+                    target_name=target_name,
+                    text=text,
+                    created_at=time.time(),
+                    add_to_journal=add_to_journal,
+                ),
+            ),
+        )
 
     async def _grant_fishing_rod_if_needed(self, session: PlayerSession) -> None:
         """
@@ -350,11 +538,16 @@ class MultiplayerServer:
         )
         await self._send_inventory_update(session)
 
-    async def _send_inventory_update(self, session: PlayerSession) -> None:
+    async def _send_inventory_update(
+        self,
+        session: PlayerSession,
+        inventory: list[ItemStack] | None = None,
+    ) -> None:
         """
         Отправляет актуальное состояние инвентаря одному клиенту.
         """
-        inventory = self.character_repository.load_inventory(session.character_name)
+        if inventory is None:
+            inventory = self.character_repository.load_inventory(session.character_name)
         await self._send(
             session.websocket,
             ProtocolMessage(

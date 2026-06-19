@@ -11,6 +11,7 @@ from basic_mmo_rpg.domain.geometry import Vec2
 from basic_mmo_rpg.domain.inventory import FISHING_ROD_ITEM_ID, ItemStack
 from basic_mmo_rpg.domain.movement import PlayerState
 from basic_mmo_rpg.shared.protocol import inventory_updated_payload
+from basic_mmo_rpg.storage.map_loader import tile_map_from_dict
 
 
 def test_local_authoritative_snapshot_creates_correction_offset() -> None:
@@ -131,6 +132,16 @@ def test_client_applies_interaction_result_to_log_and_entity_bubble() -> None:
     client = object.__new__(GameClient)
     client.chat_lines = deque(maxlen=50)
     client.entity_speech_bubbles = {}
+    client.world_entities = {
+        "npc-funday": WorldEntity(
+            entity_id="npc-funday",
+            kind=EntityKind.NPC,
+            name="Funday",
+            position=Vec2(64, 32),
+            width=24,
+            height=30,
+        )
+    }
 
     client._apply_interaction_result(
         {
@@ -145,6 +156,33 @@ def test_client_applies_interaction_result_to_log_and_entity_bubble() -> None:
     assert client.chat_lines[-1].name == "Funday"
     assert client.chat_lines[-1].text == "Hello, developer"
     assert client.entity_speech_bubbles["npc-funday"].text == "Hello, developer"
+
+
+def test_client_can_show_interaction_bubble_without_journal_entry() -> None:
+    """
+    Проверяет, что результат взаимодействия может показываться пузырем без записи в журнал.
+    """
+    client = object.__new__(GameClient)
+    client.chat_lines = deque(maxlen=50)
+    client.entity_speech_bubbles = {}
+    client.speech_bubbles = {}
+    client.player_names = {}
+    client.world_entities = {}
+
+    client._apply_interaction_result(
+        {
+            "actor_id": "p1",
+            "target_id": "p1",
+            "target_name": "Alice",
+            "text": "Нужна удочка",
+            "created_at": 123.0,
+            "add_to_journal": False,
+        }
+    )
+
+    assert list(client.chat_lines) == []
+    assert client.player_names["p1"] == "Alice"
+    assert client.speech_bubbles["p1"].text == "Нужна удочка"
 
 
 def test_client_finds_entity_strictly_under_cursor() -> None:
@@ -167,6 +205,33 @@ def test_client_finds_entity_strictly_under_cursor() -> None:
     assert client._entity_at_screen_position((88, 40)) is None
     assert client._entity_at_screen_position((70, 62)) is None
     assert client._entity_at_screen_position((20, 20)) is None
+
+
+def test_client_finds_water_tile_under_cursor() -> None:
+    """
+    Проверяет выбор водного тайла по экранной позиции курсора.
+    """
+    client = object.__new__(GameClient)
+    client.camera = SimpleNamespace(screen_to_world=lambda position: Vec2(*position))
+    client.tile_map = tile_map_from_dict(
+        {
+            "tile_size": 32,
+            "spawn": [32, 32],
+            "legend": {
+                ".": {"name": "floor", "solid": False, "color": [50, 120, 60]},
+                "~": {"name": "water", "solid": True, "color": [43, 91, 151]},
+            },
+            "tiles": [
+                ".....",
+                "..~..",
+                ".....",
+            ],
+        }
+    )
+
+    assert client._water_tile_at_screen_position((70, 40)) == (2, 1)
+    assert client._water_tile_at_screen_position((40, 40)) is None
+    assert client._water_tile_at_screen_position((999, 999)) is None
 
 
 def test_client_applies_inventory_update() -> None:

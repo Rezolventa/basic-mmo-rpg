@@ -80,6 +80,16 @@ class EntitySnapshot:
     state: WorldEntity
 
 
+@dataclass(frozen=True, slots=True)
+class InteractionTarget:
+    """
+    Хранит цель клиентского запроса взаимодействия.
+    """
+
+    entity_id: str | None = None
+    tile: tuple[int, int] | None = None
+
+
 def encode_message(message: ProtocolMessage) -> str:
     """
     Сериализует протокольное сообщение в компактную JSON-строку.
@@ -213,15 +223,33 @@ def interact_requested_payload(target_id: str) -> dict[str, Any]:
     return {"target_id": target_id}
 
 
-def interaction_target_from_payload(payload: Mapping[str, Any]) -> str:
+def interact_tile_requested_payload(tile_x: int, tile_y: int) -> dict[str, Any]:
     """
-    Извлекает id цели из payload-а запроса взаимодействия.
+    Создает payload клиентского запроса взаимодействия с тайлом карты.
+    """
+    return {"target_tile": [tile_x, tile_y]}
+
+
+def interaction_target_from_payload(payload: Mapping[str, Any]) -> InteractionTarget:
+    """
+    Извлекает цель из payload-а запроса взаимодействия.
     """
     target_id = payload.get("target_id")
-    if not isinstance(target_id, str) or not target_id:
-        msg = "interaction target_id must be a non-empty string"
+    target_tile = payload.get("target_tile")
+
+    if target_id is not None and target_tile is not None:
+        msg = "interaction target must contain only one target"
         raise ProtocolError(msg)
-    return target_id
+    if target_id is not None:
+        if not isinstance(target_id, str) or not target_id:
+            msg = "interaction target_id must be a non-empty string"
+            raise ProtocolError(msg)
+        return InteractionTarget(entity_id=target_id)
+    if target_tile is not None:
+        return InteractionTarget(tile=_tile_from_payload(target_tile))
+
+    msg = "interaction target is required"
+    raise ProtocolError(msg)
 
 
 def interaction_result_payload(
@@ -230,6 +258,7 @@ def interaction_result_payload(
     target_name: str,
     text: str,
     created_at: float,
+    add_to_journal: bool = True,
 ) -> dict[str, Any]:
     """
     Создает payload серверного результата взаимодействия.
@@ -240,6 +269,7 @@ def interaction_result_payload(
         "target_name": target_name,
         "text": text,
         "created_at": created_at,
+        "add_to_journal": add_to_journal,
     }
 
 
@@ -506,3 +536,25 @@ def _number_field(payload: Mapping[str, Any], key: str) -> float:
         msg = f"{key} must be a number"
         raise ProtocolError(msg)
     return float(value)
+
+
+def _tile_from_payload(raw_tile: Any) -> tuple[int, int]:
+    """
+    Читает координаты тайла из payload-а запроса взаимодействия.
+    """
+    if not isinstance(raw_tile, list) or len(raw_tile) != 2:
+        msg = "interaction target_tile must be a two-item list"
+        raise ProtocolError(msg)
+    tile_x, tile_y = raw_tile
+    if (
+        not isinstance(tile_x, int)
+        or isinstance(tile_x, bool)
+        or not isinstance(tile_y, int)
+        or isinstance(tile_y, bool)
+    ):
+        msg = "interaction target_tile coordinates must be integers"
+        raise ProtocolError(msg)
+    if tile_x < 0 or tile_y < 0:
+        msg = "interaction target_tile coordinates must be non-negative"
+        raise ProtocolError(msg)
+    return tile_x, tile_y

@@ -5,7 +5,12 @@ from pathlib import Path
 import pytest
 
 from basic_mmo_rpg.domain.geometry import Vec2
-from basic_mmo_rpg.domain.inventory import FISHING_ROD_ITEM_ID
+from basic_mmo_rpg.domain.inventory import (
+    FISH_ITEM_ID,
+    FISHING_ROD_ITEM_ID,
+    GOLD_ITEM_ID,
+    InventoryLimitError,
+)
 from basic_mmo_rpg.storage.characters import CharacterRepository
 
 
@@ -71,5 +76,96 @@ def test_character_repository_rejects_stack_limit_overflow(tmp_path: Path) -> No
 
     repository.add_item("Alice", FISHING_ROD_ITEM_ID)
 
-    with pytest.raises(ValueError):
+    with pytest.raises(InventoryLimitError):
         repository.add_item("Alice", FISHING_ROD_ITEM_ID)
+
+
+def test_character_repository_removes_inventory_items(tmp_path: Path) -> None:
+    """
+    Проверяет списание предметов и удаление пустого стака из инвентаря.
+    """
+    repository = CharacterRepository(tmp_path / "characters.sqlite3")
+    repository.initialize()
+    repository.load_or_create("Alice", Vec2(32, 48))
+
+    repository.add_item("Alice", FISH_ITEM_ID, quantity=2)
+    first_inventory = repository.remove_item("Alice", FISH_ITEM_ID)
+    second_inventory = repository.remove_item("Alice", FISH_ITEM_ID)
+
+    assert first_inventory[0].item_id == FISH_ITEM_ID
+    assert first_inventory[0].quantity == 1
+    assert second_inventory == []
+
+    with pytest.raises(ValueError):
+        repository.remove_item("Alice", FISH_ITEM_ID)
+
+
+def test_character_repository_exchanges_items_atomically(tmp_path: Path) -> None:
+    """
+    Проверяет атомарный обмен двух рыб на Gold.
+    """
+    repository = CharacterRepository(tmp_path / "characters.sqlite3")
+    repository.initialize()
+    repository.load_or_create("Alice", Vec2(32, 48))
+
+    repository.add_item("Alice", FISH_ITEM_ID, quantity=3)
+    inventory, exchanged = repository.exchange_items(
+        name="Alice",
+        cost_item_id=FISH_ITEM_ID,
+        cost_quantity=2,
+        reward_item_id=GOLD_ITEM_ID,
+    )
+
+    quantities = {item.item_id: item.quantity for item in inventory}
+    assert exchanged is True
+    assert quantities[FISH_ITEM_ID] == 1
+    assert quantities[GOLD_ITEM_ID] == 1
+    assert repository.item_quantity("Alice", FISH_ITEM_ID) == 1
+    assert repository.item_quantity("Alice", GOLD_ITEM_ID) == 1
+
+
+def test_character_repository_exchange_does_not_change_inventory_without_cost(
+    tmp_path: Path,
+) -> None:
+    """
+    Проверяет, что обмен без нужного количества предметов не меняет инвентарь.
+    """
+    repository = CharacterRepository(tmp_path / "characters.sqlite3")
+    repository.initialize()
+    repository.load_or_create("Alice", Vec2(32, 48))
+
+    repository.add_item("Alice", FISH_ITEM_ID)
+    inventory, exchanged = repository.exchange_items(
+        name="Alice",
+        cost_item_id=FISH_ITEM_ID,
+        cost_quantity=2,
+        reward_item_id=GOLD_ITEM_ID,
+    )
+
+    assert exchanged is False
+    assert inventory[0].item_id == FISH_ITEM_ID
+    assert inventory[0].quantity == 1
+    assert repository.item_quantity("Alice", GOLD_ITEM_ID) == 0
+
+
+def test_character_repository_exchange_rejects_reward_stack_overflow(tmp_path: Path) -> None:
+    """
+    Проверяет, что обмен не списывает предметы, если награда переполнит стак.
+    """
+    repository = CharacterRepository(tmp_path / "characters.sqlite3")
+    repository.initialize()
+    repository.load_or_create("Alice", Vec2(32, 48))
+
+    repository.add_item("Alice", FISH_ITEM_ID, quantity=2)
+    repository.add_item("Alice", GOLD_ITEM_ID, quantity=999)
+
+    with pytest.raises(InventoryLimitError):
+        repository.exchange_items(
+            name="Alice",
+            cost_item_id=FISH_ITEM_ID,
+            cost_quantity=2,
+            reward_item_id=GOLD_ITEM_ID,
+        )
+
+    assert repository.item_quantity("Alice", FISH_ITEM_ID) == 2
+    assert repository.item_quantity("Alice", GOLD_ITEM_ID) == 999

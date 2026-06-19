@@ -9,6 +9,7 @@ from basic_mmo_rpg.domain.movement import MovementIntent, PlayerState
 from basic_mmo_rpg.shared.protocol import (
     ClientMessageType,
     EntitySnapshot,
+    InteractionTarget,
     PlayerSnapshot,
     ProtocolError,
     ProtocolMessage,
@@ -19,6 +20,7 @@ from basic_mmo_rpg.shared.protocol import (
     entities_from_snapshot_payload,
     entity_snapshots_from_payload,
     interact_requested_payload,
+    interact_tile_requested_payload,
     interaction_target_from_payload,
     inventory_items_from_payload,
     inventory_updated_payload,
@@ -93,10 +95,22 @@ def test_interaction_target_payload_is_validated() -> None:
     """
     Проверяет payload запроса взаимодействия с объектом мира.
     """
-    assert interaction_target_from_payload(interact_requested_payload("npc-funday")) == "npc-funday"
+    assert interaction_target_from_payload(
+        interact_requested_payload("npc-funday")
+    ) == InteractionTarget(entity_id="npc-funday")
+
+    assert interaction_target_from_payload(interact_tile_requested_payload(3, 4)) == (
+        InteractionTarget(tile=(3, 4))
+    )
 
     with pytest.raises(ProtocolError):
         interaction_target_from_payload({"target_id": ""})
+    with pytest.raises(ProtocolError):
+        interaction_target_from_payload({"target_id": "npc-funday", "target_tile": [3, 4]})
+    with pytest.raises(ProtocolError):
+        interaction_target_from_payload({"target_tile": [True, 4]})
+    with pytest.raises(ProtocolError):
+        interaction_target_from_payload({"target_tile": [-1, 4]})
 
 
 def test_inventory_updated_payload_round_trips_items() -> None:

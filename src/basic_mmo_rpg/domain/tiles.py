@@ -115,6 +115,30 @@ class TileMap:
             raise IndexError(msg)
         return self.tiles[tile_y][tile_x]
 
+    def tile_coordinates_at(self, position: Vec2) -> tuple[int, int] | None:
+        """
+        Возвращает координаты тайла под мировой позицией или `None` за пределами карты.
+        """
+        tile_x = floor(position.x / self.tile_size)
+        tile_y = floor(position.y / self.tile_size)
+        if not self.in_bounds(tile_x, tile_y):
+            return None
+        return tile_x, tile_y
+
+    def tile_rect(self, tile_x: int, tile_y: int) -> Rect:
+        """
+        Возвращает прямоугольник тайла в мировых координатах.
+        """
+        if not self.in_bounds(tile_x, tile_y):
+            msg = f"tile coordinates out of bounds: ({tile_x}, {tile_y})"
+            raise IndexError(msg)
+        return Rect(
+            x=tile_x * self.tile_size,
+            y=tile_y * self.tile_size,
+            width=self.tile_size,
+            height=self.tile_size,
+        )
+
     def is_solid_tile(self, tile_x: int, tile_y: int) -> bool:
         """
         Проверяет, является ли тайл непроходимым.
@@ -123,6 +147,15 @@ class TileMap:
             return True
         tile_key = self.tile_at(tile_x, tile_y)
         return self.definitions[tile_key].solid
+
+    def is_water_tile(self, tile_x: int, tile_y: int) -> bool:
+        """
+        Проверяет, является ли тайл водой.
+        """
+        if not self.in_bounds(tile_x, tile_y):
+            return False
+        tile_key = self.tile_at(tile_x, tile_y)
+        return self.definitions[tile_key].name == "water"
 
     def is_rect_blocked(self, rect: Rect, blockers: Iterable[Rect] = ()) -> bool:
         """

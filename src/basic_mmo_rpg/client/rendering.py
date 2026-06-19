@@ -23,6 +23,8 @@ NPC_BODY = (76, 96, 74)
 NPC_TUNIC = (197, 178, 112)
 NPC_OUTLINE = (28, 35, 28)
 HOVER_OUTLINE = (238, 216, 112)
+WATER_HOVER_FILL = (112, 190, 235, 70)
+WATER_HOVER_BORDER = (178, 226, 250)
 TEXT_COLOR = (236, 238, 241)
 MUTED_TEXT_COLOR = (180, 187, 196)
 BUBBLE_BACKGROUND = (20, 22, 26)
@@ -60,6 +62,7 @@ class Renderer:
         name_tags: Mapping[str, str] | None = None,
         entity_speech_bubbles: Mapping[str, str] | None = None,
         hovered_entity_id: str | None = None,
+        hovered_tile: tuple[int, int] | None = None,
         chat_lines: Sequence[ChatLine] = (),
         chat_input_active: bool = False,
         chat_input_text: str = "",
@@ -79,6 +82,8 @@ class Renderer:
 
         screen.fill(BACKGROUND)
         self._draw_map(screen, camera)
+        if hovered_tile is not None:
+            self._draw_hovered_tile(screen, camera, hovered_tile)
         for entity in entity_list:
             self._draw_entity(
                 screen,
@@ -142,6 +147,29 @@ class Renderer:
                 world_position = Vec2(tile_x * tile_size, tile_y * tile_size)
                 screen_position = camera.world_to_screen(world_position)
                 screen.blit(surface, screen_position)
+
+    def _draw_hovered_tile(
+        self,
+        screen: pygame.Surface,
+        camera: Camera,
+        tile: tuple[int, int],
+    ) -> None:
+        """
+        Рисует подсветку тайла под курсором.
+        """
+        tile_x, tile_y = tile
+        tile_rect = self.tile_map.tile_rect(tile_x, tile_y)
+        screen_position = camera.world_to_screen(Vec2(tile_rect.x, tile_rect.y))
+        rect = pygame.Rect(
+            screen_position[0],
+            screen_position[1],
+            int(tile_rect.width),
+            int(tile_rect.height),
+        )
+        overlay = pygame.Surface(rect.size, pygame.SRCALPHA)
+        overlay.fill(WATER_HOVER_FILL)
+        screen.blit(overlay, rect.topleft)
+        pygame.draw.rect(screen, WATER_HOVER_BORDER, rect, width=2)
 
     def _draw_player(
         self,

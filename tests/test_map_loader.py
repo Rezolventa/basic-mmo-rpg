@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from basic_mmo_rpg.domain.entities import EntityKind
-from basic_mmo_rpg.domain.geometry import Rect
+from basic_mmo_rpg.domain.geometry import Rect, Vec2
 from basic_mmo_rpg.storage.map_loader import load_tile_map
 
 
@@ -25,6 +25,9 @@ def test_starter_map_loads() -> None:
     assert tile_map.entities[0].kind == EntityKind.NPC
     assert tile_map.entities[0].name == "Funday"
     assert tile_map.entities[0].dialogue == "Иди и поймай мне рыбу"
+    assert tile_map.is_water_tile(8, 14)
+    assert tile_map.tile_coordinates_at(Vec2(8 * 32 + 1, 14 * 32 + 1)) == (8, 14)
+    assert tile_map.tile_rect(8, 14).left == 8 * 32
 
 
 def test_rect_outside_map_is_blocked() -> None:

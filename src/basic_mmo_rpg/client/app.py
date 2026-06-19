@@ -103,6 +103,7 @@ class GameClient:
             entity.entity_id: entity for entity in self.tile_map.entities
         }
         self.hovered_entity_id: str | None = None
+        self.hovered_tile: tuple[int, int] | None = None
         self.local_player_id: str | None = PLAYER_ID
         self.player_names: dict[str, str] = {PLAYER_ID: self.local_character_name}
         self.chat_input_active = False
@@ -144,7 +145,7 @@ class GameClient:
         Обновляет локальный ввод, состояние игрока и камеру за один кадр.
         """
         self._prune_timed_texts(time.monotonic())
-        self._update_hovered_entity()
+        self._update_hovered_targets()
         intent = self._read_movement_intent()
         self.network_client.send_movement_intent(intent)
         self._apply_network_messages()
@@ -175,6 +176,7 @@ class GameClient:
             name_tags=_timed_text_values(self.name_tags),
             entity_speech_bubbles=_timed_text_values(self.entity_speech_bubbles),
             hovered_entity_id=self.hovered_entity_id,
+            hovered_tile=self.hovered_tile,
             chat_lines=list(self.chat_lines),
             chat_input_active=self.chat_input_active,
             chat_input_text=self.chat_input_text,
@@ -258,9 +260,13 @@ class GameClient:
         Отправляет запрос взаимодействия с объектом, который находится строго под курсором.
         """
         entity = self._entity_at_screen_position(pygame.mouse.get_pos())
-        if entity is None:
+        if entity is not None:
+            self.network_client.send_interaction_request(entity.entity_id)
             return
-        self.network_client.send_interaction_request(entity.entity_id)
+
+        tile = self._water_tile_at_screen_position(pygame.mouse.get_pos())
+        if tile is not None:
+            self.network_client.send_tile_interaction_request(*tile)
 
     def _read_movement_intent(self) -> MovementIntent:
         """
@@ -365,6 +371,7 @@ class GameClient:
         target_name = payload.get("target_name")
         text = payload.get("text")
         created_at = payload.get("created_at")
+        add_to_journal = payload.get("add_to_journal", True)
         if not isinstance(target_id, str) or not isinstance(target_name, str):
             return
         if not isinstance(text, str):
@@ -372,18 +379,24 @@ class GameClient:
         if not isinstance(created_at, int | float):
             created_at = time.time()
 
-        self.chat_lines.append(
-            ChatLine(
-                player_id=target_id,
-                name=target_name,
-                text=text,
-                created_at=float(created_at),
+        if isinstance(add_to_journal, bool) and add_to_journal:
+            self.chat_lines.append(
+                ChatLine(
+                    player_id=target_id,
+                    name=target_name,
+                    text=text,
+                    created_at=float(created_at),
+                )
             )
-        )
-        self.entity_speech_bubbles[target_id] = TimedText(
+        timed_text = TimedText(
             text=text,
             expires_at=time.monotonic() + FLOATING_TEXT_SECONDS,
         )
+        if target_id in self.world_entities:
+            self.entity_speech_bubbles[target_id] = timed_text
+        else:
+            self.player_names[target_id] = target_name
+            self.speech_bubbles[target_id] = timed_text
 
     def _apply_inventory_updated(self, payload: dict[str, object]) -> None:
         """
@@ -483,12 +496,16 @@ class GameClient:
         x, y = self.camera.world_to_screen(player.position)
         return pygame.Rect(x, y, player.width, player.height)
 
-    def _update_hovered_entity(self) -> None:
+    def _update_hovered_targets(self) -> None:
         """
-        Обновляет id объекта мира, который находится под курсором мыши.
+        Обновляет объект или водный тайл под курсором мыши.
         """
-        entity = self._entity_at_screen_position(pygame.mouse.get_pos())
+        mouse_position = pygame.mouse.get_pos()
+        entity = self._entity_at_screen_position(mouse_position)
         self.hovered_entity_id = entity.entity_id if entity is not None else None
+        self.hovered_tile = None if entity is not None else self._water_tile_at_screen_position(
+            mouse_position
+        )
 
     def _entity_at_screen_position(self, position: tuple[int, int]) -> WorldEntity | None:
         """
@@ -499,6 +516,19 @@ class GameClient:
             if entity.rect.contains_point(world_position):
                 return entity
         return None
+
+    def _water_tile_at_screen_position(self, position: tuple[int, int]) -> tuple[int, int] | None:
+        """
+        Возвращает координаты водного тайла под экранной позицией курсора.
+        """
+        world_position = self.camera.screen_to_world(position)
+        tile = self.tile_map.tile_coordinates_at(world_position)
+        if tile is None:
+            return None
+        tile_x, tile_y = tile
+        if not self.tile_map.is_water_tile(tile_x, tile_y):
+            return None
+        return tile
 
     def _solid_entity_rects(self) -> tuple[Rect, ...]:
         """
