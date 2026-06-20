@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from basic_mmo_rpg.domain.entities import EntityKind, WorldEntity
+from basic_mmo_rpg.domain.equipment import MAIN_HAND_SLOT, Equipment
 from basic_mmo_rpg.domain.geometry import Vec2
 from basic_mmo_rpg.domain.inventory import FISHING_ROD_ITEM_ID, ItemStack
 from basic_mmo_rpg.domain.movement import MovementIntent, PlayerState
@@ -19,6 +20,11 @@ from basic_mmo_rpg.shared.protocol import (
     encode_message,
     entities_from_snapshot_payload,
     entity_snapshots_from_payload,
+    equip_item_id_from_payload,
+    equip_item_requested_payload,
+    equipment_from_payload,
+    equipment_slot_from_payload,
+    equipment_updated_payload,
     interact_requested_payload,
     interact_tile_requested_payload,
     interaction_target_from_payload,
@@ -29,6 +35,7 @@ from basic_mmo_rpg.shared.protocol import (
     movement_intent_to_payload,
     player_snapshots_from_payload,
     players_from_snapshot_payload,
+    unequip_item_requested_payload,
     world_snapshot_payload,
 )
 
@@ -122,6 +129,27 @@ def test_inventory_updated_payload_round_trips_items() -> None:
     payload = inventory_updated_payload([item])
 
     assert inventory_items_from_payload(payload) == [item]
+
+
+def test_equipment_payloads_round_trip() -> None:
+    """
+    Проверяет payload-ы экипировки предмета, снятия слота и server update-а.
+    """
+    equipment = Equipment(main_hand=FISHING_ROD_ITEM_ID)
+
+    assert equip_item_id_from_payload(
+        equip_item_requested_payload(FISHING_ROD_ITEM_ID)
+    ) == FISHING_ROD_ITEM_ID
+    assert equipment_slot_from_payload(unequip_item_requested_payload()) == MAIN_HAND_SLOT
+    assert equipment_from_payload(equipment_updated_payload(equipment)) == equipment
+    assert equipment_from_payload({"main_hand": None}) == Equipment()
+
+    with pytest.raises(ProtocolError):
+        equip_item_id_from_payload({"item_id": ""})
+    with pytest.raises(ProtocolError):
+        equipment_slot_from_payload({"slot": "head"})
+    with pytest.raises(ProtocolError):
+        equipment_from_payload({"main_hand": ""})
 
 
 def test_character_name_payload_is_trimmed_and_limited() -> None:

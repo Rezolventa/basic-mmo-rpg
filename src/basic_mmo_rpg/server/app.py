@@ -13,6 +13,11 @@ from pathlib import Path
 from websockets.asyncio.server import ServerConnection, serve
 
 from basic_mmo_rpg.domain.entities import EntityKind
+from basic_mmo_rpg.domain.equipment import (
+    MAIN_HAND_SLOT,
+    Equipment,
+    EquipmentError,
+)
 from basic_mmo_rpg.domain.inventory import (
     FISH_ITEM_ID,
     FISHING_ROD_ITEM_ID,
@@ -35,6 +40,9 @@ from basic_mmo_rpg.shared.protocol import (
     chat_text_from_payload,
     decode_message,
     encode_message,
+    equip_item_id_from_payload,
+    equipment_slot_from_payload,
+    equipment_updated_payload,
     interaction_result_payload,
     interaction_target_from_payload,
     inventory_updated_payload,
@@ -101,7 +109,7 @@ TILE_GATHERING_RULES: dict[str, TileGatheringRule] = {
         tool_item_id=FISHING_ROD_ITEM_ID,
         reward_item_id=FISH_ITEM_ID,
         success_chance=FISHING_SUCCESS_CHANCE,
-        missing_tool_text="Нужна удочка",
+        missing_tool_text="Нужна удочка в руке",
         success_text="Вы поймали рыбу",
         failure_text="Рыба сорвалась",
     ),
@@ -110,7 +118,7 @@ TILE_GATHERING_RULES: dict[str, TileGatheringRule] = {
         tool_item_id=LUMBER_AXE_ITEM_ID,
         reward_item_id=LOG_ITEM_ID,
         success_chance=LUMBERJACKING_SUCCESS_CHANCE,
-        missing_tool_text="Нужен топор",
+        missing_tool_text="Нужен топор в руке",
         success_text="Вы нарубили древесины",
     ),
     "rock": TileGatheringRule(
@@ -118,7 +126,7 @@ TILE_GATHERING_RULES: dict[str, TileGatheringRule] = {
         tool_item_id=PICKAXE_ITEM_ID,
         reward_item_id=STONE_ITEM_ID,
         success_chance=MINING_SUCCESS_CHANCE,
-        missing_tool_text="Нужна кирка",
+        missing_tool_text="Нужна кирка в руке",
         success_text="Вы добыли камень",
         failure_text="Не удалось добыть камень",
     ),
@@ -182,6 +190,7 @@ class MultiplayerServer:
                 ),
             )
             await self._send_inventory_update(session)
+            await self._send_equipment_update(session)
             await self._broadcast_snapshot()
 
             async for raw_message in websocket:
@@ -320,9 +329,56 @@ class MultiplayerServer:
                 await self._handle_chat_message(session, message.payload)
             elif message.type == ClientMessageType.INTERACT_REQUESTED:
                 await self._handle_interaction(session, message.payload)
+            elif message.type == ClientMessageType.EQUIP_ITEM_REQUESTED:
+                await self._handle_equip_item(session, message.payload)
+            elif message.type == ClientMessageType.UNEQUIP_ITEM_REQUESTED:
+                await self._handle_unequip_item(session, message.payload)
         except (ProtocolError, UnicodeDecodeError) as exc:
             await self._send_error(session.player_id, str(exc))
             logger.warning("Protocol error from %s: %s", session.character_name, exc)
+
+    async def _handle_equip_item(
+        self,
+        session: PlayerSession,
+        payload: dict[str, object],
+    ) -> None:
+        """
+        Проверяет и применяет запрос экипировки предмета.
+        """
+        item_id = equip_item_id_from_payload(payload)
+        try:
+            equipment = self.character_repository.equip_item(session.character_name, item_id)
+        except EquipmentError as exc:
+            await self._send_error(session.player_id, str(exc))
+            logger.info("Equipment rejected: name=%s error=%s", session.character_name, exc)
+            return
+
+        logger.info(
+            "Equipment updated: name=%s slot=%s item_id=%s",
+            session.character_name,
+            MAIN_HAND_SLOT,
+            item_id,
+        )
+        await self._send_equipment_update(session, equipment)
+
+    async def _handle_unequip_item(
+        self,
+        session: PlayerSession,
+        payload: dict[str, object],
+    ) -> None:
+        """
+        Проверяет и применяет запрос снятия предмета из слота.
+        """
+        slot = equipment_slot_from_payload(payload)
+        try:
+            equipment = self.character_repository.unequip_slot(session.character_name, slot)
+        except EquipmentError as exc:
+            await self._send_error(session.player_id, str(exc))
+            logger.info("Equipment rejected: name=%s error=%s", session.character_name, exc)
+            return
+
+        logger.info("Equipment updated: name=%s slot=%s item_id=None", session.character_name, slot)
+        await self._send_equipment_update(session, equipment)
 
     async def _handle_chat_message(
         self,
@@ -628,7 +684,11 @@ class MultiplayerServer:
         tile_center = self.world.tile_map.tile_rect(tile_x, tile_y).center
         if (player.center - tile_center).length > TILE_GATHERING_DISTANCE:
             return
-        if not self.character_repository.has_item(session.character_name, rule.tool_item_id):
+        if not self.character_repository.is_item_equipped(
+            session.character_name,
+            MAIN_HAND_SLOT,
+            rule.tool_item_id,
+        ):
             await self._send_interaction_result(
                 session=session,
                 target_id=session.player_id,
@@ -758,6 +818,24 @@ class MultiplayerServer:
             ProtocolMessage(
                 type=ServerMessageType.INVENTORY_UPDATED,
                 payload=inventory_updated_payload(inventory),
+            ),
+        )
+
+    async def _send_equipment_update(
+        self,
+        session: PlayerSession,
+        equipment: Equipment | None = None,
+    ) -> None:
+        """
+        Отправляет актуальное состояние экипировки одному клиенту.
+        """
+        if equipment is None:
+            equipment = self.character_repository.load_equipment(session.character_name)
+        await self._send(
+            session.websocket,
+            ProtocolMessage(
+                type=ServerMessageType.EQUIPMENT_UPDATED,
+                payload=equipment_updated_payload(equipment),
             ),
         )
 

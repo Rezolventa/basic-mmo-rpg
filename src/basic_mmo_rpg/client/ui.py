@@ -23,3 +23,13 @@ class TimedText:
 
     text: str
     expires_at: float
+
+
+@dataclass(frozen=True, slots=True)
+class InventoryPanelHit:
+    """
+    Хранит результат попадания клика в панель инвентаря и paperdoll.
+    """
+
+    item_id: str | None = None
+    slot: str | None = None

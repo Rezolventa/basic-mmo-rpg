@@ -16,10 +16,12 @@ from basic_mmo_rpg.shared.protocol import (
     chat_sent_payload,
     decode_message,
     encode_message,
+    equip_item_requested_payload,
     interact_requested_payload,
     interact_tile_requested_payload,
     join_request_payload,
     movement_intent_to_payload,
+    unequip_item_requested_payload,
 )
 
 
@@ -112,6 +114,28 @@ class NetworkClient:
             ProtocolMessage(
                 type=ClientMessageType.INTERACT_REQUESTED,
                 payload=interact_tile_requested_payload(tile_x, tile_y),
+            )
+        )
+
+    def send_equip_item_request(self, item_id: str) -> None:
+        """
+        Ставит запрос экипировки предмета в очередь отправки на сервер.
+        """
+        self._outgoing.put(
+            ProtocolMessage(
+                type=ClientMessageType.EQUIP_ITEM_REQUESTED,
+                payload=equip_item_requested_payload(item_id),
+            )
+        )
+
+    def send_unequip_item_request(self, slot: str) -> None:
+        """
+        Ставит запрос снятия предмета из слота в очередь отправки на сервер.
+        """
+        self._outgoing.put(
+            ProtocolMessage(
+                type=ClientMessageType.UNEQUIP_ITEM_REQUESTED,
+                payload=unequip_item_requested_payload(slot),
             )
         )
 

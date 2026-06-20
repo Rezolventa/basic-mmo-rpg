@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from basic_mmo_rpg.domain.equipment import MAIN_HAND_SLOT
+
 FISHING_ROD_ITEM_ID = "fishing_rod"
 FISH_ITEM_ID = "fish"
 GOLD_ITEM_ID = "gold"
@@ -32,6 +34,7 @@ class ItemDefinition:
     item_id: str
     display_name: str
     stack_limit: int = 1
+    equipment_slot: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -50,6 +53,7 @@ ITEM_DEFINITIONS: dict[str, ItemDefinition] = {
         item_id=FISHING_ROD_ITEM_ID,
         display_name="Удочка",
         stack_limit=1,
+        equipment_slot=MAIN_HAND_SLOT,
     ),
     FISH_ITEM_ID: ItemDefinition(
         item_id=FISH_ITEM_ID,
@@ -65,6 +69,7 @@ ITEM_DEFINITIONS: dict[str, ItemDefinition] = {
         item_id=LUMBER_AXE_ITEM_ID,
         display_name="Топор для рубки",
         stack_limit=1,
+        equipment_slot=MAIN_HAND_SLOT,
     ),
     LOG_ITEM_ID: ItemDefinition(
         item_id=LOG_ITEM_ID,
@@ -75,6 +80,7 @@ ITEM_DEFINITIONS: dict[str, ItemDefinition] = {
         item_id=PICKAXE_ITEM_ID,
         display_name="Кирка",
         stack_limit=1,
+        equipment_slot=MAIN_HAND_SLOT,
     ),
     STONE_ITEM_ID: ItemDefinition(
         item_id=STONE_ITEM_ID,
@@ -104,3 +110,17 @@ def item_stack_for(item_id: str, quantity: int) -> ItemStack:
         display_name=definition.display_name,
         quantity=quantity,
     )
+
+
+def equipment_slot_for_item(item_id: str) -> str | None:
+    """
+    Возвращает слот экипировки для предмета или None, если предмет нельзя экипировать.
+    """
+    return item_definition_for(item_id).equipment_slot
+
+
+def is_equippable_item(item_id: str) -> bool:
+    """
+    Проверяет, можно ли экипировать предмет в текущей модели paperdoll.
+    """
+    return equipment_slot_for_item(item_id) is not None

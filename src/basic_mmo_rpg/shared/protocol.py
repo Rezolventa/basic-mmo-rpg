@@ -7,6 +7,7 @@ from enum import StrEnum
 from typing import Any
 
 from basic_mmo_rpg.domain.entities import EntityKind, WorldEntity
+from basic_mmo_rpg.domain.equipment import MAIN_HAND_SLOT, Equipment, validate_equipment_slot
 from basic_mmo_rpg.domain.geometry import Vec2
 from basic_mmo_rpg.domain.inventory import ItemStack
 from basic_mmo_rpg.domain.movement import MovementIntent, PlayerState
@@ -21,6 +22,8 @@ class ClientMessageType(StrEnum):
     MOVE_REQUESTED = "move_requested"
     CHAT_SENT = "chat_sent"
     INTERACT_REQUESTED = "interact_requested"
+    EQUIP_ITEM_REQUESTED = "equip_item_requested"
+    UNEQUIP_ITEM_REQUESTED = "unequip_item_requested"
 
 
 class ServerMessageType(StrEnum):
@@ -36,6 +39,7 @@ class ServerMessageType(StrEnum):
     ENTITY_SPAWNED = "entity_spawned"
     ENTITY_REMOVED = "entity_removed"
     INVENTORY_UPDATED = "inventory_updated"
+    EQUIPMENT_UPDATED = "equipment_updated"
     ERROR = "error"
 
 
@@ -326,6 +330,64 @@ def inventory_items_from_payload(payload: Mapping[str, Any]) -> list[ItemStack]:
             raise ProtocolError(msg)
         items.append(inventory_item_from_payload(raw_item))
     return items
+
+
+def equip_item_requested_payload(item_id: str) -> dict[str, Any]:
+    """
+    Создает payload клиентского запроса экипировки предмета.
+    """
+    return {"item_id": item_id}
+
+
+def equip_item_id_from_payload(payload: Mapping[str, Any]) -> str:
+    """
+    Извлекает item_id из payload-а запроса экипировки.
+    """
+    item_id = payload.get("item_id")
+    if not isinstance(item_id, str) or not item_id:
+        msg = "equipment item_id must be a non-empty string"
+        raise ProtocolError(msg)
+    return item_id
+
+
+def unequip_item_requested_payload(slot: str = MAIN_HAND_SLOT) -> dict[str, Any]:
+    """
+    Создает payload клиентского запроса снятия предмета из слота.
+    """
+    return {"slot": slot}
+
+
+def equipment_slot_from_payload(payload: Mapping[str, Any]) -> str:
+    """
+    Извлекает и проверяет слот экипировки из payload-а.
+    """
+    slot = payload.get("slot")
+    if not isinstance(slot, str):
+        msg = "equipment slot must be a string"
+        raise ProtocolError(msg)
+    try:
+        return validate_equipment_slot(slot)
+    except ValueError as exc:
+        msg = str(exc)
+        raise ProtocolError(msg) from exc
+
+
+def equipment_updated_payload(equipment: Equipment) -> dict[str, Any]:
+    """
+    Создает payload серверного обновления экипировки.
+    """
+    return {"main_hand": equipment.main_hand}
+
+
+def equipment_from_payload(payload: Mapping[str, Any]) -> Equipment:
+    """
+    Создает экипировку из payload-а серверного обновления.
+    """
+    main_hand = payload.get("main_hand")
+    if main_hand is not None and (not isinstance(main_hand, str) or not main_hand):
+        msg = "equipment main_hand must be a non-empty string or null"
+        raise ProtocolError(msg)
+    return Equipment(main_hand=main_hand)
 
 
 def player_to_payload(player: PlayerState, name: str | None = None) -> dict[str, Any]:

@@ -16,3 +16,6 @@
 
 5. `src/basic_mmo_rpg/server/app.py`
    Проработать модель cooldown-а для gathering-а: сейчас cooldown общий для рыбалки, рубки и добычи камня на персонажа, но в будущем может понадобиться отдельная доменная модель действий, инструментов, interrupt-ов и anti-abuse правил.
+
+6. `src/basic_mmo_rpg/domain/equipment.py`, `src/basic_mmo_rpg/storage/characters.py`
+   Реализовать настоящий переезд экипированного предмета из инвентаря в слот paperdoll. Сейчас `main_hand` хранит ссылку на `item_id`, а стак предмета остается в инвентаре.

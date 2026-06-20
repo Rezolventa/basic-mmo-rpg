@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+from basic_mmo_rpg.domain.equipment import MAIN_HAND_SLOT, EquipmentError
 from basic_mmo_rpg.domain.geometry import Vec2
 from basic_mmo_rpg.domain.inventory import (
     FISH_ITEM_ID,
@@ -169,3 +170,53 @@ def test_character_repository_exchange_rejects_reward_stack_overflow(tmp_path: P
 
     assert repository.item_quantity("Alice", FISH_ITEM_ID) == 2
     assert repository.item_quantity("Alice", GOLD_ITEM_ID) == 999
+
+
+def test_character_repository_persists_equipment(tmp_path: Path) -> None:
+    """
+    Проверяет сохранение и загрузку предмета в руке.
+    """
+    repository = CharacterRepository(tmp_path / "characters.sqlite3")
+    repository.initialize()
+    repository.load_or_create("Alice", Vec2(32, 48))
+    repository.add_item("Alice", FISHING_ROD_ITEM_ID)
+
+    equipment = repository.equip_item("Alice", FISHING_ROD_ITEM_ID)
+    loaded_equipment = repository.load_equipment("Alice")
+
+    assert equipment.main_hand == FISHING_ROD_ITEM_ID
+    assert loaded_equipment == equipment
+    assert repository.is_item_equipped("Alice", MAIN_HAND_SLOT, FISHING_ROD_ITEM_ID)
+
+
+def test_character_repository_rejects_missing_or_non_equippable_item(tmp_path: Path) -> None:
+    """
+    Проверяет, что экипировать можно только доступный экипируемый предмет.
+    """
+    repository = CharacterRepository(tmp_path / "characters.sqlite3")
+    repository.initialize()
+    repository.load_or_create("Alice", Vec2(32, 48))
+    repository.add_item("Alice", FISH_ITEM_ID)
+
+    with pytest.raises(EquipmentError):
+        repository.equip_item("Alice", FISHING_ROD_ITEM_ID)
+    with pytest.raises(EquipmentError):
+        repository.equip_item("Alice", FISH_ITEM_ID)
+
+    assert repository.load_equipment("Alice").main_hand is None
+
+
+def test_character_repository_unequips_slot(tmp_path: Path) -> None:
+    """
+    Проверяет снятие предмета из слота экипировки.
+    """
+    repository = CharacterRepository(tmp_path / "characters.sqlite3")
+    repository.initialize()
+    repository.load_or_create("Alice", Vec2(32, 48))
+    repository.add_item("Alice", FISHING_ROD_ITEM_ID)
+    repository.equip_item("Alice", FISHING_ROD_ITEM_ID)
+
+    equipment = repository.unequip_slot("Alice", MAIN_HAND_SLOT)
+
+    assert equipment.main_hand is None
+    assert repository.load_equipment("Alice").main_hand is None

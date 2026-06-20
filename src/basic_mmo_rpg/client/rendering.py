@@ -5,10 +5,11 @@ from collections.abc import Iterable, Mapping, Sequence
 import pygame
 
 from basic_mmo_rpg.client.camera import Camera
-from basic_mmo_rpg.client.ui import ChatLine
+from basic_mmo_rpg.client.ui import ChatLine, InventoryPanelHit
 from basic_mmo_rpg.domain.entities import WorldEntity
+from basic_mmo_rpg.domain.equipment import MAIN_HAND_SLOT, Equipment
 from basic_mmo_rpg.domain.geometry import Rect, Vec2
-from basic_mmo_rpg.domain.inventory import ItemStack
+from basic_mmo_rpg.domain.inventory import ItemStack, is_equippable_item, item_definition_for
 from basic_mmo_rpg.domain.movement import PlayerState
 from basic_mmo_rpg.domain.tiles import TileMap
 
@@ -31,10 +32,14 @@ ROCK_HOVER_FILL = (178, 184, 192, 85)
 ROCK_HOVER_BORDER = (218, 224, 232)
 TEXT_COLOR = (236, 238, 241)
 MUTED_TEXT_COLOR = (180, 187, 196)
+EQUIPPABLE_TEXT_COLOR = (223, 215, 166)
 BUBBLE_BACKGROUND = (20, 22, 26)
 BUBBLE_BORDER = (224, 225, 228)
 PANEL_BACKGROUND = (16, 18, 22, 220)
 INPUT_BACKGROUND = (12, 14, 18, 230)
+SLOT_BACKGROUND = (29, 32, 38, 230)
+SLOT_BORDER = (92, 104, 118)
+EQUIPPED_BORDER = (225, 198, 104)
 
 
 class Renderer:
@@ -72,6 +77,7 @@ class Renderer:
         chat_input_text: str = "",
         chat_journal_visible: bool = False,
         inventory_items: Sequence[ItemStack] = (),
+        equipment: Equipment | None = None,
         inventory_visible: bool = False,
     ) -> None:
         """
@@ -82,6 +88,7 @@ class Renderer:
         speech_bubbles = speech_bubbles or {}
         name_tags = name_tags or {}
         entity_speech_bubbles = entity_speech_bubbles or {}
+        equipment = equipment or Equipment()
         entity_list = list(world_entities)
 
         screen.fill(BACKGROUND)
@@ -128,9 +135,28 @@ class Renderer:
         if chat_journal_visible:
             self._draw_chat_journal(screen, chat_lines)
         if inventory_visible:
-            self._draw_inventory(screen, inventory_items)
+            self._draw_inventory(screen, inventory_items, equipment)
         if chat_input_active:
             self._draw_chat_input(screen, chat_input_text)
+
+    def inventory_hit_at_position(
+        self,
+        screen: pygame.Surface,
+        position: tuple[int, int],
+        items: Sequence[ItemStack],
+    ) -> InventoryPanelHit | None:
+        """
+        Возвращает цель панели инвентаря или пустой hit для consume-а клика внутри панели.
+        """
+        if not self._inventory_panel_rect(screen).collidepoint(position):
+            return None
+        if self._main_hand_slot_rect(screen).collidepoint(position):
+            return InventoryPanelHit(slot=MAIN_HAND_SLOT)
+
+        for item, row_rect in self._inventory_item_rects(screen, items):
+            if row_rect.collidepoint(position) and is_equippable_item(item.item_id):
+                return InventoryPanelHit(item_id=item.item_id)
+        return InventoryPanelHit()
 
     def _draw_map(self, screen: pygame.Surface, camera: Camera) -> None:
         """
@@ -403,34 +429,110 @@ class Renderer:
         surface = self.font.render(text, True, TEXT_COLOR)
         screen.blit(surface, (rect.left + 10, rect.centery - surface.get_height() // 2))
 
-    def _draw_inventory(self, screen: pygame.Surface, items: Sequence[ItemStack]) -> None:
+    def _draw_inventory(
+        self,
+        screen: pygame.Surface,
+        items: Sequence[ItemStack],
+        equipment: Equipment,
+    ) -> None:
         """
-        Рисует простую панель инвентаря.
+        Рисует простую панель инвентаря и paperdoll.
         """
-        width = 280
-        height = min(320, screen.get_height() - 90)
-        left = screen.get_width() - width - 20
-        panel = pygame.Surface((width, height), pygame.SRCALPHA)
+        panel_rect = self._inventory_panel_rect(screen)
+        panel = pygame.Surface(panel_rect.size, pygame.SRCALPHA)
         panel.fill(PANEL_BACKGROUND)
-        screen.blit(panel, (left, 20))
+        screen.blit(panel, panel_rect.topleft)
 
+        paper_title = self.font.render("Paperdoll", True, TEXT_COLOR)
+        screen.blit(paper_title, (panel_rect.left + 12, panel_rect.top + 10))
+        inventory_title_position = self._inventory_list_origin(screen)
         title = self.font.render("Инвентарь", True, TEXT_COLOR)
-        screen.blit(title, (left + 12, 30))
+        screen.blit(title, (inventory_title_position[0], panel_rect.top + 10))
+
+        self._draw_main_hand_slot(screen, equipment)
 
         if not items:
             empty = self.small_font.render("Пусто", True, MUTED_TEXT_COLOR)
-            screen.blit(empty, (left + 12, 62))
+            screen.blit(empty, (inventory_title_position[0], panel_rect.top + 42))
             return
 
-        y = 62
-        for item in items:
+        for item, row_rect in self._inventory_item_rects(screen, items):
             quantity_suffix = f" x{item.quantity}" if item.quantity > 1 else ""
             text = f"{item.display_name}{quantity_suffix}"
-            surface = self.small_font.render(text, True, MUTED_TEXT_COLOR)
-            screen.blit(surface, (left + 12, y))
-            y += self.small_font.get_linesize() + 4
-            if y > 20 + height - self.small_font.get_linesize():
-                return
+            if equipment.main_hand == item.item_id:
+                text = f"{text} (в руке)"
+            color = EQUIPPABLE_TEXT_COLOR if is_equippable_item(item.item_id) else MUTED_TEXT_COLOR
+            surface = self.small_font.render(
+                self._tail_to_width(text, row_rect.width - 10, self.small_font),
+                True,
+                color,
+            )
+            screen.blit(surface, (row_rect.left + 5, row_rect.top + 3))
+
+    def _draw_main_hand_slot(self, screen: pygame.Surface, equipment: Equipment) -> None:
+        """
+        Рисует слот предмета в руке.
+        """
+        slot_rect = self._main_hand_slot_rect(screen)
+        label = self.small_font.render("В руке", True, MUTED_TEXT_COLOR)
+        screen.blit(label, (slot_rect.left, slot_rect.top - self.small_font.get_linesize() - 2))
+
+        border_color = EQUIPPED_BORDER if equipment.main_hand is not None else SLOT_BORDER
+        pygame.draw.rect(screen, SLOT_BACKGROUND, slot_rect, border_radius=4)
+        pygame.draw.rect(screen, border_color, slot_rect, width=1, border_radius=4)
+
+        item_text = "Пусто"
+        text_color = MUTED_TEXT_COLOR
+        if equipment.main_hand is not None:
+            item_text = item_definition_for(equipment.main_hand).display_name
+            text_color = TEXT_COLOR
+        visible_text = self._tail_to_width(item_text, slot_rect.width - 12, self.small_font)
+        surface = self.small_font.render(visible_text, True, text_color)
+        screen.blit(surface, (slot_rect.left + 6, slot_rect.centery - surface.get_height() // 2))
+
+    def _inventory_panel_rect(self, screen: pygame.Surface) -> pygame.Rect:
+        """
+        Возвращает прямоугольник панели инвентаря и paperdoll.
+        """
+        width = min(460, max(300, screen.get_width() - 40))
+        height = min(320, screen.get_height() - 90)
+        left = max(20, screen.get_width() - width - 20)
+        return pygame.Rect(left, 20, width, height)
+
+    def _main_hand_slot_rect(self, screen: pygame.Surface) -> pygame.Rect:
+        """
+        Возвращает прямоугольник слота предмета в руке.
+        """
+        panel_rect = self._inventory_panel_rect(screen)
+        slot_width = min(138, max(104, panel_rect.width // 3))
+        return pygame.Rect(panel_rect.left + 12, panel_rect.top + 66, slot_width, 34)
+
+    def _inventory_list_origin(self, screen: pygame.Surface) -> tuple[int, int]:
+        """
+        Возвращает верхнюю левую точку списка предметов.
+        """
+        slot_rect = self._main_hand_slot_rect(screen)
+        return slot_rect.right + 18, self._inventory_panel_rect(screen).top + 42
+
+    def _inventory_item_rects(
+        self,
+        screen: pygame.Surface,
+        items: Sequence[ItemStack],
+    ) -> list[tuple[ItemStack, pygame.Rect]]:
+        """
+        Возвращает прямоугольники строк инвентаря.
+        """
+        panel_rect = self._inventory_panel_rect(screen)
+        x, y = self._inventory_list_origin(screen)
+        row_height = self.small_font.get_linesize() + 4
+        width = max(80, panel_rect.right - x - 12)
+        result: list[tuple[ItemStack, pygame.Rect]] = []
+        for item in items:
+            if y > panel_rect.bottom - row_height - 8:
+                break
+            result.append((item, pygame.Rect(x, y, width, row_height)))
+            y += row_height + 2
+        return result
 
     def _player_screen_rect(self, camera: Camera, player: PlayerState) -> pygame.Rect:
         """

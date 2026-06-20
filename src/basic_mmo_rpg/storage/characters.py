@@ -4,10 +4,17 @@ import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
 
+from basic_mmo_rpg.domain.equipment import (
+    MAIN_HAND_SLOT,
+    Equipment,
+    EquipmentError,
+    validate_equipment_slot,
+)
 from basic_mmo_rpg.domain.geometry import Vec2
 from basic_mmo_rpg.domain.inventory import (
     InventoryLimitError,
     ItemStack,
+    equipment_slot_for_item,
     item_definition_for,
     item_stack_for,
 )
@@ -62,6 +69,16 @@ class CharacterRepository:
                 )
                 """
             )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS character_equipment (
+                    character_name TEXT PRIMARY KEY,
+                    main_hand_item_id TEXT,
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (character_name) REFERENCES characters(name)
+                )
+                """
+            )
 
     def load_or_create(self, name: str, default_position: Vec2) -> CharacterRecord:
         """
@@ -110,6 +127,13 @@ class CharacterRepository:
         """
         with self._connect() as connection:
             return self._load_inventory(connection, name)
+
+    def load_equipment(self, name: str) -> Equipment:
+        """
+        Загружает экипировку персонажа.
+        """
+        with self._connect() as connection:
+            return self._load_equipment(connection, name)
 
     def has_item(self, name: str, item_id: str) -> bool:
         """
@@ -180,6 +204,44 @@ class CharacterRepository:
             return self.load_inventory(name), False
         return self.add_item(name, item_id, quantity), True
 
+    def equip_item(self, name: str, item_id: str) -> Equipment:
+        """
+        Экипирует предмет из инвентаря персонажа в подходящий слот.
+        """
+        slot = equipment_slot_for_item(item_id)
+        if slot is None:
+            msg = f"item {item_id!r} is not equippable"
+            raise EquipmentError(msg)
+        validate_equipment_slot(slot)
+
+        with self._connect() as connection:
+            if self._item_quantity(connection, name, item_id) <= 0:
+                msg = f"item {item_id!r} is not in inventory"
+                raise EquipmentError(msg)
+            self._set_equipment_slot(connection, name, slot, item_id)
+            return self._load_equipment(connection, name)
+
+    def unequip_slot(self, name: str, slot: str) -> Equipment:
+        """
+        Снимает предмет из указанного слота экипировки.
+        """
+        validate_equipment_slot(slot)
+        with self._connect() as connection:
+            self._set_equipment_slot(connection, name, slot, None)
+            return self._load_equipment(connection, name)
+
+    def is_item_equipped(self, name: str, slot: str, item_id: str) -> bool:
+        """
+        Проверяет, экипирован ли предмет в указанном слоте.
+        """
+        validate_equipment_slot(slot)
+        with self._connect() as connection:
+            equipment = self._load_equipment(connection, name)
+            return (
+                equipment.main_hand == item_id
+                and self._item_quantity(connection, name, item_id) > 0
+            )
+
     def exchange_items(
         self,
         name: str,
@@ -239,6 +301,22 @@ class CharacterRepository:
         ).fetchall()
         return [item_stack_for(str(row["item_id"]), int(row["quantity"])) for row in rows]
 
+    def _load_equipment(self, connection: sqlite3.Connection, name: str) -> Equipment:
+        """
+        Загружает экипировку персонажа через существующее SQLite-соединение.
+        """
+        row = connection.execute(
+            """
+            SELECT main_hand_item_id
+            FROM character_equipment
+            WHERE character_name = ?
+            """,
+            (name,),
+        ).fetchone()
+        if row is None or row["main_hand_item_id"] is None:
+            return Equipment()
+        return Equipment(main_hand=str(row["main_hand_item_id"]))
+
     def _item_quantity(
         self,
         connection: sqlite3.Connection,
@@ -287,4 +365,30 @@ class CharacterRepository:
                 updated_at = CURRENT_TIMESTAMP
             """,
             (name, item_id, quantity),
+        )
+
+    def _set_equipment_slot(
+        self,
+        connection: sqlite3.Connection,
+        name: str,
+        slot: str,
+        item_id: str | None,
+    ) -> None:
+        """
+        Записывает предмет в слот экипировки через существующее SQLite-соединение.
+        """
+        validate_equipment_slot(slot)
+        if slot != MAIN_HAND_SLOT:
+            msg = f"unsupported equipment slot: {slot!r}"
+            raise EquipmentError(msg)
+
+        connection.execute(
+            """
+            INSERT INTO character_equipment (character_name, main_hand_item_id, updated_at)
+            VALUES (?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(character_name) DO UPDATE SET
+                main_hand_item_id = excluded.main_hand_item_id,
+                updated_at = CURRENT_TIMESTAMP
+            """,
+            (name, item_id),
         )

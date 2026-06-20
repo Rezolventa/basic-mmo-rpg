@@ -13,6 +13,7 @@ from basic_mmo_rpg.client.network import NetworkClient
 from basic_mmo_rpg.client.rendering import Renderer
 from basic_mmo_rpg.client.ui import ChatLine, TimedText
 from basic_mmo_rpg.domain.entities import WorldEntity
+from basic_mmo_rpg.domain.equipment import MAIN_HAND_SLOT, Equipment
 from basic_mmo_rpg.domain.geometry import Rect, Vec2
 from basic_mmo_rpg.domain.inventory import ItemStack
 from basic_mmo_rpg.domain.movement import MovementIntent, PlayerState, move_player
@@ -20,6 +21,7 @@ from basic_mmo_rpg.shared.protocol import (
     ProtocolError,
     ServerMessageType,
     entities_from_snapshot_payload,
+    equipment_from_payload,
     inventory_items_from_payload,
     player_snapshots_from_payload,
 )
@@ -111,6 +113,7 @@ class GameClient:
         self.chat_journal_visible = False
         self.inventory_visible = False
         self.inventory_items: list[ItemStack] = []
+        self.equipment = Equipment()
         self.chat_lines: deque[ChatLine] = deque(maxlen=MAX_CHAT_LOG_MESSAGES)
         self.speech_bubbles: dict[str, TimedText] = {}
         self.entity_speech_bubbles: dict[str, TimedText] = {}
@@ -182,6 +185,7 @@ class GameClient:
             chat_input_text=self.chat_input_text,
             chat_journal_visible=self.chat_journal_visible,
             inventory_items=self.inventory_items,
+            equipment=self.equipment,
             inventory_visible=self.inventory_visible,
         )
         pygame.display.flip()
@@ -244,8 +248,11 @@ class GameClient:
 
     def _handle_left_click(self, position: tuple[int, int]) -> None:
         """
-        Показывает никнейм удаленного персонажа при клике по нему.
+        Обрабатывает клики по UI и показывает никнейм удаленного персонажа.
         """
+        if self.inventory_visible and self._handle_inventory_click(position):
+            return
+
         now = time.monotonic()
         for player_view in self.other_players.values():
             if self._player_screen_rect(player_view.rendered).collidepoint(position):
@@ -254,6 +261,25 @@ class GameClient:
                     expires_at=now + FLOATING_TEXT_SECONDS,
                 )
                 return
+
+    def _handle_inventory_click(self, position: tuple[int, int]) -> bool:
+        """
+        Отправляет запрос экипировки или снятия предмета при клике по панели.
+        """
+        hit = self.renderer.inventory_hit_at_position(
+            self.screen,
+            position,
+            self.inventory_items,
+        )
+        if hit is None:
+            return False
+        if hit.item_id is not None:
+            self.network_client.send_equip_item_request(hit.item_id)
+            return True
+        if hit.slot == MAIN_HAND_SLOT and self.equipment.main_hand is not None:
+            self.network_client.send_unequip_item_request(MAIN_HAND_SLOT)
+            return True
+        return True
 
     def _send_interaction_under_cursor(self) -> None:
         """
@@ -304,6 +330,8 @@ class GameClient:
                 self._apply_interaction_result(message.payload)
             elif message.type == ServerMessageType.INVENTORY_UPDATED:
                 self._apply_inventory_updated(message.payload)
+            elif message.type == ServerMessageType.EQUIPMENT_UPDATED:
+                self._apply_equipment_updated(message.payload)
             elif message.type == ServerMessageType.ENTITY_REMOVED:
                 player_id = message.payload.get("id")
                 if isinstance(player_id, str):
@@ -404,6 +432,15 @@ class GameClient:
         """
         try:
             self.inventory_items = inventory_items_from_payload(payload)
+        except ProtocolError:
+            return
+
+    def _apply_equipment_updated(self, payload: dict[str, object]) -> None:
+        """
+        Обновляет локальное отображение экипировки из server authoritative payload-а.
+        """
+        try:
+            self.equipment = equipment_from_payload(payload)
         except ProtocolError:
             return
 

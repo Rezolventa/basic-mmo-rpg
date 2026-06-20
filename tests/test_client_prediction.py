@@ -6,11 +6,13 @@ from types import SimpleNamespace
 import pygame
 
 from basic_mmo_rpg.client.app import GameClient, RemotePlayerView, _smooth_player_toward
+from basic_mmo_rpg.client.ui import InventoryPanelHit
 from basic_mmo_rpg.domain.entities import EntityKind, WorldEntity
+from basic_mmo_rpg.domain.equipment import MAIN_HAND_SLOT, Equipment
 from basic_mmo_rpg.domain.geometry import Vec2
 from basic_mmo_rpg.domain.inventory import FISHING_ROD_ITEM_ID, ItemStack
 from basic_mmo_rpg.domain.movement import PlayerState
-from basic_mmo_rpg.shared.protocol import inventory_updated_payload
+from basic_mmo_rpg.shared.protocol import equipment_updated_payload, inventory_updated_payload
 from basic_mmo_rpg.storage.map_loader import tile_map_from_dict
 
 
@@ -252,6 +254,85 @@ def test_client_applies_inventory_update() -> None:
     assert client.inventory_items == [item]
 
 
+def test_client_applies_equipment_update() -> None:
+    """
+    Проверяет, что клиент принимает authoritative-обновление экипировки.
+    """
+    client = object.__new__(GameClient)
+    client.equipment = Equipment()
+
+    client._apply_equipment_updated(
+        equipment_updated_payload(Equipment(main_hand=FISHING_ROD_ITEM_ID))
+    )
+
+    assert client.equipment.main_hand == FISHING_ROD_ITEM_ID
+
+
+def test_client_inventory_click_requests_equip() -> None:
+    """
+    Проверяет, что клик по предмету инвентаря отправляет запрос экипировки.
+    """
+    client = object.__new__(GameClient)
+    network = _NetworkRecorder()
+    client.screen = object()
+    client.inventory_visible = True
+    client.inventory_items = []
+    client.equipment = Equipment()
+    client.renderer = SimpleNamespace(
+        inventory_hit_at_position=lambda screen, position, items: InventoryPanelHit(
+            item_id=FISHING_ROD_ITEM_ID
+        )
+    )
+    client.network_client = network
+
+    client._handle_left_click((10, 10))
+
+    assert network.equipped_items == [FISHING_ROD_ITEM_ID]
+    assert network.unequipped_slots == []
+
+
+def test_client_main_hand_click_requests_unequip() -> None:
+    """
+    Проверяет, что клик по занятому слоту руки отправляет запрос снятия предмета.
+    """
+    client = object.__new__(GameClient)
+    network = _NetworkRecorder()
+    client.screen = object()
+    client.inventory_visible = True
+    client.inventory_items = []
+    client.equipment = Equipment(main_hand=FISHING_ROD_ITEM_ID)
+    client.renderer = SimpleNamespace(
+        inventory_hit_at_position=lambda screen, position, items: InventoryPanelHit(
+            slot=MAIN_HAND_SLOT
+        )
+    )
+    client.network_client = network
+
+    client._handle_left_click((10, 10))
+
+    assert network.equipped_items == []
+    assert network.unequipped_slots == [MAIN_HAND_SLOT]
+
+
+def test_client_inventory_empty_area_click_is_consumed() -> None:
+    """
+    Проверяет, что пустая область панели инвентаря не пропускает клик в мир.
+    """
+    client = object.__new__(GameClient)
+    network = _NetworkRecorder()
+    client.screen = object()
+    client.inventory_items = []
+    client.equipment = Equipment()
+    client.renderer = SimpleNamespace(
+        inventory_hit_at_position=lambda screen, position, items: InventoryPanelHit()
+    )
+    client.network_client = network
+
+    assert client._handle_inventory_click((10, 10)) is True
+    assert network.equipped_items == []
+    assert network.unequipped_slots == []
+
+
 def _client_without_pygame(player: PlayerState) -> GameClient:
     """
     Создает объект клиента для тестирования сетевого сглаживания без pygame-инициализации.
@@ -261,3 +342,28 @@ def _client_without_pygame(player: PlayerState) -> GameClient:
     client.authoritative_player = None
     client.local_correction_offset = Vec2(0, 0)
     return client
+
+
+class _NetworkRecorder:
+    """
+    Запоминает equip/unequip-запросы клиента для UI-тестов.
+    """
+
+    def __init__(self) -> None:
+        """
+        Создает пустые списки отправленных запросов.
+        """
+        self.equipped_items: list[str] = []
+        self.unequipped_slots: list[str] = []
+
+    def send_equip_item_request(self, item_id: str) -> None:
+        """
+        Запоминает запрос экипировки предмета.
+        """
+        self.equipped_items.append(item_id)
+
+    def send_unequip_item_request(self, slot: str) -> None:
+        """
+        Запоминает запрос снятия предмета.
+        """
+        self.unequipped_slots.append(slot)

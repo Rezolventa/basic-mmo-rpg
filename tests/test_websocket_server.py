@@ -11,6 +11,7 @@ import pytest
 from websockets.asyncio.client import connect
 from websockets.asyncio.server import serve
 
+from basic_mmo_rpg.domain.equipment import MAIN_HAND_SLOT, Equipment
 from basic_mmo_rpg.domain.geometry import Vec2
 from basic_mmo_rpg.domain.inventory import (
     FISH_ITEM_ID,
@@ -31,12 +32,15 @@ from basic_mmo_rpg.shared.protocol import (
     chat_sent_payload,
     decode_message,
     encode_message,
+    equip_item_requested_payload,
+    equipment_from_payload,
     interact_requested_payload,
     interact_tile_requested_payload,
     inventory_items_from_payload,
     join_request_payload,
     movement_intent_to_payload,
     players_from_snapshot_payload,
+    unequip_item_requested_payload,
 )
 from basic_mmo_rpg.storage.characters import CharacterRepository
 from basic_mmo_rpg.storage.map_loader import tile_map_from_dict
@@ -272,6 +276,13 @@ def test_websocket_server_broadcasts_chat_messages(tmp_path: Path) -> None:
     asyncio.run(_chat_broadcast_smoke(tmp_path))
 
 
+def test_websocket_server_equips_and_unequips_main_hand(tmp_path: Path) -> None:
+    """
+    Проверяет server-authoritative экипировку и снятие предмета в руке.
+    """
+    asyncio.run(_equipment_smoke(tmp_path))
+
+
 def test_websocket_server_sends_interaction_result_only_to_actor(tmp_path: Path) -> None:
     """
     Проверяет, что результат взаимодействия с NPC получает только инициатор.
@@ -291,6 +302,13 @@ def test_websocket_server_fishing_requires_rod(tmp_path: Path) -> None:
     Проверяет, что рыбалка без удочки показывает только локальный пузырь.
     """
     asyncio.run(_fishing_requires_rod_smoke(tmp_path))
+
+
+def test_websocket_server_fishing_requires_equipped_rod(tmp_path: Path) -> None:
+    """
+    Проверяет, что удочка в инвентаре не заменяет удочку в руке.
+    """
+    asyncio.run(_fishing_requires_equipped_rod_smoke(tmp_path))
 
 
 def test_websocket_server_fishing_success_adds_fish(tmp_path: Path) -> None:
@@ -570,6 +588,60 @@ async def _chat_broadcast_smoke(tmp_path: Path) -> None:
         assert isinstance(message.payload["created_at"], int | float)
 
 
+async def _equipment_smoke(tmp_path: Path) -> None:
+    """
+    Запускает сервер и проверяет экипировку предмета через websocket.
+    """
+    multiplayer_server = _server_for_test(tmp_path)
+    multiplayer_server.character_repository.load_or_create("Alice", Vec2(32, 32))
+    multiplayer_server.character_repository.add_item("Alice", FISHING_ROD_ITEM_ID)
+
+    async with _running_test_server(multiplayer_server) as uri, connect(uri) as first_client:
+        await _send_join(first_client, "Alice")
+        await _recv_player_id(first_client)
+
+        inventory_message = await _recv_message_type(
+            first_client,
+            ServerMessageType.INVENTORY_UPDATED,
+        )
+        initial_equipment_message = await _recv_message_type(
+            first_client,
+            ServerMessageType.EQUIPMENT_UPDATED,
+        )
+        await first_client.send(
+            encode_message(
+                ProtocolMessage(
+                    type=ClientMessageType.EQUIP_ITEM_REQUESTED,
+                    payload=equip_item_requested_payload(FISHING_ROD_ITEM_ID),
+                )
+            )
+        )
+        equipped_message = await _recv_message_type(
+            first_client,
+            ServerMessageType.EQUIPMENT_UPDATED,
+        )
+        await first_client.send(
+            encode_message(
+                ProtocolMessage(
+                    type=ClientMessageType.UNEQUIP_ITEM_REQUESTED,
+                    payload=unequip_item_requested_payload(MAIN_HAND_SLOT),
+                )
+            )
+        )
+        unequipped_message = await _recv_message_type(
+            first_client,
+            ServerMessageType.EQUIPMENT_UPDATED,
+        )
+
+    assert inventory_items_from_payload(inventory_message.payload)[0].item_id == FISHING_ROD_ITEM_ID
+    assert equipment_from_payload(initial_equipment_message.payload) == Equipment()
+    assert equipment_from_payload(equipped_message.payload) == Equipment(
+        main_hand=FISHING_ROD_ITEM_ID
+    )
+    assert equipment_from_payload(unequipped_message.payload) == Equipment()
+    assert multiplayer_server.character_repository.load_equipment("Alice") == Equipment()
+
+
 async def _interaction_result_only_to_actor_smoke(tmp_path: Path) -> None:
     """
     Запускает сервер и проверяет успешное взаимодействие с NPC.
@@ -660,9 +732,40 @@ async def _fishing_requires_rod_smoke(tmp_path: Path) -> None:
     assert message.payload["actor_id"] == first_id
     assert message.payload["target_id"] == first_id
     assert message.payload["target_name"] == "Alice"
-    assert message.payload["text"] == "Нужна удочка"
+    assert message.payload["text"] == "Нужна удочка в руке"
     assert message.payload["add_to_journal"] is False
     assert multiplayer_server.character_repository.load_inventory("Alice") == []
+
+
+async def _fishing_requires_equipped_rod_smoke(tmp_path: Path) -> None:
+    """
+    Запускает сервер и проверяет отказ, если удочка лежит в инвентаре, а не в руке.
+    """
+    multiplayer_server = _server_for_test(tmp_path, raw_map=_open_map_with_water())
+    multiplayer_server.character_repository.load_or_create("Alice", Vec2(32, 32))
+    multiplayer_server.character_repository.add_item("Alice", FISHING_ROD_ITEM_ID)
+
+    async with _running_test_server(multiplayer_server) as uri, connect(uri) as first_client:
+        await _send_join(first_client, "Alice")
+        first_id = await _recv_player_id(first_client)
+        await _recv_message_type(first_client, ServerMessageType.INVENTORY_UPDATED)
+
+        await first_client.send(
+            encode_message(
+                ProtocolMessage(
+                    type=ClientMessageType.INTERACT_REQUESTED,
+                    payload=interact_tile_requested_payload(2, 1),
+                )
+            )
+        )
+        message = await _recv_message_type(first_client, ServerMessageType.INTERACTION_RESULT)
+
+    assert message.payload["actor_id"] == first_id
+    assert message.payload["target_id"] == first_id
+    assert message.payload["target_name"] == "Alice"
+    assert message.payload["text"] == "Нужна удочка в руке"
+    assert message.payload["add_to_journal"] is False
+    assert multiplayer_server.character_repository.item_quantity("Alice", FISH_ITEM_ID) == 0
 
 
 async def _fishing_success_smoke(tmp_path: Path) -> None:
@@ -676,6 +779,7 @@ async def _fishing_success_smoke(tmp_path: Path) -> None:
     )
     multiplayer_server.character_repository.load_or_create("Alice", Vec2(32, 32))
     multiplayer_server.character_repository.add_item("Alice", FISHING_ROD_ITEM_ID)
+    multiplayer_server.character_repository.equip_item("Alice", FISHING_ROD_ITEM_ID)
 
     async with _running_test_server(multiplayer_server) as uri, connect(uri) as first_client:
         await _send_join(first_client, "Alice")
@@ -721,6 +825,7 @@ async def _fishing_failure_smoke(tmp_path: Path) -> None:
     )
     multiplayer_server.character_repository.load_or_create("Alice", Vec2(32, 32))
     multiplayer_server.character_repository.add_item("Alice", FISHING_ROD_ITEM_ID)
+    multiplayer_server.character_repository.equip_item("Alice", FISHING_ROD_ITEM_ID)
 
     async with _running_test_server(multiplayer_server) as uri, connect(uri) as first_client:
         await _send_join(first_client, "Alice")
@@ -860,6 +965,7 @@ async def _fishing_stack_overflow_smoke(tmp_path: Path) -> None:
     )
     multiplayer_server.character_repository.load_or_create("Alice", Vec2(32, 32))
     multiplayer_server.character_repository.add_item("Alice", FISHING_ROD_ITEM_ID)
+    multiplayer_server.character_repository.equip_item("Alice", FISHING_ROD_ITEM_ID)
     multiplayer_server.character_repository.add_item("Alice", FISH_ITEM_ID, quantity=999)
 
     async with _running_test_server(multiplayer_server) as uri, connect(uri) as first_client:
@@ -984,7 +1090,7 @@ async def _lumberjacking_requires_axe_smoke(tmp_path: Path) -> None:
     assert message.payload["actor_id"] == first_id
     assert message.payload["target_id"] == first_id
     assert message.payload["target_name"] == "Alice"
-    assert message.payload["text"] == "Нужен топор"
+    assert message.payload["text"] == "Нужен топор в руке"
     assert message.payload["add_to_journal"] is False
     assert multiplayer_server.character_repository.load_inventory("Alice") == []
 
@@ -996,6 +1102,7 @@ async def _lumberjacking_success_smoke(tmp_path: Path) -> None:
     multiplayer_server = _server_for_test(tmp_path, raw_map=_open_map_with_tree())
     multiplayer_server.character_repository.load_or_create("Alice", Vec2(32, 32))
     multiplayer_server.character_repository.add_item("Alice", LUMBER_AXE_ITEM_ID)
+    multiplayer_server.character_repository.equip_item("Alice", LUMBER_AXE_ITEM_ID)
 
     async with _running_test_server(multiplayer_server) as uri, connect(uri) as first_client:
         await _send_join(first_client, "Alice")
@@ -1042,6 +1149,7 @@ async def _gathering_shared_cooldown_smoke(tmp_path: Path) -> None:
     multiplayer_server.character_repository.load_or_create("Alice", Vec2(32, 32))
     multiplayer_server.character_repository.add_item("Alice", FISHING_ROD_ITEM_ID)
     multiplayer_server.character_repository.add_item("Alice", LUMBER_AXE_ITEM_ID)
+    multiplayer_server.character_repository.equip_item("Alice", FISHING_ROD_ITEM_ID)
 
     async with _running_test_server(multiplayer_server) as uri, connect(uri) as first_client:
         await _send_join(first_client, "Alice")
@@ -1061,6 +1169,7 @@ async def _gathering_shared_cooldown_smoke(tmp_path: Path) -> None:
             first_client,
             ServerMessageType.INTERACTION_RESULT,
         )
+        multiplayer_server.character_repository.equip_item("Alice", LUMBER_AXE_ITEM_ID)
 
         await first_client.send(
             encode_message(
@@ -1232,7 +1341,7 @@ async def _mining_requires_pickaxe_smoke(tmp_path: Path) -> None:
     assert message.payload["actor_id"] == first_id
     assert message.payload["target_id"] == first_id
     assert message.payload["target_name"] == "Alice"
-    assert message.payload["text"] == "Нужна кирка"
+    assert message.payload["text"] == "Нужна кирка в руке"
     assert message.payload["add_to_journal"] is False
     assert multiplayer_server.character_repository.load_inventory("Alice") == []
 
@@ -1248,6 +1357,7 @@ async def _mining_success_smoke(tmp_path: Path) -> None:
     )
     multiplayer_server.character_repository.load_or_create("Alice", Vec2(32, 32))
     multiplayer_server.character_repository.add_item("Alice", PICKAXE_ITEM_ID)
+    multiplayer_server.character_repository.equip_item("Alice", PICKAXE_ITEM_ID)
 
     async with _running_test_server(multiplayer_server) as uri, connect(uri) as first_client:
         await _send_join(first_client, "Alice")
@@ -1293,6 +1403,7 @@ async def _mining_failure_smoke(tmp_path: Path) -> None:
     )
     multiplayer_server.character_repository.load_or_create("Alice", Vec2(32, 32))
     multiplayer_server.character_repository.add_item("Alice", PICKAXE_ITEM_ID)
+    multiplayer_server.character_repository.equip_item("Alice", PICKAXE_ITEM_ID)
 
     async with _running_test_server(multiplayer_server) as uri, connect(uri) as first_client:
         await _send_join(first_client, "Alice")
