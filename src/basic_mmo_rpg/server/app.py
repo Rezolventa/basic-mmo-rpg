@@ -19,6 +19,8 @@ from basic_mmo_rpg.domain.inventory import (
     GOLD_ITEM_ID,
     LOG_ITEM_ID,
     LUMBER_AXE_ITEM_ID,
+    PICKAXE_ITEM_ID,
+    STONE_ITEM_ID,
     InventoryLimitError,
     ItemStack,
 )
@@ -58,6 +60,9 @@ FUNDAY_GOLD_REWARD = 1
 LUMBERJACKING_SUCCESS_CHANCE = 1.0
 JACK_REQUIRED_LOGS = 5
 JACK_GOLD_REWARD = 1
+MINING_SUCCESS_CHANCE = 0.8
+KOPAI_REQUIRED_STONES = 3
+KOPAI_GOLD_REWARD = 1
 INVENTORY_FULL_TEXT = "Инвентарь полон"
 
 logger = logging.getLogger(__name__)
@@ -107,6 +112,15 @@ TILE_GATHERING_RULES: dict[str, TileGatheringRule] = {
         success_chance=LUMBERJACKING_SUCCESS_CHANCE,
         missing_tool_text="Нужен топор",
         success_text="Вы нарубили древесины",
+    ),
+    "rock": TileGatheringRule(
+        tile_name="rock",
+        tool_item_id=PICKAXE_ITEM_ID,
+        reward_item_id=STONE_ITEM_ID,
+        success_chance=MINING_SUCCESS_CHANCE,
+        missing_tool_text="Нужна кирка",
+        success_text="Вы добыли камень",
+        failure_text="Не удалось добыть камень",
     ),
 }
 
@@ -399,6 +413,14 @@ class MultiplayerServer:
                 entity.dialogue,
             )
             return
+        if entity.entity_id == "npc-kopai":
+            await self._handle_kopai_interaction(
+                session,
+                entity.entity_id,
+                entity.name,
+                entity.dialogue,
+            )
+            return
 
         await self._send(
             session.websocket,
@@ -519,6 +541,59 @@ class MultiplayerServer:
                     target_id=target_id,
                     target_name=target_name,
                     text="Отличная древесина. Держи Gold.",
+                )
+                await self._send_inventory_update(session, inventory)
+            return
+
+        await self._send_interaction_result(
+            session=session,
+            target_id=target_id,
+            target_name=target_name,
+            text=default_dialogue,
+        )
+
+    async def _handle_kopai_interaction(
+        self,
+        session: PlayerSession,
+        target_id: str,
+        target_name: str,
+        default_dialogue: str,
+    ) -> None:
+        """
+        Обрабатывает туториальную логику NPC Kopai.
+        """
+        if not self.character_repository.has_item(session.character_name, PICKAXE_ITEM_ID):
+            await self._send_interaction_result(
+                session=session,
+                target_id=target_id,
+                target_name=target_name,
+                text=default_dialogue,
+            )
+            await self._grant_item_if_needed(session, PICKAXE_ITEM_ID)
+            return
+
+        stone_quantity = self.character_repository.item_quantity(
+            session.character_name,
+            STONE_ITEM_ID,
+        )
+        if stone_quantity >= KOPAI_REQUIRED_STONES:
+            try:
+                inventory, exchanged = self.character_repository.exchange_items(
+                    name=session.character_name,
+                    cost_item_id=STONE_ITEM_ID,
+                    cost_quantity=KOPAI_REQUIRED_STONES,
+                    reward_item_id=GOLD_ITEM_ID,
+                    reward_quantity=KOPAI_GOLD_REWARD,
+                )
+            except InventoryLimitError as exc:
+                await self._send_inventory_limit_result(session, target_id, target_name, exc)
+                return
+            if exchanged:
+                await self._send_interaction_result(
+                    session=session,
+                    target_id=target_id,
+                    target_name=target_name,
+                    text="Отличный камень. Держи Gold.",
                 )
                 await self._send_inventory_update(session, inventory)
             return

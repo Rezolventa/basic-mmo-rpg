@@ -18,6 +18,8 @@ from basic_mmo_rpg.domain.inventory import (
     GOLD_ITEM_ID,
     LOG_ITEM_ID,
     LUMBER_AXE_ITEM_ID,
+    PICKAXE_ITEM_ID,
+    STONE_ITEM_ID,
 )
 from basic_mmo_rpg.domain.movement import MovementIntent, PlayerState
 from basic_mmo_rpg.server.app import MultiplayerServer
@@ -126,6 +128,27 @@ def _open_map_with_tree() -> object:
     }
 
 
+def _open_map_with_rock() -> object:
+    """
+    Возвращает открытую карту с камнем рядом со spawn-ом для тестов добычи.
+    """
+    return {
+        "tile_size": 32,
+        "spawn": [32, 32],
+        "legend": {
+            ".": {"name": "floor", "solid": False, "color": [50, 120, 60]},
+            "R": {"name": "rock", "solid": True, "color": [102, 106, 112]},
+            "#": {"name": "wall", "solid": True, "color": [90, 90, 90]},
+        },
+        "tiles": [
+            "..........",
+            "..R.......",
+            "..........",
+            "..........",
+        ],
+    }
+
+
 def _open_map_with_water_and_tree() -> object:
     """
     Возвращает открытую карту с водой и деревом рядом со spawn-ом.
@@ -174,6 +197,39 @@ def _open_map_with_jack_lumber() -> object:
                 "size": [24, 30],
                 "interaction_radius": 64,
                 "dialogue": "Наруби немного древесины",
+                "solid": True,
+            }
+        ],
+    }
+    return raw_map
+
+
+def _open_map_with_kopai() -> object:
+    """
+    Возвращает открытую карту с NPC Kopai рядом со spawn-ом.
+    """
+    raw_map: dict[str, object] = {
+        "tile_size": 32,
+        "spawn": [32, 32],
+        "legend": {
+            ".": {"name": "floor", "solid": False, "color": [50, 120, 60]},
+            "#": {"name": "wall", "solid": True, "color": [90, 90, 90]},
+        },
+        "tiles": [
+            "..........",
+            "..........",
+            "..........",
+            "..........",
+        ],
+        "entities": [
+            {
+                "id": "npc-kopai",
+                "kind": "npc",
+                "name": "Kopai",
+                "position": [64, 32],
+                "size": [24, 30],
+                "interaction_radius": 64,
+                "dialogue": "Накопай мне чего-нибудь",
                 "solid": True,
             }
         ],
@@ -321,6 +377,48 @@ def test_websocket_server_jack_lumber_grants_axe_before_exchange(tmp_path: Path)
     Проверяет, что Jack Lumber сначала выдает топор, даже если у игрока уже есть бревна.
     """
     asyncio.run(_jack_lumber_grants_axe_before_exchange_smoke(tmp_path))
+
+
+def test_websocket_server_kopai_grants_pickaxe(tmp_path: Path) -> None:
+    """
+    Проверяет, что Kopai выдает кирку, если у игрока ее еще нет.
+    """
+    asyncio.run(_kopai_grants_pickaxe_smoke(tmp_path))
+
+
+def test_websocket_server_mining_requires_pickaxe(tmp_path: Path) -> None:
+    """
+    Проверяет, что добыча камня без кирки показывает только локальный пузырь.
+    """
+    asyncio.run(_mining_requires_pickaxe_smoke(tmp_path))
+
+
+def test_websocket_server_mining_success_adds_stone(tmp_path: Path) -> None:
+    """
+    Проверяет успешную добычу камня и сохранение камня в инвентаре.
+    """
+    asyncio.run(_mining_success_smoke(tmp_path))
+
+
+def test_websocket_server_mining_failure_only_sends_result(tmp_path: Path) -> None:
+    """
+    Проверяет неудачную добычу камня без изменения инвентаря.
+    """
+    asyncio.run(_mining_failure_smoke(tmp_path))
+
+
+def test_websocket_server_kopai_exchanges_stones_for_gold(tmp_path: Path) -> None:
+    """
+    Проверяет обмен трех камней на Gold при взаимодействии с Kopai.
+    """
+    asyncio.run(_kopai_exchange_smoke(tmp_path))
+
+
+def test_websocket_server_kopai_grants_pickaxe_before_exchange(tmp_path: Path) -> None:
+    """
+    Проверяет, что Kopai сначала выдает кирку, даже если у игрока уже есть камни.
+    """
+    asyncio.run(_kopai_grants_pickaxe_before_exchange_smoke(tmp_path))
 
 
 async def _websocket_server_smoke(tmp_path: Path) -> None:
@@ -1073,6 +1171,248 @@ async def _jack_lumber_grants_axe_before_exchange_smoke(tmp_path: Path) -> None:
     assert quantities[LUMBER_AXE_ITEM_ID] == 1
     assert GOLD_ITEM_ID not in quantities
     assert multiplayer_server.character_repository.item_quantity("Alice", LOG_ITEM_ID) == 5
+    assert multiplayer_server.character_repository.item_quantity("Alice", GOLD_ITEM_ID) == 0
+
+
+async def _kopai_grants_pickaxe_smoke(tmp_path: Path) -> None:
+    """
+    Запускает сервер и проверяет успешное взаимодействие с Kopai без кирки.
+    """
+    multiplayer_server = _server_for_test(tmp_path, raw_map=_open_map_with_kopai())
+
+    async with _running_test_server(multiplayer_server) as uri, connect(uri) as first_client:
+        await _send_join(first_client, "Alice")
+        first_id = await _recv_player_id(first_client)
+
+        await first_client.send(
+            encode_message(
+                ProtocolMessage(
+                    type=ClientMessageType.INTERACT_REQUESTED,
+                    payload=interact_requested_payload("npc-kopai"),
+                )
+            )
+        )
+        message = await _recv_message_type(first_client, ServerMessageType.INTERACTION_RESULT)
+        inventory_message = await _recv_message_type(
+            first_client,
+            ServerMessageType.INVENTORY_UPDATED,
+        )
+
+    inventory = inventory_items_from_payload(inventory_message.payload)
+    assert message.payload["actor_id"] == first_id
+    assert message.payload["target_id"] == "npc-kopai"
+    assert message.payload["target_name"] == "Kopai"
+    assert message.payload["text"] == "Накопай мне чего-нибудь"
+    assert len(inventory) == 1
+    assert inventory[0].item_id == PICKAXE_ITEM_ID
+    assert inventory[0].quantity == 1
+    assert multiplayer_server.character_repository.load_inventory("Alice") == inventory
+
+
+async def _mining_requires_pickaxe_smoke(tmp_path: Path) -> None:
+    """
+    Запускает сервер и проверяет ответ на добычу камня без кирки.
+    """
+    multiplayer_server = _server_for_test(tmp_path, raw_map=_open_map_with_rock())
+
+    async with _running_test_server(multiplayer_server) as uri, connect(uri) as first_client:
+        await _send_join(first_client, "Alice")
+        first_id = await _recv_player_id(first_client)
+
+        await first_client.send(
+            encode_message(
+                ProtocolMessage(
+                    type=ClientMessageType.INTERACT_REQUESTED,
+                    payload=interact_tile_requested_payload(2, 1),
+                )
+            )
+        )
+        message = await _recv_message_type(first_client, ServerMessageType.INTERACTION_RESULT)
+
+    assert message.payload["actor_id"] == first_id
+    assert message.payload["target_id"] == first_id
+    assert message.payload["target_name"] == "Alice"
+    assert message.payload["text"] == "Нужна кирка"
+    assert message.payload["add_to_journal"] is False
+    assert multiplayer_server.character_repository.load_inventory("Alice") == []
+
+
+async def _mining_success_smoke(tmp_path: Path) -> None:
+    """
+    Запускает сервер и проверяет успешное получение камня из тайла rock.
+    """
+    multiplayer_server = _server_for_test(
+        tmp_path,
+        raw_map=_open_map_with_rock(),
+        random_source=random.Random(1),
+    )
+    multiplayer_server.character_repository.load_or_create("Alice", Vec2(32, 32))
+    multiplayer_server.character_repository.add_item("Alice", PICKAXE_ITEM_ID)
+
+    async with _running_test_server(multiplayer_server) as uri, connect(uri) as first_client:
+        await _send_join(first_client, "Alice")
+        first_id = await _recv_player_id(first_client)
+        await _recv_message_type(first_client, ServerMessageType.INVENTORY_UPDATED)
+
+        await first_client.send(
+            encode_message(
+                ProtocolMessage(
+                    type=ClientMessageType.INTERACT_REQUESTED,
+                    payload=interact_tile_requested_payload(2, 1),
+                )
+            )
+        )
+        inventory_message = await _recv_message_type(
+            first_client,
+            ServerMessageType.INVENTORY_UPDATED,
+        )
+        result_message = await _recv_message_type(
+            first_client,
+            ServerMessageType.INTERACTION_RESULT,
+        )
+
+    inventory = inventory_items_from_payload(inventory_message.payload)
+    quantities = {item.item_id: item.quantity for item in inventory}
+    assert result_message.payload["actor_id"] == first_id
+    assert result_message.payload["target_id"] == first_id
+    assert result_message.payload["text"] == "Вы добыли камень"
+    assert result_message.payload["add_to_journal"] is True
+    assert quantities[PICKAXE_ITEM_ID] == 1
+    assert quantities[STONE_ITEM_ID] == 1
+    assert multiplayer_server.character_repository.item_quantity("Alice", STONE_ITEM_ID) == 1
+
+
+async def _mining_failure_smoke(tmp_path: Path) -> None:
+    """
+    Запускает сервер и проверяет неудачную попытку добычи камня.
+    """
+    multiplayer_server = _server_for_test(
+        tmp_path,
+        raw_map=_open_map_with_rock(),
+        random_source=random.Random(0),
+    )
+    multiplayer_server.character_repository.load_or_create("Alice", Vec2(32, 32))
+    multiplayer_server.character_repository.add_item("Alice", PICKAXE_ITEM_ID)
+
+    async with _running_test_server(multiplayer_server) as uri, connect(uri) as first_client:
+        await _send_join(first_client, "Alice")
+        first_id = await _recv_player_id(first_client)
+        await _recv_message_type(first_client, ServerMessageType.INVENTORY_UPDATED)
+
+        await first_client.send(
+            encode_message(
+                ProtocolMessage(
+                    type=ClientMessageType.INTERACT_REQUESTED,
+                    payload=interact_tile_requested_payload(2, 1),
+                )
+            )
+        )
+        result_message = await _recv_message_type(
+            first_client,
+            ServerMessageType.INTERACTION_RESULT,
+        )
+        await _assert_no_message_type(first_client, ServerMessageType.INVENTORY_UPDATED)
+
+    assert result_message.payload["actor_id"] == first_id
+    assert result_message.payload["target_id"] == first_id
+    assert result_message.payload["text"] == "Не удалось добыть камень"
+    assert result_message.payload["add_to_journal"] is True
+    assert multiplayer_server.character_repository.item_quantity("Alice", STONE_ITEM_ID) == 0
+
+
+async def _kopai_exchange_smoke(tmp_path: Path) -> None:
+    """
+    Запускает сервер и проверяет сдачу трех камней NPC Kopai.
+    """
+    multiplayer_server = _server_for_test(tmp_path, raw_map=_open_map_with_kopai())
+    multiplayer_server.character_repository.load_or_create("Alice", Vec2(32, 32))
+    multiplayer_server.character_repository.add_item("Alice", PICKAXE_ITEM_ID)
+    multiplayer_server.character_repository.add_item("Alice", STONE_ITEM_ID, quantity=3)
+
+    async with _running_test_server(multiplayer_server) as uri, connect(uri) as first_client:
+        await _send_join(first_client, "Alice")
+        first_id = await _recv_player_id(first_client)
+        await _recv_message_type(first_client, ServerMessageType.INVENTORY_UPDATED)
+
+        await first_client.send(
+            encode_message(
+                ProtocolMessage(
+                    type=ClientMessageType.INTERACT_REQUESTED,
+                    payload=interact_requested_payload("npc-kopai"),
+                )
+            )
+        )
+        result_message = await _recv_message_type(
+            first_client,
+            ServerMessageType.INTERACTION_RESULT,
+        )
+        inventory_message = await _recv_message_type(
+            first_client,
+            ServerMessageType.INVENTORY_UPDATED,
+        )
+
+    inventory = inventory_items_from_payload(inventory_message.payload)
+    quantities = {item.item_id: item.quantity for item in inventory}
+    assert result_message.payload["actor_id"] == first_id
+    assert result_message.payload["target_id"] == "npc-kopai"
+    assert result_message.payload["target_name"] == "Kopai"
+    assert result_message.payload["text"] == "Отличный камень. Держи Gold."
+    assert quantities[PICKAXE_ITEM_ID] == 1
+    assert quantities[GOLD_ITEM_ID] == 1
+    assert STONE_ITEM_ID not in quantities
+    assert multiplayer_server.character_repository.item_quantity("Alice", STONE_ITEM_ID) == 0
+    assert multiplayer_server.character_repository.item_quantity("Alice", GOLD_ITEM_ID) == 1
+
+
+async def _kopai_grants_pickaxe_before_exchange_smoke(tmp_path: Path) -> None:
+    """
+    Запускает сервер и проверяет приоритет выдачи кирки над обменом камня.
+    """
+    multiplayer_server = _server_for_test(tmp_path, raw_map=_open_map_with_kopai())
+    multiplayer_server.character_repository.load_or_create("Alice", Vec2(32, 32))
+    multiplayer_server.character_repository.add_item("Alice", STONE_ITEM_ID, quantity=3)
+
+    async with _running_test_server(multiplayer_server) as uri, connect(uri) as first_client:
+        await _send_join(first_client, "Alice")
+        first_id = await _recv_player_id(first_client)
+        initial_inventory_message = await _recv_message_type(
+            first_client,
+            ServerMessageType.INVENTORY_UPDATED,
+        )
+
+        await first_client.send(
+            encode_message(
+                ProtocolMessage(
+                    type=ClientMessageType.INTERACT_REQUESTED,
+                    payload=interact_requested_payload("npc-kopai"),
+                )
+            )
+        )
+        result_message = await _recv_message_type(
+            first_client,
+            ServerMessageType.INTERACTION_RESULT,
+        )
+        inventory_message = await _recv_message_type(
+            first_client,
+            ServerMessageType.INVENTORY_UPDATED,
+        )
+
+    initial_quantities = {
+        item.item_id: item.quantity
+        for item in inventory_items_from_payload(initial_inventory_message.payload)
+    }
+    quantities = {
+        item.item_id: item.quantity
+        for item in inventory_items_from_payload(inventory_message.payload)
+    }
+    assert result_message.payload["actor_id"] == first_id
+    assert result_message.payload["target_id"] == "npc-kopai"
+    assert result_message.payload["text"] == "Накопай мне чего-нибудь"
+    assert initial_quantities[STONE_ITEM_ID] == 3
+    assert quantities[STONE_ITEM_ID] == 3
+    assert quantities[PICKAXE_ITEM_ID] == 1
+    assert GOLD_ITEM_ID not in quantities
+    assert multiplayer_server.character_repository.item_quantity("Alice", STONE_ITEM_ID) == 3
     assert multiplayer_server.character_repository.item_quantity("Alice", GOLD_ITEM_ID) == 0
 
 

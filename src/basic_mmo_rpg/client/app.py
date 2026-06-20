@@ -541,9 +541,10 @@ class GameClient:
         if tile is None:
             return None
         tile_x, tile_y = tile
-        if not self.tile_map.is_water_tile(tile_x, tile_y) and not self.tile_map.is_tree_tile(
-            tile_x,
-            tile_y,
+        if (
+            not self.tile_map.is_water_tile(tile_x, tile_y)
+            and not self.tile_map.is_tree_tile(tile_x, tile_y)
+            and not self.tile_map.is_rock_tile(tile_x, tile_y)
         ):
             return None
         return tile

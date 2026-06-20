@@ -167,6 +167,12 @@ class TileMap:
         """
         return self.has_tile_name(tile_x, tile_y, "tree")
 
+    def is_rock_tile(self, tile_x: int, tile_y: int) -> bool:
+        """
+        Проверяет, является ли тайл камнем для добычи.
+        """
+        return self.has_tile_name(tile_x, tile_y, "rock")
+
     def has_tile_name(self, tile_x: int, tile_y: int, name: str) -> bool:
         """
         Проверяет, имеет ли тайл указанное доменное имя.

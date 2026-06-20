@@ -27,6 +27,8 @@ WATER_HOVER_FILL = (112, 190, 235, 70)
 WATER_HOVER_BORDER = (178, 226, 250)
 TREE_HOVER_FILL = (204, 179, 89, 85)
 TREE_HOVER_BORDER = (235, 209, 118)
+ROCK_HOVER_FILL = (178, 184, 192, 85)
+ROCK_HOVER_BORDER = (218, 224, 232)
 TEXT_COLOR = (236, 238, 241)
 MUTED_TEXT_COLOR = (180, 187, 196)
 BUBBLE_BACKGROUND = (20, 22, 26)
@@ -161,9 +163,7 @@ class Renderer:
         """
         tile_x, tile_y = tile
         tile_rect = self.tile_map.tile_rect(tile_x, tile_y)
-        is_tree = self.tile_map.is_tree_tile(tile_x, tile_y)
-        fill_color = TREE_HOVER_FILL if is_tree else WATER_HOVER_FILL
-        border_color = TREE_HOVER_BORDER if is_tree else WATER_HOVER_BORDER
+        fill_color, border_color = self._hover_colors_for_tile(tile_x, tile_y)
         screen_position = camera.world_to_screen(Vec2(tile_rect.x, tile_rect.y))
         rect = pygame.Rect(
             screen_position[0],
@@ -175,6 +175,20 @@ class Renderer:
         overlay.fill(fill_color)
         screen.blit(overlay, rect.topleft)
         pygame.draw.rect(screen, border_color, rect, width=2)
+
+    def _hover_colors_for_tile(
+        self,
+        tile_x: int,
+        tile_y: int,
+    ) -> tuple[tuple[int, int, int, int], tuple[int, int, int]]:
+        """
+        Возвращает цвета подсветки для ресурсного тайла.
+        """
+        if self.tile_map.is_tree_tile(tile_x, tile_y):
+            return TREE_HOVER_FILL, TREE_HOVER_BORDER
+        if self.tile_map.is_rock_tile(tile_x, tile_y):
+            return ROCK_HOVER_FILL, ROCK_HOVER_BORDER
+        return WATER_HOVER_FILL, WATER_HOVER_BORDER
 
     def _draw_player(
         self,

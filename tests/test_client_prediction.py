@@ -221,16 +221,18 @@ def test_client_finds_resource_tile_under_cursor() -> None:
                 ".": {"name": "floor", "solid": False, "color": [50, 120, 60]},
                 "~": {"name": "water", "solid": True, "color": [43, 91, 151]},
                 "T": {"name": "tree", "solid": True, "color": [39, 88, 50]},
+                "R": {"name": "rock", "solid": True, "color": [102, 106, 112]},
             },
             "tiles": [
                 ".....",
                 "..~..",
-                ".T...",
+                ".TR..",
             ],
         }
     )
 
     assert client._resource_tile_at_screen_position((40, 70)) == (1, 2)
+    assert client._resource_tile_at_screen_position((70, 70)) == (2, 2)
     assert client._water_tile_at_screen_position((70, 40)) == (2, 1)
     assert client._water_tile_at_screen_position((40, 70)) is None
     assert client._water_tile_at_screen_position((40, 40)) is None

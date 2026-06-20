@@ -7,6 +7,8 @@ FISH_ITEM_ID = "fish"
 GOLD_ITEM_ID = "gold"
 LUMBER_AXE_ITEM_ID = "lumber_axe"
 LOG_ITEM_ID = "log"
+PICKAXE_ITEM_ID = "pickaxe"
+STONE_ITEM_ID = "stone"
 
 
 class InventoryError(ValueError):
@@ -67,6 +69,16 @@ ITEM_DEFINITIONS: dict[str, ItemDefinition] = {
     LOG_ITEM_ID: ItemDefinition(
         item_id=LOG_ITEM_ID,
         display_name="Бревно",
+        stack_limit=999,
+    ),
+    PICKAXE_ITEM_ID: ItemDefinition(
+        item_id=PICKAXE_ITEM_ID,
+        display_name="Кирка",
+        stack_limit=1,
+    ),
+    STONE_ITEM_ID: ItemDefinition(
+        item_id=STONE_ITEM_ID,
+        display_name="Камень",
         stack_limit=999,
     ),
 }
