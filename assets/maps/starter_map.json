@@ -65,6 +65,16 @@
       "interaction_radius": 64,
       "dialogue": "Иди и поймай мне рыбу",
       "solid": true
+    },
+    {
+      "id": "npc-jack-lumber",
+      "kind": "npc",
+      "name": "Jack Lumber",
+      "position": [704, 288],
+      "size": [24, 30],
+      "interaction_radius": 64,
+      "dialogue": "Наруби немного древесины",
+      "solid": true
     }
   ]
 }

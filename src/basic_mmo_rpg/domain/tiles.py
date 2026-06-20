@@ -139,6 +139,13 @@ class TileMap:
             height=self.tile_size,
         )
 
+    def tile_name_at(self, tile_x: int, tile_y: int) -> str:
+        """
+        Возвращает доменное имя тайла по координатам тайловой сетки.
+        """
+        tile_key = self.tile_at(tile_x, tile_y)
+        return self.definitions[tile_key].name
+
     def is_solid_tile(self, tile_x: int, tile_y: int) -> bool:
         """
         Проверяет, является ли тайл непроходимым.
@@ -152,10 +159,21 @@ class TileMap:
         """
         Проверяет, является ли тайл водой.
         """
+        return self.has_tile_name(tile_x, tile_y, "water")
+
+    def is_tree_tile(self, tile_x: int, tile_y: int) -> bool:
+        """
+        Проверяет, является ли тайл деревом.
+        """
+        return self.has_tile_name(tile_x, tile_y, "tree")
+
+    def has_tile_name(self, tile_x: int, tile_y: int, name: str) -> bool:
+        """
+        Проверяет, имеет ли тайл указанное доменное имя.
+        """
         if not self.in_bounds(tile_x, tile_y):
             return False
-        tile_key = self.tile_at(tile_x, tile_y)
-        return self.definitions[tile_key].name == "water"
+        return self.tile_name_at(tile_x, tile_y) == name
 
     def is_rect_blocked(self, rect: Rect, blockers: Iterable[Rect] = ()) -> bool:
         """

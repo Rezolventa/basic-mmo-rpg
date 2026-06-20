@@ -17,6 +17,8 @@ from basic_mmo_rpg.domain.inventory import (
     FISH_ITEM_ID,
     FISHING_ROD_ITEM_ID,
     GOLD_ITEM_ID,
+    LOG_ITEM_ID,
+    LUMBER_AXE_ITEM_ID,
     InventoryLimitError,
     ItemStack,
 )
@@ -48,11 +50,14 @@ DEFAULT_TICK_RATE = 30.0
 DEFAULT_SNAPSHOT_RATE = 20.0
 DEFAULT_SAVE_INTERVAL = 5.0
 JOIN_TIMEOUT_SECONDS = 5.0
-FISHING_DISTANCE = 64.0
-FISHING_COOLDOWN_SECONDS = 1.0
+TILE_GATHERING_DISTANCE = 64.0
+TILE_GATHERING_COOLDOWN_SECONDS = 1.0
 FISHING_SUCCESS_CHANCE = 0.5
 FUNDAY_REQUIRED_FISH = 2
 FUNDAY_GOLD_REWARD = 1
+LUMBERJACKING_SUCCESS_CHANCE = 1.0
+JACK_REQUIRED_LOGS = 5
+JACK_GOLD_REWARD = 1
 INVENTORY_FULL_TEXT = "Инвентарь полон"
 
 logger = logging.getLogger(__name__)
@@ -68,6 +73,42 @@ class PlayerSession:
     player_id: str
     character_name: str
     websocket: ServerConnection
+
+
+@dataclass(frozen=True, slots=True)
+class TileGatheringRule:
+    """
+    Описывает server-authoritative правило добычи ресурса из тайла.
+    """
+
+    tile_name: str
+    tool_item_id: str
+    reward_item_id: str
+    success_chance: float
+    missing_tool_text: str
+    success_text: str
+    failure_text: str | None = None
+
+
+TILE_GATHERING_RULES: dict[str, TileGatheringRule] = {
+    "water": TileGatheringRule(
+        tile_name="water",
+        tool_item_id=FISHING_ROD_ITEM_ID,
+        reward_item_id=FISH_ITEM_ID,
+        success_chance=FISHING_SUCCESS_CHANCE,
+        missing_tool_text="Нужна удочка",
+        success_text="Вы поймали рыбу",
+        failure_text="Рыба сорвалась",
+    ),
+    "tree": TileGatheringRule(
+        tile_name="tree",
+        tool_item_id=LUMBER_AXE_ITEM_ID,
+        reward_item_id=LOG_ITEM_ID,
+        success_chance=LUMBERJACKING_SUCCESS_CHANCE,
+        missing_tool_text="Нужен топор",
+        success_text="Вы нарубили древесины",
+    ),
+}
 
 
 class MultiplayerServer:
@@ -95,7 +136,7 @@ class MultiplayerServer:
         self.connections: dict[str, ServerConnection] = {}
         self.sessions: dict[str, PlayerSession] = {}
         self.active_character_sessions: dict[str, str] = {}
-        self.fishing_available_at: dict[str, float] = {}
+        self.gathering_available_at: dict[str, float] = {}
         self.random = random_source or random.Random()
 
     async def run(self, host: str, port: int) -> None:
@@ -350,6 +391,14 @@ class MultiplayerServer:
                 entity.dialogue,
             )
             return
+        if entity.entity_id == "npc-jack-lumber":
+            await self._handle_jack_lumber_interaction(
+                session,
+                entity.entity_id,
+                entity.name,
+                entity.dialogue,
+            )
+            return
 
         await self._send(
             session.websocket,
@@ -428,6 +477,59 @@ class MultiplayerServer:
             text=default_dialogue,
         )
 
+    async def _handle_jack_lumber_interaction(
+        self,
+        session: PlayerSession,
+        target_id: str,
+        target_name: str,
+        default_dialogue: str,
+    ) -> None:
+        """
+        Обрабатывает туториальную логику NPC Jack Lumber.
+        """
+        if not self.character_repository.has_item(session.character_name, LUMBER_AXE_ITEM_ID):
+            await self._send_interaction_result(
+                session=session,
+                target_id=target_id,
+                target_name=target_name,
+                text=default_dialogue,
+            )
+            await self._grant_item_if_needed(session, LUMBER_AXE_ITEM_ID)
+            return
+
+        log_quantity = self.character_repository.item_quantity(
+            session.character_name,
+            LOG_ITEM_ID,
+        )
+        if log_quantity >= JACK_REQUIRED_LOGS:
+            try:
+                inventory, exchanged = self.character_repository.exchange_items(
+                    name=session.character_name,
+                    cost_item_id=LOG_ITEM_ID,
+                    cost_quantity=JACK_REQUIRED_LOGS,
+                    reward_item_id=GOLD_ITEM_ID,
+                    reward_quantity=JACK_GOLD_REWARD,
+                )
+            except InventoryLimitError as exc:
+                await self._send_inventory_limit_result(session, target_id, target_name, exc)
+                return
+            if exchanged:
+                await self._send_interaction_result(
+                    session=session,
+                    target_id=target_id,
+                    target_name=target_name,
+                    text="Отличная древесина. Держи Gold.",
+                )
+                await self._send_inventory_update(session, inventory)
+            return
+
+        await self._send_interaction_result(
+            session=session,
+            target_id=target_id,
+            target_name=target_name,
+            text=default_dialogue,
+        )
+
     async def _handle_tile_interaction(
         self,
         session: PlayerSession,
@@ -437,7 +539,11 @@ class MultiplayerServer:
         Проверяет взаимодействие с тайлом карты.
         """
         tile_x, tile_y = tile
-        if not self.world.tile_map.is_water_tile(tile_x, tile_y):
+        if not self.world.tile_map.in_bounds(tile_x, tile_y):
+            return
+        tile_name = self.world.tile_map.tile_name_at(tile_x, tile_y)
+        rule = TILE_GATHERING_RULES.get(tile_name)
+        if rule is None:
             return
 
         player = self.world.players.get(session.player_id)
@@ -445,37 +551,35 @@ class MultiplayerServer:
             return
 
         tile_center = self.world.tile_map.tile_rect(tile_x, tile_y).center
-        if (player.center - tile_center).length > FISHING_DISTANCE:
+        if (player.center - tile_center).length > TILE_GATHERING_DISTANCE:
             return
-        if not self.character_repository.has_item(session.character_name, FISHING_ROD_ITEM_ID):
+        if not self.character_repository.has_item(session.character_name, rule.tool_item_id):
             await self._send_interaction_result(
                 session=session,
                 target_id=session.player_id,
                 target_name=session.character_name,
-                text="Нужна удочка",
+                text=rule.missing_tool_text,
                 add_to_journal=False,
             )
             return
 
         now = time.monotonic()
-        if now < self.fishing_available_at.get(session.character_name, 0.0):
+        if now < self.gathering_available_at.get(session.character_name, 0.0):
             return
-        self.fishing_available_at[session.character_name] = now + FISHING_COOLDOWN_SECONDS
+        self.gathering_available_at[session.character_name] = now + TILE_GATHERING_COOLDOWN_SECONDS
 
-        if self.random.random() < FISHING_SUCCESS_CHANCE:
+        if rule.success_chance >= 1.0 or self.random.random() < rule.success_chance:
             try:
-                inventory = self.character_repository.add_item(session.character_name, FISH_ITEM_ID)
+                inventory = self.character_repository.add_item(
+                    session.character_name,
+                    rule.reward_item_id,
+                )
             except InventoryLimitError as exc:
-                logger.info(
-                    "Inventory limit reached: name=%s error=%s",
+                await self._send_inventory_limit_result(
+                    session,
+                    session.player_id,
                     session.character_name,
                     exc,
-                )
-                await self._send_interaction_result(
-                    session=session,
-                    target_id=session.player_id,
-                    target_name=session.character_name,
-                    text=INVENTORY_FULL_TEXT,
                 )
                 return
             await self._send_inventory_update(session, inventory)
@@ -483,16 +587,17 @@ class MultiplayerServer:
                 session=session,
                 target_id=session.player_id,
                 target_name=session.character_name,
-                text="Вы поймали рыбу",
+                text=rule.success_text,
             )
             return
 
-        await self._send_interaction_result(
-            session=session,
-            target_id=session.player_id,
-            target_name=session.character_name,
-            text="Рыба сорвалась",
-        )
+        if rule.failure_text is not None:
+            await self._send_interaction_result(
+                session=session,
+                target_id=session.player_id,
+                target_name=session.character_name,
+                text=rule.failure_text,
+            )
 
     async def _send_interaction_result(
         self,
@@ -524,19 +629,44 @@ class MultiplayerServer:
         """
         Выдает персонажу удочку, если ее еще нет в инвентаре.
         """
-        _, granted = self.character_repository.add_item_if_absent(
-            session.character_name,
-            FISHING_ROD_ITEM_ID,
-        )
+        await self._grant_item_if_needed(session, FISHING_ROD_ITEM_ID)
+
+    async def _grant_item_if_needed(self, session: PlayerSession, item_id: str) -> None:
+        """
+        Выдает персонажу предмет, если такого предмета еще нет в инвентаре.
+        """
+        _, granted = self.character_repository.add_item_if_absent(session.character_name, item_id)
         if not granted:
             return
 
         logger.info(
             "Inventory item granted: name=%s item_id=%s",
             session.character_name,
-            FISHING_ROD_ITEM_ID,
+            item_id,
         )
         await self._send_inventory_update(session)
+
+    async def _send_inventory_limit_result(
+        self,
+        session: PlayerSession,
+        target_id: str,
+        target_name: str,
+        error: InventoryLimitError,
+    ) -> None:
+        """
+        Логирует переполнение инвентаря и отправляет игровой отказ игроку.
+        """
+        logger.info(
+            "Inventory limit reached: name=%s error=%s",
+            session.character_name,
+            error,
+        )
+        await self._send_interaction_result(
+            session=session,
+            target_id=target_id,
+            target_name=target_name,
+            text=INVENTORY_FULL_TEXT,
+        )
 
     async def _send_inventory_update(
         self,

@@ -12,7 +12,13 @@ from websockets.asyncio.client import connect
 from websockets.asyncio.server import serve
 
 from basic_mmo_rpg.domain.geometry import Vec2
-from basic_mmo_rpg.domain.inventory import FISH_ITEM_ID, FISHING_ROD_ITEM_ID, GOLD_ITEM_ID
+from basic_mmo_rpg.domain.inventory import (
+    FISH_ITEM_ID,
+    FISHING_ROD_ITEM_ID,
+    GOLD_ITEM_ID,
+    LOG_ITEM_ID,
+    LUMBER_AXE_ITEM_ID,
+)
 from basic_mmo_rpg.domain.movement import MovementIntent, PlayerState
 from basic_mmo_rpg.server.app import MultiplayerServer
 from basic_mmo_rpg.server.world import MultiplayerWorld
@@ -97,6 +103,82 @@ def _open_map_with_water() -> object:
             "..........",
         ],
     }
+
+
+def _open_map_with_tree() -> object:
+    """
+    Возвращает открытую карту с деревом рядом со spawn-ом для тестов рубки.
+    """
+    return {
+        "tile_size": 32,
+        "spawn": [32, 32],
+        "legend": {
+            ".": {"name": "floor", "solid": False, "color": [50, 120, 60]},
+            "T": {"name": "tree", "solid": True, "color": [39, 88, 50]},
+            "#": {"name": "wall", "solid": True, "color": [90, 90, 90]},
+        },
+        "tiles": [
+            "..........",
+            "..T.......",
+            "..........",
+            "..........",
+        ],
+    }
+
+
+def _open_map_with_water_and_tree() -> object:
+    """
+    Возвращает открытую карту с водой и деревом рядом со spawn-ом.
+    """
+    return {
+        "tile_size": 32,
+        "spawn": [32, 32],
+        "legend": {
+            ".": {"name": "floor", "solid": False, "color": [50, 120, 60]},
+            "~": {"name": "water", "solid": True, "color": [43, 91, 151]},
+            "T": {"name": "tree", "solid": True, "color": [39, 88, 50]},
+            "#": {"name": "wall", "solid": True, "color": [90, 90, 90]},
+        },
+        "tiles": [
+            "..........",
+            "..~.......",
+            "..T.......",
+            "..........",
+        ],
+    }
+
+
+def _open_map_with_jack_lumber() -> object:
+    """
+    Возвращает открытую карту с NPC Jack Lumber рядом со spawn-ом.
+    """
+    raw_map: dict[str, object] = {
+        "tile_size": 32,
+        "spawn": [32, 32],
+        "legend": {
+            ".": {"name": "floor", "solid": False, "color": [50, 120, 60]},
+            "#": {"name": "wall", "solid": True, "color": [90, 90, 90]},
+        },
+        "tiles": [
+            "..........",
+            "..........",
+            "..........",
+            "..........",
+        ],
+        "entities": [
+            {
+                "id": "npc-jack-lumber",
+                "kind": "npc",
+                "name": "Jack Lumber",
+                "position": [64, 32],
+                "size": [24, 30],
+                "interaction_radius": 64,
+                "dialogue": "Наруби немного древесины",
+                "solid": True,
+            }
+        ],
+    }
+    return raw_map
 
 
 def test_websocket_server_accepts_two_clients_and_broadcasts_movement(tmp_path: Path) -> None:
@@ -195,6 +277,50 @@ def test_websocket_server_exchange_stack_overflow_is_handled(tmp_path: Path) -> 
     Проверяет, что полный стак Gold не обрывает соединение во время обмена.
     """
     asyncio.run(_exchange_stack_overflow_smoke(tmp_path))
+
+
+def test_websocket_server_jack_lumber_grants_axe(tmp_path: Path) -> None:
+    """
+    Проверяет, что Jack Lumber выдает топор, если у игрока его еще нет.
+    """
+    asyncio.run(_jack_lumber_grants_axe_smoke(tmp_path))
+
+
+def test_websocket_server_lumberjacking_requires_axe(tmp_path: Path) -> None:
+    """
+    Проверяет, что рубка без топора показывает только локальный пузырь.
+    """
+    asyncio.run(_lumberjacking_requires_axe_smoke(tmp_path))
+
+
+def test_websocket_server_lumberjacking_success_adds_log(tmp_path: Path) -> None:
+    """
+    Проверяет успешную рубку дерева и сохранение бревна в инвентаре.
+    """
+    asyncio.run(_lumberjacking_success_smoke(tmp_path))
+
+
+def test_websocket_server_gathering_cooldown_is_shared_between_resources(
+    tmp_path: Path,
+) -> None:
+    """
+    Проверяет, что рыбалка ставит cooldown и для немедленной рубки дерева.
+    """
+    asyncio.run(_gathering_shared_cooldown_smoke(tmp_path))
+
+
+def test_websocket_server_jack_lumber_exchanges_logs_for_gold(tmp_path: Path) -> None:
+    """
+    Проверяет обмен пяти бревен на Gold при взаимодействии с Jack Lumber.
+    """
+    asyncio.run(_jack_lumber_exchange_smoke(tmp_path))
+
+
+def test_websocket_server_jack_lumber_grants_axe_before_exchange(tmp_path: Path) -> None:
+    """
+    Проверяет, что Jack Lumber сначала выдает топор, даже если у игрока уже есть бревна.
+    """
+    asyncio.run(_jack_lumber_grants_axe_before_exchange_smoke(tmp_path))
 
 
 async def _websocket_server_smoke(tmp_path: Path) -> None:
@@ -700,6 +826,254 @@ async def _exchange_stack_overflow_smoke(tmp_path: Path) -> None:
     assert result_message.payload["text"] == "Инвентарь полон"
     assert multiplayer_server.character_repository.item_quantity("Alice", FISH_ITEM_ID) == 2
     assert multiplayer_server.character_repository.item_quantity("Alice", GOLD_ITEM_ID) == 999
+
+
+async def _jack_lumber_grants_axe_smoke(tmp_path: Path) -> None:
+    """
+    Запускает сервер и проверяет успешное взаимодействие с Jack Lumber без топора.
+    """
+    multiplayer_server = _server_for_test(tmp_path, raw_map=_open_map_with_jack_lumber())
+
+    async with _running_test_server(multiplayer_server) as uri, connect(uri) as first_client:
+        await _send_join(first_client, "Alice")
+        first_id = await _recv_player_id(first_client)
+
+        await first_client.send(
+            encode_message(
+                ProtocolMessage(
+                    type=ClientMessageType.INTERACT_REQUESTED,
+                    payload=interact_requested_payload("npc-jack-lumber"),
+                )
+            )
+        )
+        message = await _recv_message_type(first_client, ServerMessageType.INTERACTION_RESULT)
+        inventory_message = await _recv_message_type(
+            first_client,
+            ServerMessageType.INVENTORY_UPDATED,
+        )
+
+    inventory = inventory_items_from_payload(inventory_message.payload)
+    assert message.payload["actor_id"] == first_id
+    assert message.payload["target_id"] == "npc-jack-lumber"
+    assert message.payload["target_name"] == "Jack Lumber"
+    assert message.payload["text"] == "Наруби немного древесины"
+    assert len(inventory) == 1
+    assert inventory[0].item_id == LUMBER_AXE_ITEM_ID
+    assert inventory[0].quantity == 1
+    assert multiplayer_server.character_repository.load_inventory("Alice") == inventory
+
+
+async def _lumberjacking_requires_axe_smoke(tmp_path: Path) -> None:
+    """
+    Запускает сервер и проверяет ответ на рубку без топора.
+    """
+    multiplayer_server = _server_for_test(tmp_path, raw_map=_open_map_with_tree())
+
+    async with _running_test_server(multiplayer_server) as uri, connect(uri) as first_client:
+        await _send_join(first_client, "Alice")
+        first_id = await _recv_player_id(first_client)
+
+        await first_client.send(
+            encode_message(
+                ProtocolMessage(
+                    type=ClientMessageType.INTERACT_REQUESTED,
+                    payload=interact_tile_requested_payload(2, 1),
+                )
+            )
+        )
+        message = await _recv_message_type(first_client, ServerMessageType.INTERACTION_RESULT)
+
+    assert message.payload["actor_id"] == first_id
+    assert message.payload["target_id"] == first_id
+    assert message.payload["target_name"] == "Alice"
+    assert message.payload["text"] == "Нужен топор"
+    assert message.payload["add_to_journal"] is False
+    assert multiplayer_server.character_repository.load_inventory("Alice") == []
+
+
+async def _lumberjacking_success_smoke(tmp_path: Path) -> None:
+    """
+    Запускает сервер и проверяет успешное получение бревна из тайла дерева.
+    """
+    multiplayer_server = _server_for_test(tmp_path, raw_map=_open_map_with_tree())
+    multiplayer_server.character_repository.load_or_create("Alice", Vec2(32, 32))
+    multiplayer_server.character_repository.add_item("Alice", LUMBER_AXE_ITEM_ID)
+
+    async with _running_test_server(multiplayer_server) as uri, connect(uri) as first_client:
+        await _send_join(first_client, "Alice")
+        first_id = await _recv_player_id(first_client)
+        await _recv_message_type(first_client, ServerMessageType.INVENTORY_UPDATED)
+
+        await first_client.send(
+            encode_message(
+                ProtocolMessage(
+                    type=ClientMessageType.INTERACT_REQUESTED,
+                    payload=interact_tile_requested_payload(2, 1),
+                )
+            )
+        )
+        inventory_message = await _recv_message_type(
+            first_client,
+            ServerMessageType.INVENTORY_UPDATED,
+        )
+        result_message = await _recv_message_type(
+            first_client,
+            ServerMessageType.INTERACTION_RESULT,
+        )
+
+    inventory = inventory_items_from_payload(inventory_message.payload)
+    quantities = {item.item_id: item.quantity for item in inventory}
+    assert result_message.payload["actor_id"] == first_id
+    assert result_message.payload["target_id"] == first_id
+    assert result_message.payload["text"] == "Вы нарубили древесины"
+    assert result_message.payload["add_to_journal"] is True
+    assert quantities[LUMBER_AXE_ITEM_ID] == 1
+    assert quantities[LOG_ITEM_ID] == 1
+    assert multiplayer_server.character_repository.item_quantity("Alice", LOG_ITEM_ID) == 1
+
+
+async def _gathering_shared_cooldown_smoke(tmp_path: Path) -> None:
+    """
+    Запускает сервер и проверяет общий cooldown между рыбалкой и рубкой.
+    """
+    multiplayer_server = _server_for_test(
+        tmp_path,
+        raw_map=_open_map_with_water_and_tree(),
+        random_source=random.Random(1),
+    )
+    multiplayer_server.character_repository.load_or_create("Alice", Vec2(32, 32))
+    multiplayer_server.character_repository.add_item("Alice", FISHING_ROD_ITEM_ID)
+    multiplayer_server.character_repository.add_item("Alice", LUMBER_AXE_ITEM_ID)
+
+    async with _running_test_server(multiplayer_server) as uri, connect(uri) as first_client:
+        await _send_join(first_client, "Alice")
+        first_id = await _recv_player_id(first_client)
+        await _recv_message_type(first_client, ServerMessageType.INVENTORY_UPDATED)
+
+        await first_client.send(
+            encode_message(
+                ProtocolMessage(
+                    type=ClientMessageType.INTERACT_REQUESTED,
+                    payload=interact_tile_requested_payload(2, 1),
+                )
+            )
+        )
+        await _recv_message_type(first_client, ServerMessageType.INVENTORY_UPDATED)
+        fishing_result = await _recv_message_type(
+            first_client,
+            ServerMessageType.INTERACTION_RESULT,
+        )
+
+        await first_client.send(
+            encode_message(
+                ProtocolMessage(
+                    type=ClientMessageType.INTERACT_REQUESTED,
+                    payload=interact_tile_requested_payload(2, 2),
+                )
+            )
+        )
+        await _assert_no_message_type(first_client, ServerMessageType.INTERACTION_RESULT)
+
+    assert fishing_result.payload["actor_id"] == first_id
+    assert fishing_result.payload["text"] == "Вы поймали рыбу"
+    assert multiplayer_server.character_repository.item_quantity("Alice", FISH_ITEM_ID) == 1
+    assert multiplayer_server.character_repository.item_quantity("Alice", LOG_ITEM_ID) == 0
+
+
+async def _jack_lumber_exchange_smoke(tmp_path: Path) -> None:
+    """
+    Запускает сервер и проверяет сдачу пяти бревен NPC Jack Lumber.
+    """
+    multiplayer_server = _server_for_test(tmp_path, raw_map=_open_map_with_jack_lumber())
+    multiplayer_server.character_repository.load_or_create("Alice", Vec2(32, 32))
+    multiplayer_server.character_repository.add_item("Alice", LUMBER_AXE_ITEM_ID)
+    multiplayer_server.character_repository.add_item("Alice", LOG_ITEM_ID, quantity=5)
+
+    async with _running_test_server(multiplayer_server) as uri, connect(uri) as first_client:
+        await _send_join(first_client, "Alice")
+        first_id = await _recv_player_id(first_client)
+        await _recv_message_type(first_client, ServerMessageType.INVENTORY_UPDATED)
+
+        await first_client.send(
+            encode_message(
+                ProtocolMessage(
+                    type=ClientMessageType.INTERACT_REQUESTED,
+                    payload=interact_requested_payload("npc-jack-lumber"),
+                )
+            )
+        )
+        result_message = await _recv_message_type(
+            first_client,
+            ServerMessageType.INTERACTION_RESULT,
+        )
+        inventory_message = await _recv_message_type(
+            first_client,
+            ServerMessageType.INVENTORY_UPDATED,
+        )
+
+    inventory = inventory_items_from_payload(inventory_message.payload)
+    quantities = {item.item_id: item.quantity for item in inventory}
+    assert result_message.payload["actor_id"] == first_id
+    assert result_message.payload["target_id"] == "npc-jack-lumber"
+    assert result_message.payload["target_name"] == "Jack Lumber"
+    assert result_message.payload["text"] == "Отличная древесина. Держи Gold."
+    assert quantities[LUMBER_AXE_ITEM_ID] == 1
+    assert quantities[GOLD_ITEM_ID] == 1
+    assert LOG_ITEM_ID not in quantities
+    assert multiplayer_server.character_repository.item_quantity("Alice", LOG_ITEM_ID) == 0
+    assert multiplayer_server.character_repository.item_quantity("Alice", GOLD_ITEM_ID) == 1
+
+
+async def _jack_lumber_grants_axe_before_exchange_smoke(tmp_path: Path) -> None:
+    """
+    Запускает сервер и проверяет приоритет выдачи топора над обменом бревен.
+    """
+    multiplayer_server = _server_for_test(tmp_path, raw_map=_open_map_with_jack_lumber())
+    multiplayer_server.character_repository.load_or_create("Alice", Vec2(32, 32))
+    multiplayer_server.character_repository.add_item("Alice", LOG_ITEM_ID, quantity=5)
+
+    async with _running_test_server(multiplayer_server) as uri, connect(uri) as first_client:
+        await _send_join(first_client, "Alice")
+        first_id = await _recv_player_id(first_client)
+        initial_inventory_message = await _recv_message_type(
+            first_client,
+            ServerMessageType.INVENTORY_UPDATED,
+        )
+
+        await first_client.send(
+            encode_message(
+                ProtocolMessage(
+                    type=ClientMessageType.INTERACT_REQUESTED,
+                    payload=interact_requested_payload("npc-jack-lumber"),
+                )
+            )
+        )
+        result_message = await _recv_message_type(
+            first_client,
+            ServerMessageType.INTERACTION_RESULT,
+        )
+        inventory_message = await _recv_message_type(
+            first_client,
+            ServerMessageType.INVENTORY_UPDATED,
+        )
+
+    initial_quantities = {
+        item.item_id: item.quantity
+        for item in inventory_items_from_payload(initial_inventory_message.payload)
+    }
+    quantities = {
+        item.item_id: item.quantity
+        for item in inventory_items_from_payload(inventory_message.payload)
+    }
+    assert result_message.payload["actor_id"] == first_id
+    assert result_message.payload["target_id"] == "npc-jack-lumber"
+    assert result_message.payload["text"] == "Наруби немного древесины"
+    assert initial_quantities[LOG_ITEM_ID] == 5
+    assert quantities[LOG_ITEM_ID] == 5
+    assert quantities[LUMBER_AXE_ITEM_ID] == 1
+    assert GOLD_ITEM_ID not in quantities
+    assert multiplayer_server.character_repository.item_quantity("Alice", LOG_ITEM_ID) == 5
+    assert multiplayer_server.character_repository.item_quantity("Alice", GOLD_ITEM_ID) == 0
 
 
 @contextlib.asynccontextmanager

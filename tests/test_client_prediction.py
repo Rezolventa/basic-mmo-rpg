@@ -207,9 +207,9 @@ def test_client_finds_entity_strictly_under_cursor() -> None:
     assert client._entity_at_screen_position((20, 20)) is None
 
 
-def test_client_finds_water_tile_under_cursor() -> None:
+def test_client_finds_resource_tile_under_cursor() -> None:
     """
-    Проверяет выбор водного тайла по экранной позиции курсора.
+    Проверяет выбор ресурсного тайла по экранной позиции курсора.
     """
     client = object.__new__(GameClient)
     client.camera = SimpleNamespace(screen_to_world=lambda position: Vec2(*position))
@@ -220,18 +220,21 @@ def test_client_finds_water_tile_under_cursor() -> None:
             "legend": {
                 ".": {"name": "floor", "solid": False, "color": [50, 120, 60]},
                 "~": {"name": "water", "solid": True, "color": [43, 91, 151]},
+                "T": {"name": "tree", "solid": True, "color": [39, 88, 50]},
             },
             "tiles": [
                 ".....",
                 "..~..",
-                ".....",
+                ".T...",
             ],
         }
     )
 
+    assert client._resource_tile_at_screen_position((40, 70)) == (1, 2)
     assert client._water_tile_at_screen_position((70, 40)) == (2, 1)
+    assert client._water_tile_at_screen_position((40, 70)) is None
     assert client._water_tile_at_screen_position((40, 40)) is None
-    assert client._water_tile_at_screen_position((999, 999)) is None
+    assert client._resource_tile_at_screen_position((999, 999)) is None
 
 
 def test_client_applies_inventory_update() -> None:

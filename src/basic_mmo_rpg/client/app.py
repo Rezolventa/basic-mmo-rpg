@@ -264,7 +264,7 @@ class GameClient:
             self.network_client.send_interaction_request(entity.entity_id)
             return
 
-        tile = self._water_tile_at_screen_position(pygame.mouse.get_pos())
+        tile = self._resource_tile_at_screen_position(pygame.mouse.get_pos())
         if tile is not None:
             self.network_client.send_tile_interaction_request(*tile)
 
@@ -503,7 +503,7 @@ class GameClient:
         mouse_position = pygame.mouse.get_pos()
         entity = self._entity_at_screen_position(mouse_position)
         self.hovered_entity_id = entity.entity_id if entity is not None else None
-        self.hovered_tile = None if entity is not None else self._water_tile_at_screen_position(
+        self.hovered_tile = None if entity is not None else self._resource_tile_at_screen_position(
             mouse_position
         )
 
@@ -521,12 +521,30 @@ class GameClient:
         """
         Возвращает координаты водного тайла под экранной позицией курсора.
         """
+        tile = self._resource_tile_at_screen_position(position)
+        if tile is None:
+            return None
+        tile_x, tile_y = tile
+        if not self.tile_map.is_water_tile(tile_x, tile_y):
+            return None
+        return tile
+
+    def _resource_tile_at_screen_position(
+        self,
+        position: tuple[int, int],
+    ) -> tuple[int, int] | None:
+        """
+        Возвращает координаты ресурсного тайла под экранной позицией курсора.
+        """
         world_position = self.camera.screen_to_world(position)
         tile = self.tile_map.tile_coordinates_at(world_position)
         if tile is None:
             return None
         tile_x, tile_y = tile
-        if not self.tile_map.is_water_tile(tile_x, tile_y):
+        if not self.tile_map.is_water_tile(tile_x, tile_y) and not self.tile_map.is_tree_tile(
+            tile_x,
+            tile_y,
+        ):
             return None
         return tile
 

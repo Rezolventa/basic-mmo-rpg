@@ -5,6 +5,8 @@ from dataclasses import dataclass
 FISHING_ROD_ITEM_ID = "fishing_rod"
 FISH_ITEM_ID = "fish"
 GOLD_ITEM_ID = "gold"
+LUMBER_AXE_ITEM_ID = "lumber_axe"
+LOG_ITEM_ID = "log"
 
 
 class InventoryError(ValueError):
@@ -55,6 +57,16 @@ ITEM_DEFINITIONS: dict[str, ItemDefinition] = {
     GOLD_ITEM_ID: ItemDefinition(
         item_id=GOLD_ITEM_ID,
         display_name="Gold",
+        stack_limit=999,
+    ),
+    LUMBER_AXE_ITEM_ID: ItemDefinition(
+        item_id=LUMBER_AXE_ITEM_ID,
+        display_name="Топор для рубки",
+        stack_limit=1,
+    ),
+    LOG_ITEM_ID: ItemDefinition(
+        item_id=LOG_ITEM_ID,
+        display_name="Бревно",
         stack_limit=999,
     ),
 }
