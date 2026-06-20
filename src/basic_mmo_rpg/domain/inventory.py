@@ -11,6 +11,8 @@ LUMBER_AXE_ITEM_ID = "lumber_axe"
 LOG_ITEM_ID = "log"
 PICKAXE_ITEM_ID = "pickaxe"
 STONE_ITEM_ID = "stone"
+SHEARS_ITEM_ID = "shears"
+WOOL_ITEM_ID = "wool"
 
 
 class InventoryError(ValueError):
@@ -85,6 +87,17 @@ ITEM_DEFINITIONS: dict[str, ItemDefinition] = {
     STONE_ITEM_ID: ItemDefinition(
         item_id=STONE_ITEM_ID,
         display_name="Камень",
+        stack_limit=999,
+    ),
+    SHEARS_ITEM_ID: ItemDefinition(
+        item_id=SHEARS_ITEM_ID,
+        display_name="Ножницы",
+        stack_limit=1,
+        equipment_slot=MAIN_HAND_SLOT,
+    ),
+    WOOL_ITEM_ID: ItemDefinition(
+        item_id=WOOL_ITEM_ID,
+        display_name="Шерсть",
         stack_limit=999,
     ),
 }

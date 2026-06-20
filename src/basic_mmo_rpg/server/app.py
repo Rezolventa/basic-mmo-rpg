@@ -12,7 +12,7 @@ from pathlib import Path
 
 from websockets.asyncio.server import ServerConnection, serve
 
-from basic_mmo_rpg.domain.entities import EntityKind
+from basic_mmo_rpg.domain.entities import EntityKind, WorldEntity
 from basic_mmo_rpg.domain.equipment import (
     MAIN_HAND_SLOT,
     Equipment,
@@ -25,7 +25,9 @@ from basic_mmo_rpg.domain.inventory import (
     LOG_ITEM_ID,
     LUMBER_AXE_ITEM_ID,
     PICKAXE_ITEM_ID,
+    SHEARS_ITEM_ID,
     STONE_ITEM_ID,
+    WOOL_ITEM_ID,
     InventoryLimitError,
     ItemStack,
 )
@@ -71,6 +73,9 @@ JACK_GOLD_REWARD = 1
 MINING_SUCCESS_CHANCE = 0.8
 KOPAI_REQUIRED_STONES = 3
 KOPAI_GOLD_REWARD = 1
+FOGU_REQUIRED_WOOL = 1
+FOGU_GOLD_REWARD = 1
+WOOL_REGROW_SECONDS = 30.0
 INVENTORY_FULL_TEXT = "Инвентарь полон"
 
 logger = logging.getLogger(__name__)
@@ -429,7 +434,7 @@ class MultiplayerServer:
                 target_id,
             )
             return
-        if entity.kind != EntityKind.NPC:
+        if entity.kind not in {EntityKind.NPC, EntityKind.GATE, EntityKind.CREATURE}:
             logger.info(
                 "Interaction ignored: name=%s target_id=%s reason=unsupported_kind",
                 session.character_name,
@@ -453,6 +458,13 @@ class MultiplayerServer:
             session.character_name,
             target_id,
         )
+        if entity.kind == EntityKind.GATE:
+            await self._handle_gate_interaction(session, entity.entity_id, entity.name)
+            return
+        if entity.kind == EntityKind.CREATURE:
+            await self._handle_creature_interaction(session, entity)
+            return
+
         if entity.entity_id == "npc-funday":
             await self._handle_funday_interaction(
                 session,
@@ -471,6 +483,14 @@ class MultiplayerServer:
             return
         if entity.entity_id == "npc-kopai":
             await self._handle_kopai_interaction(
+                session,
+                entity.entity_id,
+                entity.name,
+                entity.dialogue,
+            )
+            return
+        if entity.entity_id == "npc-fogu":
+            await self._handle_fogu_interaction(
                 session,
                 entity.entity_id,
                 entity.name,
@@ -660,6 +680,152 @@ class MultiplayerServer:
             target_name=target_name,
             text=default_dialogue,
         )
+
+    async def _handle_fogu_interaction(
+        self,
+        session: PlayerSession,
+        target_id: str,
+        target_name: str,
+        default_dialogue: str,
+    ) -> None:
+        """
+        Обрабатывает туториальную логику NPC Fogu.
+        """
+        if not self.character_repository.has_item(session.character_name, SHEARS_ITEM_ID):
+            await self._send_interaction_result(
+                session=session,
+                target_id=target_id,
+                target_name=target_name,
+                text=default_dialogue,
+            )
+            await self._grant_item_if_needed(session, SHEARS_ITEM_ID)
+            return
+
+        wool_quantity = self.character_repository.item_quantity(
+            session.character_name,
+            WOOL_ITEM_ID,
+        )
+        if wool_quantity >= FOGU_REQUIRED_WOOL:
+            try:
+                inventory, exchanged = self.character_repository.exchange_items(
+                    name=session.character_name,
+                    cost_item_id=WOOL_ITEM_ID,
+                    cost_quantity=FOGU_REQUIRED_WOOL,
+                    reward_item_id=GOLD_ITEM_ID,
+                    reward_quantity=FOGU_GOLD_REWARD,
+                )
+            except InventoryLimitError as exc:
+                await self._send_inventory_limit_result(session, target_id, target_name, exc)
+                return
+            if exchanged:
+                await self._send_interaction_result(
+                    session=session,
+                    target_id=target_id,
+                    target_name=target_name,
+                    text="Спасибо. Вот, держи.",
+                )
+                await self._send_inventory_update(session, inventory)
+            return
+
+        await self._send_interaction_result(
+            session=session,
+            target_id=target_id,
+            target_name=target_name,
+            text=default_dialogue,
+        )
+
+    async def _handle_gate_interaction(
+        self,
+        session: PlayerSession,
+        target_id: str,
+        target_name: str,
+    ) -> None:
+        """
+        Переключает открытую или закрытую калитку.
+        """
+        entity = self.world.get_entity(target_id)
+        if entity is not None and entity.is_open and self.world.is_gate_occupied(target_id):
+            await self._send_interaction_result(
+                session=session,
+                target_id=target_id,
+                target_name=target_name,
+                text="Проход занят",
+                add_to_journal=False,
+            )
+            return
+
+        updated = self.world.toggle_gate(target_id)
+        if updated is None:
+            return
+
+        await self._broadcast_snapshot()
+
+    async def _handle_creature_interaction(
+        self,
+        session: PlayerSession,
+        entity: WorldEntity,
+    ) -> None:
+        """
+        Обрабатывает взаимодействие с creature-сущностью мира.
+        """
+        if entity.entity_id != "creature-barbara":
+            return
+        await self._handle_barbara_interaction(session, entity)
+
+    async def _handle_barbara_interaction(
+        self,
+        session: PlayerSession,
+        entity: WorldEntity,
+    ) -> None:
+        """
+        Обрабатывает стрижку овцы Барбары.
+        """
+        if not self.character_repository.is_item_equipped(
+            session.character_name,
+            MAIN_HAND_SLOT,
+            SHEARS_ITEM_ID,
+        ):
+            await self._send_interaction_result(
+                session=session,
+                target_id=session.player_id,
+                target_name=session.character_name,
+                text="Нужны ножницы в руке",
+                add_to_journal=False,
+            )
+            return
+        if entity.has_wool is not True:
+            await self._send_interaction_result(
+                session=session,
+                target_id=session.player_id,
+                target_name=session.character_name,
+                text="Шерсть еще не выросла",
+                add_to_journal=False,
+            )
+            return
+
+        try:
+            inventory = self.character_repository.add_item(
+                session.character_name,
+                WOOL_ITEM_ID,
+            )
+        except InventoryLimitError as exc:
+            await self._send_inventory_limit_result(
+                session,
+                session.player_id,
+                session.character_name,
+                exc,
+            )
+            return
+
+        self.world.mark_creature_sheared(entity.entity_id, WOOL_REGROW_SECONDS)
+        await self._send_inventory_update(session, inventory)
+        await self._send_interaction_result(
+            session=session,
+            target_id=session.player_id,
+            target_name=session.character_name,
+            text=f"Вы состригли шерсть с {entity.name}",
+        )
+        await self._broadcast_snapshot()
 
     async def _handle_tile_interaction(
         self,

@@ -448,7 +448,7 @@ def entity_to_payload(entity: WorldEntity) -> dict[str, Any]:
     """
     Преобразует объект мира в JSON-готовый элемент payload-а snapshot-а.
     """
-    return {
+    payload: dict[str, Any] = {
         "id": entity.entity_id,
         "kind": entity.kind.value,
         "name": entity.name,
@@ -459,6 +459,15 @@ def entity_to_payload(entity: WorldEntity) -> dict[str, Any]:
         "interaction_radius": entity.interaction_radius,
         "solid": entity.solid,
     }
+    if entity.is_open is not None:
+        payload["is_open"] = entity.is_open
+    if entity.hit_points is not None:
+        payload["hit_points"] = entity.hit_points
+    if entity.max_hit_points is not None:
+        payload["max_hit_points"] = entity.max_hit_points
+    if entity.has_wool is not None:
+        payload["has_wool"] = entity.has_wool
+    return payload
 
 
 def entity_from_payload(payload: Mapping[str, Any]) -> WorldEntity:
@@ -497,6 +506,10 @@ def entity_from_payload(payload: Mapping[str, Any]) -> WorldEntity:
         height=int(_number_field(payload, "height")),
         interaction_radius=_number_field(payload, "interaction_radius"),
         solid=_bool_field(payload, "solid"),
+        is_open=_optional_bool_field(payload, "is_open"),
+        hit_points=_optional_int_field(payload, "hit_points"),
+        max_hit_points=_optional_int_field(payload, "max_hit_points"),
+        has_wool=_optional_bool_field(payload, "has_wool"),
     )
 
 
@@ -585,6 +598,32 @@ def _bool_field(payload: Mapping[str, Any], key: str) -> bool:
     value = payload.get(key, False)
     if not isinstance(value, bool):
         msg = f"{key} must be a boolean"
+        raise ProtocolError(msg)
+    return value
+
+
+def _optional_bool_field(payload: Mapping[str, Any], key: str) -> bool | None:
+    """
+    Читает необязательное boolean-поле из payload-а сообщения.
+    """
+    value = payload.get(key)
+    if value is None:
+        return None
+    if not isinstance(value, bool):
+        msg = f"{key} must be a boolean"
+        raise ProtocolError(msg)
+    return value
+
+
+def _optional_int_field(payload: Mapping[str, Any], key: str) -> int | None:
+    """
+    Читает необязательное целочисленное поле из payload-а сообщения.
+    """
+    value = payload.get(key)
+    if value is None:
+        return None
+    if not isinstance(value, int) or isinstance(value, bool):
+        msg = f"{key} must be an integer"
         raise ProtocolError(msg)
     return value
 

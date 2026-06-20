@@ -6,7 +6,7 @@ import pygame
 
 from basic_mmo_rpg.client.camera import Camera
 from basic_mmo_rpg.client.ui import ChatLine, InventoryPanelHit
-from basic_mmo_rpg.domain.entities import WorldEntity
+from basic_mmo_rpg.domain.entities import EntityKind, WorldEntity
 from basic_mmo_rpg.domain.equipment import MAIN_HAND_SLOT, Equipment
 from basic_mmo_rpg.domain.geometry import Rect, Vec2
 from basic_mmo_rpg.domain.inventory import ItemStack, is_equippable_item, item_definition_for
@@ -23,6 +23,11 @@ REMOTE_PLAYER_TUNIC = (132, 198, 225)
 NPC_BODY = (76, 96, 74)
 NPC_TUNIC = (197, 178, 112)
 NPC_OUTLINE = (28, 35, 28)
+GATE_CLOSED = (126, 88, 48)
+GATE_OPEN = (91, 65, 42)
+SHEEP_WOOL = (226, 226, 213)
+SHEEP_SHORN = (176, 169, 158)
+SHEEP_FACE = (58, 49, 44)
 HOVER_OUTLINE = (238, 216, 112)
 WATER_HOVER_FILL = (112, 190, 235, 70)
 WATER_HOVER_BORDER = (178, 226, 250)
@@ -246,6 +251,13 @@ class Renderer:
         """
         body = self._entity_screen_rect(camera, entity)
         outline_color = HOVER_OUTLINE if hovered else NPC_OUTLINE
+        if entity.kind == EntityKind.GATE:
+            self._draw_gate(screen, body, entity, outline_color)
+            return
+        if entity.kind == EntityKind.CREATURE:
+            self._draw_creature(screen, body, entity, outline_color)
+            return
+
         pygame.draw.rect(screen, outline_color, body.inflate(6, 6), border_radius=3)
         pygame.draw.rect(screen, NPC_BODY, body, border_radius=3)
 
@@ -253,6 +265,45 @@ class Renderer:
         pygame.draw.rect(screen, NPC_TUNIC, tunic, border_radius=2)
         face = pygame.Rect(body.left + 7, body.top + 4, body.width - 14, 7)
         pygame.draw.rect(screen, TEXT_COLOR, face, border_radius=2)
+
+    def _draw_gate(
+        self,
+        screen: pygame.Surface,
+        body: pygame.Rect,
+        entity: WorldEntity,
+        outline_color: tuple[int, int, int],
+    ) -> None:
+        """
+        Рисует калитку с учетом открытого или закрытого состояния.
+        """
+        pygame.draw.rect(screen, outline_color, body.inflate(4, 4), border_radius=2)
+        if entity.is_open:
+            rail_width = max(4, body.width // 5)
+            left_rail = pygame.Rect(body.left, body.top, rail_width, body.height)
+            right_rail = pygame.Rect(body.right - rail_width, body.top, rail_width, body.height)
+            pygame.draw.rect(screen, GATE_OPEN, left_rail, border_radius=2)
+            pygame.draw.rect(screen, GATE_OPEN, right_rail, border_radius=2)
+            return
+
+        pygame.draw.rect(screen, GATE_CLOSED, body, border_radius=2)
+        for y in (body.top + 8, body.centery, body.bottom - 8):
+            pygame.draw.line(screen, GATE_OPEN, (body.left + 3, y), (body.right - 3, y), width=2)
+
+    def _draw_creature(
+        self,
+        screen: pygame.Surface,
+        body: pygame.Rect,
+        entity: WorldEntity,
+        outline_color: tuple[int, int, int],
+    ) -> None:
+        """
+        Рисует creature-сущность мира.
+        """
+        pygame.draw.rect(screen, outline_color, body.inflate(4, 4), border_radius=6)
+        body_color = SHEEP_WOOL if entity.has_wool is not False else SHEEP_SHORN
+        pygame.draw.rect(screen, body_color, body, border_radius=7)
+        face = pygame.Rect(body.left + body.width - 9, body.top + 8, 8, 12)
+        pygame.draw.rect(screen, SHEEP_FACE, face, border_radius=3)
 
     def _draw_floating_texts(
         self,
@@ -307,7 +358,7 @@ class Renderer:
                     speech_bubbles[entity.entity_id],
                     y_offset,
                 )
-            if entity.entity_id == hovered_entity_id:
+            if entity.entity_id == hovered_entity_id and entity.kind != EntityKind.GATE:
                 self._draw_name_tag_above_rect(screen, body, entity.name, y_offset)
 
     def _draw_bubble(

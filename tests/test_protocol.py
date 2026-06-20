@@ -98,6 +98,40 @@ def test_world_snapshot_payload_round_trips_entities() -> None:
     assert entity_snapshots_from_payload(payload) == [EntitySnapshot(state=entity)]
 
 
+def test_world_snapshot_payload_round_trips_dynamic_entity_state() -> None:
+    """
+    Проверяет, что динамическое состояние калиток и creature-сущностей проходит через snapshot.
+    """
+    gate = WorldEntity(
+        entity_id="gate-sheep-pen",
+        kind=EntityKind.GATE,
+        name="Калитка",
+        position=Vec2(64, 32),
+        width=32,
+        height=32,
+        solid=False,
+        is_open=True,
+    )
+    sheep = WorldEntity(
+        entity_id="creature-barbara",
+        kind=EntityKind.CREATURE,
+        name="Барбара",
+        position=Vec2(96, 32),
+        width=28,
+        height=28,
+        hit_points=15,
+        max_hit_points=15,
+        has_wool=False,
+    )
+
+    payload = world_snapshot_payload(
+        [],
+        [EntitySnapshot(state=gate), EntitySnapshot(state=sheep)],
+    )
+
+    assert entities_from_snapshot_payload(payload) == [gate, sheep]
+
+
 def test_interaction_target_payload_is_validated() -> None:
     """
     Проверяет payload запроса взаимодействия с объектом мира.

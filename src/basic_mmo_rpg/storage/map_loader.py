@@ -83,6 +83,10 @@ def _parse_entity(raw_entity: object) -> WorldEntity:
         interaction_radius=_positive_number_field(raw_entity, "interaction_radius", 64.0),
         dialogue=str(raw_entity.get("dialogue", "")),
         solid=_bool_field(raw_entity, "solid", True),
+        is_open=_optional_bool_field(raw_entity, "is_open"),
+        hit_points=_optional_positive_int_field(raw_entity, "hit_points"),
+        max_hit_points=_optional_positive_int_field(raw_entity, "max_hit_points"),
+        has_wool=_optional_bool_field(raw_entity, "has_wool"),
     )
 
 
@@ -153,6 +157,35 @@ def _bool_field(raw_entity: dict[str, Any], key: str, default: bool) -> bool:
     value = raw_entity.get(key, default)
     if not isinstance(value, bool):
         msg = f"map entity {key} must be a boolean"
+        raise ValueError(msg)
+    return value
+
+
+def _optional_bool_field(raw_entity: dict[str, Any], key: str) -> bool | None:
+    """
+    Читает необязательное boolean-поле объекта карты.
+    """
+    value = raw_entity.get(key)
+    if value is None:
+        return None
+    if not isinstance(value, bool):
+        msg = f"map entity {key} must be a boolean"
+        raise ValueError(msg)
+    return value
+
+
+def _optional_positive_int_field(raw_entity: dict[str, Any], key: str) -> int | None:
+    """
+    Читает необязательное положительное целочисленное поле объекта карты.
+    """
+    value = raw_entity.get(key)
+    if value is None:
+        return None
+    if not isinstance(value, int) or isinstance(value, bool):
+        msg = f"map entity {key} must be an integer"
+        raise ValueError(msg)
+    if value <= 0:
+        msg = f"map entity {key} must be positive"
         raise ValueError(msg)
     return value
 

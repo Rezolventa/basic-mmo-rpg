@@ -4,6 +4,7 @@ import asyncio
 import contextlib
 import random
 import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import NoReturn
 
@@ -11,6 +12,7 @@ import pytest
 from websockets.asyncio.client import connect
 from websockets.asyncio.server import serve
 
+from basic_mmo_rpg.domain.entities import WorldEntity
 from basic_mmo_rpg.domain.equipment import MAIN_HAND_SLOT, Equipment
 from basic_mmo_rpg.domain.geometry import Vec2
 from basic_mmo_rpg.domain.inventory import (
@@ -20,7 +22,9 @@ from basic_mmo_rpg.domain.inventory import (
     LOG_ITEM_ID,
     LUMBER_AXE_ITEM_ID,
     PICKAXE_ITEM_ID,
+    SHEARS_ITEM_ID,
     STONE_ITEM_ID,
+    WOOL_ITEM_ID,
 )
 from basic_mmo_rpg.domain.movement import MovementIntent, PlayerState
 from basic_mmo_rpg.server.app import MultiplayerServer
@@ -32,6 +36,7 @@ from basic_mmo_rpg.shared.protocol import (
     chat_sent_payload,
     decode_message,
     encode_message,
+    entities_from_snapshot_payload,
     equip_item_requested_payload,
     equipment_from_payload,
     interact_requested_payload,
@@ -241,6 +246,61 @@ def _open_map_with_kopai() -> object:
     return raw_map
 
 
+def _open_map_with_fogu_barbara_and_gate() -> object:
+    """
+    Возвращает открытую карту с NPC Fogu, овцой Барбарой и калиткой.
+    """
+    raw_map: dict[str, object] = {
+        "tile_size": 32,
+        "spawn": [32, 32],
+        "legend": {
+            ".": {"name": "floor", "solid": False, "color": [50, 120, 60]},
+            "#": {"name": "wall", "solid": True, "color": [90, 90, 90]},
+        },
+        "tiles": [
+            "..........",
+            "..........",
+            "..........",
+            "..........",
+        ],
+        "entities": [
+            {
+                "id": "npc-fogu",
+                "kind": "npc",
+                "name": "Fogu",
+                "position": [64, 32],
+                "size": [24, 30],
+                "interaction_radius": 64,
+                "dialogue": "Постриги мою Барбару",
+                "solid": True,
+            },
+            {
+                "id": "creature-barbara",
+                "kind": "creature",
+                "name": "Барбара",
+                "position": [64, 64],
+                "size": [20, 20],
+                "interaction_radius": 64,
+                "solid": True,
+                "hit_points": 15,
+                "max_hit_points": 15,
+                "has_wool": True,
+            },
+            {
+                "id": "gate-sheep-pen",
+                "kind": "gate",
+                "name": "Калитка",
+                "position": [96, 64],
+                "size": [32, 32],
+                "interaction_radius": 64,
+                "solid": True,
+                "is_open": False,
+            },
+        ],
+    }
+    return raw_map
+
+
 def test_websocket_server_accepts_two_clients_and_broadcasts_movement(tmp_path: Path) -> None:
     """
     Проверяет websocket-сценарий с двумя клиентами и серверной обработкой движения.
@@ -437,6 +497,50 @@ def test_websocket_server_kopai_grants_pickaxe_before_exchange(tmp_path: Path) -
     Проверяет, что Kopai сначала выдает кирку, даже если у игрока уже есть камни.
     """
     asyncio.run(_kopai_grants_pickaxe_before_exchange_smoke(tmp_path))
+
+
+def test_websocket_server_fogu_grants_shears(tmp_path: Path) -> None:
+    """
+    Проверяет, что Fogu выдает ножницы, если у игрока их еще нет.
+    """
+    asyncio.run(_fogu_grants_shears_smoke(tmp_path))
+
+
+def test_websocket_server_shearing_requires_equipped_shears(tmp_path: Path) -> None:
+    """
+    Проверяет, что стрижка требует ножницы в руке.
+    """
+    asyncio.run(_shearing_requires_equipped_shears_smoke(tmp_path))
+
+
+def test_websocket_server_shearing_adds_wool_and_marks_sheep_shorn(tmp_path: Path) -> None:
+    """
+    Проверяет успешную стрижку Барбары и обновление состояния шерсти.
+    """
+    asyncio.run(_shearing_success_smoke(tmp_path))
+
+
+def test_websocket_server_fogu_exchanges_wool_for_gold(tmp_path: Path) -> None:
+    """
+    Проверяет обмен шерсти на Gold у Fogu.
+    """
+    asyncio.run(_fogu_exchange_smoke(tmp_path))
+
+
+def test_websocket_server_toggles_gate_state(tmp_path: Path) -> None:
+    """
+    Проверяет переключение калитки через interact_requested.
+    """
+    asyncio.run(_gate_toggle_smoke(tmp_path))
+
+
+def test_websocket_server_refuses_to_close_gate_reserved_by_moving_sheep(
+    tmp_path: Path,
+) -> None:
+    """
+    Проверяет, что сервер не закрывает калитку перед движущейся в нее овцой.
+    """
+    asyncio.run(_gate_close_refused_while_sheep_is_moving_smoke(tmp_path))
 
 
 async def _websocket_server_smoke(tmp_path: Path) -> None:
@@ -1527,6 +1631,241 @@ async def _kopai_grants_pickaxe_before_exchange_smoke(tmp_path: Path) -> None:
     assert multiplayer_server.character_repository.item_quantity("Alice", GOLD_ITEM_ID) == 0
 
 
+async def _fogu_grants_shears_smoke(tmp_path: Path) -> None:
+    """
+    Запускает сервер и проверяет выдачу ножниц NPC Fogu.
+    """
+    multiplayer_server = _server_for_test(tmp_path, raw_map=_open_map_with_fogu_barbara_and_gate())
+
+    async with _running_test_server(multiplayer_server) as uri, connect(uri) as first_client:
+        await _send_join(first_client, "Alice")
+        first_id = await _recv_player_id(first_client)
+
+        await first_client.send(
+            encode_message(
+                ProtocolMessage(
+                    type=ClientMessageType.INTERACT_REQUESTED,
+                    payload=interact_requested_payload("npc-fogu"),
+                )
+            )
+        )
+        result_message = await _recv_message_type(
+            first_client,
+            ServerMessageType.INTERACTION_RESULT,
+        )
+        inventory_message = await _recv_message_type(
+            first_client,
+            ServerMessageType.INVENTORY_UPDATED,
+        )
+
+    inventory = inventory_items_from_payload(inventory_message.payload)
+    assert result_message.payload["actor_id"] == first_id
+    assert result_message.payload["target_id"] == "npc-fogu"
+    assert result_message.payload["text"] == "Постриги мою Барбару"
+    assert len(inventory) == 1
+    assert inventory[0].item_id == SHEARS_ITEM_ID
+    assert multiplayer_server.character_repository.load_inventory("Alice") == inventory
+
+
+async def _shearing_requires_equipped_shears_smoke(tmp_path: Path) -> None:
+    """
+    Запускает сервер и проверяет отказ стрижки без ножниц в руке.
+    """
+    multiplayer_server = _server_for_test(tmp_path, raw_map=_open_map_with_fogu_barbara_and_gate())
+    multiplayer_server.character_repository.load_or_create("Alice", Vec2(32, 32))
+    multiplayer_server.character_repository.add_item("Alice", SHEARS_ITEM_ID)
+
+    async with _running_test_server(multiplayer_server) as uri, connect(uri) as first_client:
+        await _send_join(first_client, "Alice")
+        first_id = await _recv_player_id(first_client)
+        await _recv_message_type(first_client, ServerMessageType.INVENTORY_UPDATED)
+
+        await first_client.send(
+            encode_message(
+                ProtocolMessage(
+                    type=ClientMessageType.INTERACT_REQUESTED,
+                    payload=interact_requested_payload("creature-barbara"),
+                )
+            )
+        )
+        result_message = await _recv_message_type(
+            first_client,
+            ServerMessageType.INTERACTION_RESULT,
+        )
+        await _assert_no_message_type(first_client, ServerMessageType.INVENTORY_UPDATED)
+
+    assert result_message.payload["actor_id"] == first_id
+    assert result_message.payload["target_id"] == first_id
+    assert result_message.payload["text"] == "Нужны ножницы в руке"
+    assert result_message.payload["add_to_journal"] is False
+    assert multiplayer_server.character_repository.item_quantity("Alice", WOOL_ITEM_ID) == 0
+
+
+async def _shearing_success_smoke(tmp_path: Path) -> None:
+    """
+    Запускает сервер и проверяет успешную стрижку Барбары.
+    """
+    multiplayer_server = _server_for_test(tmp_path, raw_map=_open_map_with_fogu_barbara_and_gate())
+    multiplayer_server.character_repository.load_or_create("Alice", Vec2(32, 32))
+    multiplayer_server.character_repository.add_item("Alice", SHEARS_ITEM_ID)
+    multiplayer_server.character_repository.equip_item("Alice", SHEARS_ITEM_ID)
+
+    async with _running_test_server(multiplayer_server) as uri, connect(uri) as first_client:
+        await _send_join(first_client, "Alice")
+        first_id = await _recv_player_id(first_client)
+        await _recv_message_type(first_client, ServerMessageType.INVENTORY_UPDATED)
+
+        await first_client.send(
+            encode_message(
+                ProtocolMessage(
+                    type=ClientMessageType.INTERACT_REQUESTED,
+                    payload=interact_requested_payload("creature-barbara"),
+                )
+            )
+        )
+        inventory_message = await _recv_message_type(
+            first_client,
+            ServerMessageType.INVENTORY_UPDATED,
+        )
+        result_message = await _recv_message_type(
+            first_client,
+            ServerMessageType.INTERACTION_RESULT,
+        )
+        sheep = await _recv_entity_state(
+            first_client,
+            "creature-barbara",
+            lambda entity: entity.has_wool is False,
+        )
+
+    inventory = inventory_items_from_payload(inventory_message.payload)
+    quantities = {item.item_id: item.quantity for item in inventory}
+    assert result_message.payload["actor_id"] == first_id
+    assert result_message.payload["target_id"] == first_id
+    assert result_message.payload["text"] == "Вы состригли шерсть с Барбара"
+    assert result_message.payload["add_to_journal"] is True
+    assert quantities[SHEARS_ITEM_ID] == 1
+    assert quantities[WOOL_ITEM_ID] == 1
+    assert sheep.has_wool is False
+    assert multiplayer_server.character_repository.item_quantity("Alice", WOOL_ITEM_ID) == 1
+
+
+async def _fogu_exchange_smoke(tmp_path: Path) -> None:
+    """
+    Запускает сервер и проверяет обмен шерсти на Gold у Fogu.
+    """
+    multiplayer_server = _server_for_test(tmp_path, raw_map=_open_map_with_fogu_barbara_and_gate())
+    multiplayer_server.character_repository.load_or_create("Alice", Vec2(32, 32))
+    multiplayer_server.character_repository.add_item("Alice", SHEARS_ITEM_ID)
+    multiplayer_server.character_repository.add_item("Alice", WOOL_ITEM_ID)
+
+    async with _running_test_server(multiplayer_server) as uri, connect(uri) as first_client:
+        await _send_join(first_client, "Alice")
+        first_id = await _recv_player_id(first_client)
+        await _recv_message_type(first_client, ServerMessageType.INVENTORY_UPDATED)
+
+        await first_client.send(
+            encode_message(
+                ProtocolMessage(
+                    type=ClientMessageType.INTERACT_REQUESTED,
+                    payload=interact_requested_payload("npc-fogu"),
+                )
+            )
+        )
+        result_message = await _recv_message_type(
+            first_client,
+            ServerMessageType.INTERACTION_RESULT,
+        )
+        inventory_message = await _recv_message_type(
+            first_client,
+            ServerMessageType.INVENTORY_UPDATED,
+        )
+
+    inventory = inventory_items_from_payload(inventory_message.payload)
+    quantities = {item.item_id: item.quantity for item in inventory}
+    assert result_message.payload["actor_id"] == first_id
+    assert result_message.payload["target_id"] == "npc-fogu"
+    assert result_message.payload["text"] == "Спасибо. Вот, держи."
+    assert WOOL_ITEM_ID not in quantities
+    assert quantities[GOLD_ITEM_ID] == 1
+    assert multiplayer_server.character_repository.item_quantity("Alice", WOOL_ITEM_ID) == 0
+    assert multiplayer_server.character_repository.item_quantity("Alice", GOLD_ITEM_ID) == 1
+
+
+async def _gate_toggle_smoke(tmp_path: Path) -> None:
+    """
+    Запускает сервер и проверяет переключение калитки.
+    """
+    multiplayer_server = _server_for_test(tmp_path, raw_map=_open_map_with_fogu_barbara_and_gate())
+    multiplayer_server.character_repository.load_or_create("Alice", Vec2(96, 96))
+
+    async with _running_test_server(multiplayer_server) as uri, connect(uri) as first_client:
+        await _send_join(first_client, "Alice")
+        await _recv_player_id(first_client)
+
+        await first_client.send(
+            encode_message(
+                ProtocolMessage(
+                    type=ClientMessageType.INTERACT_REQUESTED,
+                    payload=interact_requested_payload("gate-sheep-pen"),
+                )
+            )
+        )
+        gate = await _recv_entity_state(
+            first_client,
+            "gate-sheep-pen",
+            lambda entity: entity.is_open is True and entity.solid is False,
+        )
+        await _assert_no_message_type(first_client, ServerMessageType.INTERACTION_RESULT)
+
+    assert gate.is_open is True
+    assert gate.solid is False
+
+
+async def _gate_close_refused_while_sheep_is_moving_smoke(tmp_path: Path) -> None:
+    """
+    Запускает сервер и проверяет отказ закрытия калитки перед движущейся овцой.
+    """
+    multiplayer_server = _server_for_test(tmp_path, raw_map=_open_map_with_fogu_barbara_and_gate())
+    multiplayer_server.world.random_source = random.Random(0)
+    multiplayer_server.character_repository.load_or_create("Alice", Vec2(96, 96))
+
+    async with _running_test_server(multiplayer_server) as uri, connect(uri) as first_client:
+        await _send_join(first_client, "Alice")
+        await _recv_player_id(first_client)
+
+        opened_gate = multiplayer_server.world.toggle_gate("gate-sheep-pen")
+        assert opened_gate is not None
+        multiplayer_server.world.tick(2.0)
+        multiplayer_server.world.tick(0.1)
+        gate_before_close = multiplayer_server.world.get_entity("gate-sheep-pen")
+        sheep_before_close = multiplayer_server.world.get_entity("creature-barbara")
+        assert gate_before_close is not None
+        assert sheep_before_close is not None
+        assert gate_before_close.rect.intersects(sheep_before_close.rect) is False
+        assert multiplayer_server.world.is_gate_occupied("gate-sheep-pen") is True
+
+        await first_client.send(
+            encode_message(
+                ProtocolMessage(
+                    type=ClientMessageType.INTERACT_REQUESTED,
+                    payload=interact_requested_payload("gate-sheep-pen"),
+                )
+            )
+        )
+        result_message = await _recv_message_type(
+            first_client,
+            ServerMessageType.INTERACTION_RESULT,
+        )
+
+    gate_after_close = multiplayer_server.world.get_entity("gate-sheep-pen")
+    assert gate_after_close is not None
+    assert result_message.payload["target_id"] == "gate-sheep-pen"
+    assert result_message.payload["text"] == "Проход занят"
+    assert result_message.payload["add_to_journal"] is False
+    assert gate_after_close.is_open is True
+    assert gate_after_close.solid is False
+
+
 @contextlib.asynccontextmanager
 async def _running_test_server(multiplayer_server: MultiplayerServer):
     """
@@ -1626,6 +1965,27 @@ async def _recv_snapshot(websocket: object, expected_players: int) -> list[Playe
             return players
 
     msg = "server did not broadcast a complete world snapshot in time"
+    raise AssertionError(msg)
+
+
+async def _recv_entity_state(
+    websocket: object,
+    entity_id: str,
+    predicate: Callable[[WorldEntity], bool],
+) -> WorldEntity:
+    """
+    Получает snapshot-ы мира, пока нужная entity не пройдет проверку.
+    """
+    deadline = time.monotonic() + 2.0
+    while time.monotonic() < deadline:
+        message = decode_message(await asyncio.wait_for(websocket.recv(), timeout=0.5))
+        if message.type != ServerMessageType.WORLD_SNAPSHOT:
+            continue
+        for entity in entities_from_snapshot_payload(message.payload):
+            if entity.entity_id == entity_id and predicate(entity):
+                return entity
+
+    msg = f"server did not broadcast expected state for {entity_id!r} in time"
     raise AssertionError(msg)
 
 

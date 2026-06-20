@@ -21,7 +21,7 @@ def test_starter_map_loads() -> None:
     assert tile_map.is_solid_tile(0, 0)
     assert not tile_map.is_solid_tile(2, 2)
     entities = {entity.entity_id: entity for entity in tile_map.entities}
-    assert len(entities) == 3
+    assert len(entities) == 6
     assert entities["npc-funday"].kind == EntityKind.NPC
     assert entities["npc-funday"].name == "Funday"
     assert entities["npc-funday"].dialogue == "Иди и поймай мне рыбу"
@@ -34,6 +34,21 @@ def test_starter_map_loads() -> None:
     assert entities["npc-kopai"].name == "Kopai"
     assert entities["npc-kopai"].dialogue == "Накопай мне чего-нибудь"
     assert entities["npc-kopai"].solid
+    assert entities["npc-fogu"].kind == EntityKind.NPC
+    assert entities["npc-fogu"].name == "Fogu"
+    assert entities["npc-fogu"].dialogue == "Постриги мою Барбару"
+    assert entities["npc-fogu"].solid
+    assert entities["gate-sheep-pen"].kind == EntityKind.GATE
+    assert entities["gate-sheep-pen"].name == "Калитка"
+    assert entities["gate-sheep-pen"].solid
+    assert entities["gate-sheep-pen"].is_open is False
+    assert entities["creature-barbara"].kind == EntityKind.CREATURE
+    assert entities["creature-barbara"].name == "Барбара"
+    assert entities["creature-barbara"].width == 20
+    assert entities["creature-barbara"].height == 20
+    assert entities["creature-barbara"].hit_points == 15
+    assert entities["creature-barbara"].max_hit_points == 15
+    assert entities["creature-barbara"].has_wool is True
     assert tile_map.is_water_tile(8, 14)
     assert tile_map.is_tree_tile(5, 3)
     assert tile_map.is_rock_tile(4, 17)

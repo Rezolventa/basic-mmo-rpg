@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import pygame
 
 from basic_mmo_rpg.client.app import GameClient, RemotePlayerView, _smooth_player_toward
+from basic_mmo_rpg.client.rendering import Renderer
 from basic_mmo_rpg.client.ui import InventoryPanelHit
 from basic_mmo_rpg.domain.entities import EntityKind, WorldEntity
 from basic_mmo_rpg.domain.equipment import MAIN_HAND_SLOT, Equipment
@@ -331,6 +332,37 @@ def test_client_inventory_empty_area_click_is_consumed() -> None:
     assert client._handle_inventory_click((10, 10)) is True
     assert network.equipped_items == []
     assert network.unequipped_slots == []
+
+
+def test_renderer_does_not_draw_gate_hover_name() -> None:
+    """
+    Проверяет, что hover по калитке не рисует подпись с именем.
+    """
+    renderer = object.__new__(Renderer)
+    screen = pygame.Surface((100, 100))
+    gate = WorldEntity(
+        entity_id="gate-sheep-pen",
+        kind=EntityKind.GATE,
+        name="Калитка",
+        position=Vec2(0, 0),
+        width=32,
+        height=32,
+    )
+    drawn_names: list[str] = []
+    renderer._entity_screen_rect = lambda camera, entity: pygame.Rect(0, 0, 32, 32)
+    renderer._draw_name_tag_above_rect = (
+        lambda screen, body, name, y_offset: drawn_names.append(name)
+    )
+
+    renderer._draw_entity_floating_texts(
+        screen=screen,
+        camera=SimpleNamespace(),
+        entities=[gate],
+        speech_bubbles={},
+        hovered_entity_id=gate.entity_id,
+    )
+
+    assert drawn_names == []
 
 
 def _client_without_pygame(player: PlayerState) -> GameClient:

@@ -12,6 +12,8 @@ class EntityKind(StrEnum):
     """
 
     NPC = "npc"
+    GATE = "gate"
+    CREATURE = "creature"
 
 
 @dataclass(frozen=True, slots=True)
@@ -29,6 +31,10 @@ class WorldEntity:
     interaction_radius: float = 64.0
     dialogue: str = ""
     solid: bool = True
+    is_open: bool | None = None
+    hit_points: int | None = None
+    max_hit_points: int | None = None
+    has_wool: bool | None = None
 
     @property
     def rect(self) -> Rect:
