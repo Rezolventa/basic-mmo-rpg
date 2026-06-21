@@ -10,6 +10,7 @@ from basic_mmo_rpg.domain.inventory import (
     FISH_ITEM_ID,
     FISHING_ROD_ITEM_ID,
     GOLD_ITEM_ID,
+    RUSTY_SWORD_ITEM_ID,
     InventoryLimitError,
 )
 from basic_mmo_rpg.storage.characters import CharacterRepository
@@ -65,6 +66,59 @@ def test_character_repository_adds_item_if_absent_only_once(tmp_path: Path) -> N
     assert second_granted is False
     assert first_inventory == second_inventory
     assert second_inventory[0].quantity == 1
+
+
+def test_character_repository_claims_loot_once_per_character(tmp_path: Path) -> None:
+    """
+    Проверяет persistent-выдачу loot-награды один раз для каждого персонажа.
+    """
+    repository = CharacterRepository(tmp_path / "characters.sqlite3")
+    repository.initialize()
+    repository.load_or_create("Alice", Vec2(32, 48))
+    repository.load_or_create("Bob", Vec2(32, 48))
+
+    first_inventory, first_claimed = repository.claim_loot_once(
+        "Alice",
+        "lootable-training-dummy",
+        RUSTY_SWORD_ITEM_ID,
+    )
+    second_inventory, second_claimed = repository.claim_loot_once(
+        "Alice",
+        "lootable-training-dummy",
+        RUSTY_SWORD_ITEM_ID,
+    )
+    bob_inventory, bob_claimed = repository.claim_loot_once(
+        "Bob",
+        "lootable-training-dummy",
+        RUSTY_SWORD_ITEM_ID,
+    )
+
+    assert first_claimed is True
+    assert second_claimed is False
+    assert bob_claimed is True
+    assert first_inventory == second_inventory
+    assert first_inventory[0].item_id == RUSTY_SWORD_ITEM_ID
+    assert first_inventory[0].display_name == "Ржавый меч"
+    assert first_inventory[0].quantity == 1
+    assert bob_inventory[0].item_id == RUSTY_SWORD_ITEM_ID
+    assert repository.has_loot_claim("Alice", "lootable-training-dummy")
+
+
+def test_character_repository_does_not_claim_loot_when_reward_overflows(
+    tmp_path: Path,
+) -> None:
+    """
+    Проверяет, что неудачная выдача loot-награды не записывает claim.
+    """
+    repository = CharacterRepository(tmp_path / "characters.sqlite3")
+    repository.initialize()
+    repository.load_or_create("Alice", Vec2(32, 48))
+    repository.add_item("Alice", RUSTY_SWORD_ITEM_ID)
+
+    with pytest.raises(InventoryLimitError):
+        repository.claim_loot_once("Alice", "lootable-training-dummy", RUSTY_SWORD_ITEM_ID)
+
+    assert not repository.has_loot_claim("Alice", "lootable-training-dummy")
 
 
 def test_character_repository_rejects_stack_limit_overflow(tmp_path: Path) -> None:

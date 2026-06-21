@@ -13,6 +13,7 @@ PICKAXE_ITEM_ID = "pickaxe"
 STONE_ITEM_ID = "stone"
 SHEARS_ITEM_ID = "shears"
 WOOL_ITEM_ID = "wool"
+RUSTY_SWORD_ITEM_ID = "rusty_sword"
 
 
 class InventoryError(ValueError):
@@ -99,6 +100,12 @@ ITEM_DEFINITIONS: dict[str, ItemDefinition] = {
         item_id=WOOL_ITEM_ID,
         display_name="Шерсть",
         stack_limit=999,
+    ),
+    RUSTY_SWORD_ITEM_ID: ItemDefinition(
+        item_id=RUSTY_SWORD_ITEM_ID,
+        display_name="Ржавый меч",
+        stack_limit=1,
+        equipment_slot=MAIN_HAND_SLOT,
     ),
 }
 

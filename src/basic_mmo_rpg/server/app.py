@@ -25,6 +25,7 @@ from basic_mmo_rpg.domain.inventory import (
     LOG_ITEM_ID,
     LUMBER_AXE_ITEM_ID,
     PICKAXE_ITEM_ID,
+    RUSTY_SWORD_ITEM_ID,
     SHEARS_ITEM_ID,
     STONE_ITEM_ID,
     WOOL_ITEM_ID,
@@ -77,6 +78,7 @@ FOGU_REQUIRED_WOOL = 1
 FOGU_GOLD_REWARD = 1
 WOOL_REGROW_SECONDS = 30.0
 INVENTORY_FULL_TEXT = "Инвентарь полон"
+TRAINING_DUMMY_REWARD_TEXT = "Вы вытащили Ржавый меч из манекена"
 
 logger = logging.getLogger(__name__)
 
@@ -108,6 +110,17 @@ class TileGatheringRule:
     failure_text: str | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class LootableRule:
+    """
+    Описывает server-authoritative награду lootable-объекта мира.
+    """
+
+    reward_item_id: str
+    reward_quantity: int
+    success_text: str
+
+
 TILE_GATHERING_RULES: dict[str, TileGatheringRule] = {
     "water": TileGatheringRule(
         tile_name="water",
@@ -134,6 +147,14 @@ TILE_GATHERING_RULES: dict[str, TileGatheringRule] = {
         missing_tool_text="Нужна кирка в руке",
         success_text="Вы добыли камень",
         failure_text="Не удалось добыть камень",
+    ),
+}
+
+LOOTABLE_RULES: dict[str, LootableRule] = {
+    "lootable-training-dummy": LootableRule(
+        reward_item_id=RUSTY_SWORD_ITEM_ID,
+        reward_quantity=1,
+        success_text=TRAINING_DUMMY_REWARD_TEXT,
     ),
 }
 
@@ -434,7 +455,12 @@ class MultiplayerServer:
                 target_id,
             )
             return
-        if entity.kind not in {EntityKind.NPC, EntityKind.GATE, EntityKind.CREATURE}:
+        if entity.kind not in {
+            EntityKind.NPC,
+            EntityKind.GATE,
+            EntityKind.CREATURE,
+            EntityKind.LOOTABLE,
+        }:
             logger.info(
                 "Interaction ignored: name=%s target_id=%s reason=unsupported_kind",
                 session.character_name,
@@ -463,6 +489,9 @@ class MultiplayerServer:
             return
         if entity.kind == EntityKind.CREATURE:
             await self._handle_creature_interaction(session, entity)
+            return
+        if entity.kind == EntityKind.LOOTABLE:
+            await self._handle_lootable_interaction(session, entity)
             return
 
         if entity.entity_id == "npc-funday":
@@ -760,6 +789,57 @@ class MultiplayerServer:
 
         await self._broadcast_snapshot()
 
+    async def _handle_lootable_interaction(
+        self,
+        session: PlayerSession,
+        entity: WorldEntity,
+    ) -> None:
+        """
+        Обрабатывает одноразовую выдачу loot-награды из объекта мира.
+        """
+        rule = LOOTABLE_RULES.get(entity.entity_id)
+        if rule is None:
+            logger.info(
+                "Lootable interaction ignored: name=%s target_id=%s reason=missing_rule",
+                session.character_name,
+                entity.entity_id,
+            )
+            return
+
+        try:
+            inventory, claimed = self.character_repository.claim_loot_once(
+                name=session.character_name,
+                source_id=entity.entity_id,
+                item_id=rule.reward_item_id,
+                quantity=rule.reward_quantity,
+            )
+        except InventoryLimitError as exc:
+            await self._send_inventory_limit_result(
+                session,
+                session.player_id,
+                session.character_name,
+                exc,
+            )
+            return
+
+        if not claimed:
+            return
+
+        logger.info(
+            "Loot granted: name=%s source_id=%s item_id=%s quantity=%s",
+            session.character_name,
+            entity.entity_id,
+            rule.reward_item_id,
+            rule.reward_quantity,
+        )
+        await self._send_inventory_update(session, inventory)
+        await self._send_interaction_result(
+            session=session,
+            target_id=session.player_id,
+            target_name=session.character_name,
+            text=rule.success_text,
+        )
+
     async def _handle_creature_interaction(
         self,
         session: PlayerSession,
@@ -823,7 +903,7 @@ class MultiplayerServer:
             session=session,
             target_id=session.player_id,
             target_name=session.character_name,
-            text=f"Вы состригли шерсть с {entity.name}",
+            text="Вы состригли шерсть с овцы",
         )
         await self._broadcast_snapshot()
 

@@ -115,7 +115,7 @@
     {
       "id": "creature-barbara",
       "kind": "creature",
-      "name": "Барбара",
+      "name": "Овца",
       "position": [1026, 130],
       "size": [20, 20],
       "interaction_radius": 64,
@@ -124,6 +124,16 @@
       "hit_points": 15,
       "max_hit_points": 15,
       "has_wool": true
+    },
+    {
+      "id": "lootable-training-dummy",
+      "kind": "lootable",
+      "name": "Тренировочный манекен",
+      "position": [1120, 512],
+      "size": [24, 34],
+      "interaction_radius": 64,
+      "dialogue": "",
+      "solid": true
     }
   ]
 }

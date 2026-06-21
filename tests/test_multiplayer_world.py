@@ -63,7 +63,7 @@ def _open_map_with_gate_and_sheep() -> object:
             {
                 "id": "creature-barbara",
                 "kind": "creature",
-                "name": "Барбара",
+                "name": "Овца",
                 "position": [34, 66],
                 "size": [20, 20],
                 "interaction_radius": 64,
@@ -107,7 +107,7 @@ def _open_map_with_gate_in_sheep_path() -> object:
             {
                 "id": "creature-barbara",
                 "kind": "creature",
-                "name": "Барбара",
+                "name": "Овца",
                 "position": [34, 66],
                 "size": [20, 20],
                 "interaction_radius": 64,

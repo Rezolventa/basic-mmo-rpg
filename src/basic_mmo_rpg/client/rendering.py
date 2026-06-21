@@ -28,6 +28,9 @@ GATE_OPEN = (91, 65, 42)
 SHEEP_WOOL = (226, 226, 213)
 SHEEP_SHORN = (176, 169, 158)
 SHEEP_FACE = (58, 49, 44)
+DUMMY_WOOD = (147, 102, 58)
+DUMMY_CLOTH = (117, 85, 54)
+DUMMY_BASE = (82, 60, 42)
 HOVER_OUTLINE = (238, 216, 112)
 WATER_HOVER_FILL = (112, 190, 235, 70)
 WATER_HOVER_BORDER = (178, 226, 250)
@@ -257,6 +260,9 @@ class Renderer:
         if entity.kind == EntityKind.CREATURE:
             self._draw_creature(screen, body, entity, outline_color)
             return
+        if entity.kind == EntityKind.LOOTABLE:
+            self._draw_lootable(screen, body, outline_color)
+            return
 
         pygame.draw.rect(screen, outline_color, body.inflate(6, 6), border_radius=3)
         pygame.draw.rect(screen, NPC_BODY, body, border_radius=3)
@@ -304,6 +310,32 @@ class Renderer:
         pygame.draw.rect(screen, body_color, body, border_radius=7)
         face = pygame.Rect(body.left + body.width - 9, body.top + 8, 8, 12)
         pygame.draw.rect(screen, SHEEP_FACE, face, border_radius=3)
+
+    def _draw_lootable(
+        self,
+        screen: pygame.Surface,
+        body: pygame.Rect,
+        outline_color: tuple[int, int, int],
+    ) -> None:
+        """
+        Рисует lootable-объект мира в виде тренировочного манекена.
+        """
+        pygame.draw.rect(screen, outline_color, body.inflate(5, 5), border_radius=3)
+        post_width = max(5, body.width // 4)
+        post = pygame.Rect(
+            body.centerx - post_width // 2,
+            body.top + 2,
+            post_width,
+            body.height - 5,
+        )
+        arms = pygame.Rect(body.left + 2, body.top + 10, body.width - 4, max(5, body.height // 5))
+        torso = pygame.Rect(body.left + 5, body.top + 16, body.width - 10, body.height - 20)
+        base = pygame.Rect(body.left + 1, body.bottom - 5, body.width - 2, 5)
+
+        pygame.draw.rect(screen, DUMMY_WOOD, post, border_radius=2)
+        pygame.draw.rect(screen, DUMMY_WOOD, arms, border_radius=2)
+        pygame.draw.rect(screen, DUMMY_CLOTH, torso, border_radius=2)
+        pygame.draw.rect(screen, DUMMY_BASE, base, border_radius=2)
 
     def _draw_floating_texts(
         self,

@@ -14,6 +14,7 @@ class EntityKind(StrEnum):
     NPC = "npc"
     GATE = "gate"
     CREATURE = "creature"
+    LOOTABLE = "lootable"
 
 
 @dataclass(frozen=True, slots=True)

@@ -115,7 +115,7 @@ def test_world_snapshot_payload_round_trips_dynamic_entity_state() -> None:
     sheep = WorldEntity(
         entity_id="creature-barbara",
         kind=EntityKind.CREATURE,
-        name="Барбара",
+        name="Овца",
         position=Vec2(96, 32),
         width=28,
         height=28,
@@ -123,13 +123,26 @@ def test_world_snapshot_payload_round_trips_dynamic_entity_state() -> None:
         max_hit_points=15,
         has_wool=False,
     )
+    lootable = WorldEntity(
+        entity_id="lootable-training-dummy",
+        kind=EntityKind.LOOTABLE,
+        name="Тренировочный манекен",
+        position=Vec2(128, 32),
+        width=24,
+        height=34,
+        solid=True,
+    )
 
     payload = world_snapshot_payload(
         [],
-        [EntitySnapshot(state=gate), EntitySnapshot(state=sheep)],
+        [
+            EntitySnapshot(state=gate),
+            EntitySnapshot(state=sheep),
+            EntitySnapshot(state=lootable),
+        ],
     )
 
-    assert entities_from_snapshot_payload(payload) == [gate, sheep]
+    assert entities_from_snapshot_payload(payload) == [gate, sheep, lootable]
 
 
 def test_interaction_target_payload_is_validated() -> None:

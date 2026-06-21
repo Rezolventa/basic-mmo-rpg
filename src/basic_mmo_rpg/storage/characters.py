@@ -79,6 +79,17 @@ class CharacterRepository:
                 )
                 """
             )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS character_loot_claims (
+                    character_name TEXT NOT NULL,
+                    source_id TEXT NOT NULL,
+                    claimed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (character_name, source_id),
+                    FOREIGN KEY (character_name) REFERENCES characters(name)
+                )
+                """
+            )
 
     def load_or_create(self, name: str, default_position: Vec2) -> CharacterRecord:
         """
@@ -203,6 +214,52 @@ class CharacterRepository:
         if self.has_item(name, item_id):
             return self.load_inventory(name), False
         return self.add_item(name, item_id, quantity), True
+
+    def has_loot_claim(self, name: str, source_id: str) -> bool:
+        """
+        Проверяет, забирал ли персонаж награду из указанного источника.
+        """
+        with self._connect() as connection:
+            return self._has_loot_claim(connection, name, source_id)
+
+    def claim_loot_once(
+        self,
+        name: str,
+        source_id: str,
+        item_id: str,
+        quantity: int = 1,
+    ) -> tuple[list[ItemStack], bool]:
+        """
+        Атомарно выдает loot-награду один раз для пары персонаж-источник.
+        """
+        if quantity <= 0:
+            msg = "quantity must be positive"
+            raise ValueError(msg)
+
+        definition = item_definition_for(item_id)
+        with self._connect() as connection:
+            cursor = connection.execute(
+                """
+                INSERT OR IGNORE INTO character_loot_claims (
+                    character_name,
+                    source_id,
+                    claimed_at
+                )
+                VALUES (?, ?, CURRENT_TIMESTAMP)
+                """,
+                (name, source_id),
+            )
+            if cursor.rowcount == 0:
+                return self._load_inventory(connection, name), False
+
+            current_quantity = self._item_quantity(connection, name, item_id)
+            next_quantity = current_quantity + quantity
+            if next_quantity > definition.stack_limit:
+                msg = f"item {item_id!r} stack limit exceeded"
+                raise InventoryLimitError(msg)
+
+            self._set_item_quantity(connection, name, item_id, next_quantity)
+            return self._load_inventory(connection, name), True
 
     def equip_item(self, name: str, item_id: str) -> Equipment:
         """
@@ -335,6 +392,25 @@ class CharacterRepository:
             (name, item_id),
         ).fetchone()
         return int(row["quantity"]) if row is not None else 0
+
+    def _has_loot_claim(
+        self,
+        connection: sqlite3.Connection,
+        name: str,
+        source_id: str,
+    ) -> bool:
+        """
+        Проверяет loot-claim через существующее SQLite-соединение.
+        """
+        row = connection.execute(
+            """
+            SELECT 1
+            FROM character_loot_claims
+            WHERE character_name = ? AND source_id = ?
+            """,
+            (name, source_id),
+        ).fetchone()
+        return row is not None
 
     def _set_item_quantity(
         self,

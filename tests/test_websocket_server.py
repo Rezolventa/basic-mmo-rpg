@@ -22,6 +22,7 @@ from basic_mmo_rpg.domain.inventory import (
     LOG_ITEM_ID,
     LUMBER_AXE_ITEM_ID,
     PICKAXE_ITEM_ID,
+    RUSTY_SWORD_ITEM_ID,
     SHEARS_ITEM_ID,
     STONE_ITEM_ID,
     WOOL_ITEM_ID,
@@ -277,7 +278,7 @@ def _open_map_with_fogu_barbara_and_gate() -> object:
             {
                 "id": "creature-barbara",
                 "kind": "creature",
-                "name": "Барбара",
+                "name": "Овца",
                 "position": [64, 64],
                 "size": [20, 20],
                 "interaction_radius": 64,
@@ -296,6 +297,38 @@ def _open_map_with_fogu_barbara_and_gate() -> object:
                 "solid": True,
                 "is_open": False,
             },
+        ],
+    }
+    return raw_map
+
+
+def _open_map_with_training_dummy() -> object:
+    """
+    Возвращает открытую карту с тренировочным манекеном рядом со spawn-ом.
+    """
+    raw_map: dict[str, object] = {
+        "tile_size": 32,
+        "spawn": [32, 32],
+        "legend": {
+            ".": {"name": "floor", "solid": False, "color": [50, 120, 60]},
+            "#": {"name": "wall", "solid": True, "color": [90, 90, 90]},
+        },
+        "tiles": [
+            "..........",
+            "..........",
+            "..........",
+            "..........",
+        ],
+        "entities": [
+            {
+                "id": "lootable-training-dummy",
+                "kind": "lootable",
+                "name": "Тренировочный манекен",
+                "position": [64, 32],
+                "size": [24, 34],
+                "interaction_radius": 64,
+                "solid": True,
+            }
         ],
     }
     return raw_map
@@ -348,6 +381,15 @@ def test_websocket_server_sends_interaction_result_only_to_actor(tmp_path: Path)
     Проверяет, что результат взаимодействия с NPC получает только инициатор.
     """
     asyncio.run(_interaction_result_only_to_actor_smoke(tmp_path))
+
+
+def test_websocket_server_training_dummy_grants_rusty_sword_once(
+    tmp_path: Path,
+) -> None:
+    """
+    Проверяет одноразовую выдачу Ржавого меча из тренировочного манекена.
+    """
+    asyncio.run(_training_dummy_grants_rusty_sword_once_smoke(tmp_path))
 
 
 def test_websocket_server_ignores_interaction_when_target_is_too_far(tmp_path: Path) -> None:
@@ -787,6 +829,82 @@ async def _interaction_result_only_to_actor_smoke(tmp_path: Path) -> None:
         assert inventory[0].item_id == FISHING_ROD_ITEM_ID
         assert inventory[0].quantity == 1
         assert persisted_inventory == inventory
+
+
+async def _training_dummy_grants_rusty_sword_once_smoke(tmp_path: Path) -> None:
+    """
+    Запускает сервер и проверяет lootable-манекен с одноразовой выдачей меча.
+    """
+    multiplayer_server = _server_for_test(tmp_path, raw_map=_open_map_with_training_dummy())
+
+    async with _running_test_server(multiplayer_server) as uri, connect(uri) as first_client:
+        await _send_join(first_client, "Alice")
+        first_id = await _recv_player_id(first_client)
+        await _recv_message_type(first_client, ServerMessageType.INVENTORY_UPDATED)
+        await _recv_message_type(first_client, ServerMessageType.EQUIPMENT_UPDATED)
+
+        await first_client.send(
+            encode_message(
+                ProtocolMessage(
+                    type=ClientMessageType.INTERACT_REQUESTED,
+                    payload=interact_requested_payload("lootable-training-dummy"),
+                )
+            )
+        )
+        inventory_message = await _recv_message_type(
+            first_client,
+            ServerMessageType.INVENTORY_UPDATED,
+        )
+        result_message = await _recv_message_type(
+            first_client,
+            ServerMessageType.INTERACTION_RESULT,
+        )
+
+        await first_client.send(
+            encode_message(
+                ProtocolMessage(
+                    type=ClientMessageType.INTERACT_REQUESTED,
+                    payload=interact_requested_payload("lootable-training-dummy"),
+                )
+            )
+        )
+        await _assert_no_message_type(first_client, ServerMessageType.INTERACTION_RESULT)
+        await _assert_no_message_type(first_client, ServerMessageType.INVENTORY_UPDATED)
+
+        await first_client.send(
+            encode_message(
+                ProtocolMessage(
+                    type=ClientMessageType.EQUIP_ITEM_REQUESTED,
+                    payload=equip_item_requested_payload(RUSTY_SWORD_ITEM_ID),
+                )
+            )
+        )
+        equipment_message = await _recv_message_type(
+            first_client,
+            ServerMessageType.EQUIPMENT_UPDATED,
+        )
+
+    inventory = inventory_items_from_payload(inventory_message.payload)
+    assert result_message.payload["actor_id"] == first_id
+    assert result_message.payload["target_id"] == first_id
+    assert result_message.payload["target_name"] == "Alice"
+    assert result_message.payload["text"] == "Вы вытащили Ржавый меч из манекена"
+    assert result_message.payload["add_to_journal"] is True
+    assert len(inventory) == 1
+    assert inventory[0].item_id == RUSTY_SWORD_ITEM_ID
+    assert inventory[0].display_name == "Ржавый меч"
+    assert inventory[0].quantity == 1
+    assert multiplayer_server.character_repository.item_quantity(
+        "Alice",
+        RUSTY_SWORD_ITEM_ID,
+    ) == 1
+    assert multiplayer_server.character_repository.has_loot_claim(
+        "Alice",
+        "lootable-training-dummy",
+    )
+    assert equipment_from_payload(equipment_message.payload) == Equipment(
+        main_hand=RUSTY_SWORD_ITEM_ID
+    )
 
 
 async def _interaction_too_far_smoke(tmp_path: Path) -> None:
@@ -1741,7 +1859,7 @@ async def _shearing_success_smoke(tmp_path: Path) -> None:
     quantities = {item.item_id: item.quantity for item in inventory}
     assert result_message.payload["actor_id"] == first_id
     assert result_message.payload["target_id"] == first_id
-    assert result_message.payload["text"] == "Вы состригли шерсть с Барбара"
+    assert result_message.payload["text"] == "Вы состригли шерсть с овцы"
     assert result_message.payload["add_to_journal"] is True
     assert quantities[SHEARS_ITEM_ID] == 1
     assert quantities[WOOL_ITEM_ID] == 1
