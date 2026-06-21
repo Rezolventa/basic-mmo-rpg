@@ -12,7 +12,7 @@ from pathlib import Path
 
 from websockets.asyncio.server import ServerConnection, serve
 
-from basic_mmo_rpg.domain.entities import EntityKind, WorldEntity
+from basic_mmo_rpg.domain.entities import EntityKind, LootClaimPolicy, WorldEntity
 from basic_mmo_rpg.domain.equipment import (
     MAIN_HAND_SLOT,
     Equipment,
@@ -38,9 +38,11 @@ from basic_mmo_rpg.shared.protocol import (
     ProtocolError,
     ProtocolMessage,
     ServerMessageType,
+    attack_target_from_payload,
     character_name_from_payload,
     chat_message_payload,
     chat_text_from_payload,
+    combat_event_payload,
     decode_message,
     encode_message,
     equip_item_id_from_payload,
@@ -78,7 +80,14 @@ FOGU_REQUIRED_WOOL = 1
 FOGU_GOLD_REWARD = 1
 WOOL_REGROW_SECONDS = 30.0
 INVENTORY_FULL_TEXT = "Инвентарь полон"
-TRAINING_DUMMY_REWARD_TEXT = "Вы вытащили Ржавый меч из манекена"
+ATTACK_DISTANCE = 64.0
+ATTACK_HIT_CHANCE = 0.85
+UNARMED_MIN_DAMAGE = 1
+UNARMED_MAX_DAMAGE = 2
+UNARMED_SWING_COOLDOWN_SECONDS = 1.5
+RUSTY_SWORD_MIN_DAMAGE = 3
+RUSTY_SWORD_MAX_DAMAGE = 6
+RUSTY_SWORD_SWING_COOLDOWN_SECONDS = 1.2
 
 logger = logging.getLogger(__name__)
 
@@ -111,14 +120,14 @@ class TileGatheringRule:
 
 
 @dataclass(frozen=True, slots=True)
-class LootableRule:
+class WeaponCombatRule:
     """
-    Описывает server-authoritative награду lootable-объекта мира.
+    Описывает server-authoritative параметры удара оружием.
     """
 
-    reward_item_id: str
-    reward_quantity: int
-    success_text: str
+    min_damage: int
+    max_damage: int
+    swing_cooldown_seconds: float
 
 
 TILE_GATHERING_RULES: dict[str, TileGatheringRule] = {
@@ -150,11 +159,17 @@ TILE_GATHERING_RULES: dict[str, TileGatheringRule] = {
     ),
 }
 
-LOOTABLE_RULES: dict[str, LootableRule] = {
-    "lootable-training-dummy": LootableRule(
-        reward_item_id=RUSTY_SWORD_ITEM_ID,
-        reward_quantity=1,
-        success_text=TRAINING_DUMMY_REWARD_TEXT,
+UNARMED_COMBAT_RULE = WeaponCombatRule(
+    min_damage=UNARMED_MIN_DAMAGE,
+    max_damage=UNARMED_MAX_DAMAGE,
+    swing_cooldown_seconds=UNARMED_SWING_COOLDOWN_SECONDS,
+)
+
+WEAPON_COMBAT_RULES: dict[str, WeaponCombatRule] = {
+    RUSTY_SWORD_ITEM_ID: WeaponCombatRule(
+        min_damage=RUSTY_SWORD_MIN_DAMAGE,
+        max_damage=RUSTY_SWORD_MAX_DAMAGE,
+        swing_cooldown_seconds=RUSTY_SWORD_SWING_COOLDOWN_SECONDS,
     ),
 }
 
@@ -185,6 +200,8 @@ class MultiplayerServer:
         self.sessions: dict[str, PlayerSession] = {}
         self.active_character_sessions: dict[str, str] = {}
         self.gathering_available_at: dict[str, float] = {}
+        self.combat_targets: dict[str, str] = {}
+        self.next_combat_swing_at: dict[str, float] = {}
         self.random = random_source or random.Random()
 
     async def run(self, host: str, port: int) -> None:
@@ -315,6 +332,8 @@ class MultiplayerServer:
         """
         self.world.remove_player(session.player_id)
         self.connections.pop(session.player_id, None)
+        self.combat_targets.pop(session.player_id, None)
+        self.next_combat_swing_at.pop(session.player_id, None)
         self.sessions.pop(session.session_id, None)
         self.active_character_sessions.pop(session.character_name, None)
 
@@ -359,9 +378,47 @@ class MultiplayerServer:
                 await self._handle_equip_item(session, message.payload)
             elif message.type == ClientMessageType.UNEQUIP_ITEM_REQUESTED:
                 await self._handle_unequip_item(session, message.payload)
+            elif message.type == ClientMessageType.ATTACK_REQUESTED:
+                await self._handle_attack_request(session, message.payload)
+            elif message.type == ClientMessageType.STOP_ATTACK_REQUESTED:
+                self._stop_attack(session)
         except (ProtocolError, UnicodeDecodeError) as exc:
             await self._send_error(session.player_id, str(exc))
             logger.warning("Protocol error from %s: %s", session.character_name, exc)
+
+    async def _handle_attack_request(
+        self,
+        session: PlayerSession,
+        payload: dict[str, object],
+    ) -> None:
+        """
+        Проверяет и запоминает цель auto-attack для игрока.
+        """
+        target = attack_target_from_payload(payload)
+        entity = self.world.get_entity(target.entity_id)
+        if entity is None or not entity.is_attackable:
+            logger.info(
+                "Attack ignored: name=%s target_id=%s reason=not_attackable",
+                session.character_name,
+                target.entity_id,
+            )
+            return
+
+        self.combat_targets[session.player_id] = target.entity_id
+        self.next_combat_swing_at[session.player_id] = 0.0
+        logger.info(
+            "Attack target selected: name=%s target_id=%s",
+            session.character_name,
+            target.entity_id,
+        )
+
+    def _stop_attack(self, session: PlayerSession) -> None:
+        """
+        Сбрасывает цель auto-attack для игрока.
+        """
+        self.combat_targets.pop(session.player_id, None)
+        self.next_combat_swing_at.pop(session.player_id, None)
+        logger.info("Attack stopped: name=%s", session.character_name)
 
     async def _handle_equip_item(
         self,
@@ -455,14 +512,9 @@ class MultiplayerServer:
                 target_id,
             )
             return
-        if entity.kind not in {
-            EntityKind.NPC,
-            EntityKind.GATE,
-            EntityKind.CREATURE,
-            EntityKind.LOOTABLE,
-        }:
+        if entity.interaction is None:
             logger.info(
-                "Interaction ignored: name=%s target_id=%s reason=unsupported_kind",
+                "Interaction ignored: name=%s target_id=%s reason=not_interactable",
                 session.character_name,
                 target_id,
             )
@@ -484,14 +536,14 @@ class MultiplayerServer:
             session.character_name,
             target_id,
         )
-        if entity.kind == EntityKind.GATE:
+        if entity.gate is not None:
             await self._handle_gate_interaction(session, entity.entity_id, entity.name)
+            return
+        if entity.lootable is not None:
+            await self._handle_lootable_interaction(session, entity)
             return
         if entity.kind == EntityKind.CREATURE:
             await self._handle_creature_interaction(session, entity)
-            return
-        if entity.kind == EntityKind.LOOTABLE:
-            await self._handle_lootable_interaction(session, entity)
             return
 
         if entity.entity_id == "npc-funday":
@@ -797,10 +849,17 @@ class MultiplayerServer:
         """
         Обрабатывает одноразовую выдачу loot-награды из объекта мира.
         """
-        rule = LOOTABLE_RULES.get(entity.entity_id)
-        if rule is None:
+        lootable = entity.lootable
+        if lootable is None:
             logger.info(
                 "Lootable interaction ignored: name=%s target_id=%s reason=missing_rule",
+                session.character_name,
+                entity.entity_id,
+            )
+            return
+        if lootable.claim_policy == LootClaimPolicy.AFTER_DESTROYED and not entity.is_destroyed:
+            logger.info(
+                "Lootable interaction ignored: name=%s target_id=%s reason=not_destroyed",
                 session.character_name,
                 entity.entity_id,
             )
@@ -810,8 +869,8 @@ class MultiplayerServer:
             inventory, claimed = self.character_repository.claim_loot_once(
                 name=session.character_name,
                 source_id=entity.entity_id,
-                item_id=rule.reward_item_id,
-                quantity=rule.reward_quantity,
+                item_id=lootable.reward_item_id,
+                quantity=lootable.reward_quantity,
             )
         except InventoryLimitError as exc:
             await self._send_inventory_limit_result(
@@ -829,15 +888,15 @@ class MultiplayerServer:
             "Loot granted: name=%s source_id=%s item_id=%s quantity=%s",
             session.character_name,
             entity.entity_id,
-            rule.reward_item_id,
-            rule.reward_quantity,
+            lootable.reward_item_id,
+            lootable.reward_quantity,
         )
         await self._send_inventory_update(session, inventory)
         await self._send_interaction_result(
             session=session,
             target_id=session.player_id,
             target_name=session.character_name,
-            text=rule.success_text,
+            text=lootable.success_text,
         )
 
     async def _handle_creature_interaction(
@@ -980,6 +1039,111 @@ class MultiplayerServer:
                 text=rule.failure_text,
             )
 
+    async def _tick_combat(self, now: float) -> None:
+        """
+        Выполняет server-authoritative auto-attack для активных целей игроков.
+        """
+        for session in list(self.sessions.values()):
+            target_id = self.combat_targets.get(session.player_id)
+            if target_id is None:
+                continue
+
+            player = self.world.players.get(session.player_id)
+            target = self.world.get_entity(target_id)
+            if player is None or target is None or not target.is_attackable:
+                self._stop_attack(session)
+                continue
+
+            distance = (player.center - target.center).length
+            if distance > ATTACK_DISTANCE:
+                continue
+            if now < self.next_combat_swing_at.get(session.player_id, 0.0):
+                continue
+
+            rule = self._combat_rule_for_character(session.character_name)
+            self.next_combat_swing_at[session.player_id] = now + rule.swing_cooldown_seconds
+            target_name = target.base_name
+            if self.random.random() >= ATTACK_HIT_CHANCE:
+                await self._send_combat_event(
+                    session=session,
+                    target_id=target.entity_id,
+                    target_name=target_name,
+                    text="Вы промахнулись",
+                    floating_text="Промах",
+                )
+                continue
+
+            damage = self.random.randint(rule.min_damage, rule.max_damage)
+            damage_result = self.world.damage_entity(target.entity_id, damage)
+            if damage_result is None:
+                self._stop_attack(session)
+                continue
+
+            _, destroyed = damage_result
+            await self._send_combat_event(
+                session=session,
+                target_id=target.entity_id,
+                target_name=target_name,
+                text=f"Вы атаковали {target_name}: -{damage}",
+                floating_text=f"-{damage}",
+                destroyed=destroyed,
+            )
+            if destroyed:
+                self._stop_attack(session)
+                await self._send_combat_event(
+                    session=session,
+                    target_id=target.entity_id,
+                    target_name=target_name,
+                    text=f"{target_name} разрушен",
+                    floating_text="Разрушен",
+                    destroyed=True,
+                )
+            await self._broadcast_snapshot()
+
+    def _combat_rule_for_character(self, character_name: str) -> WeaponCombatRule:
+        """
+        Возвращает параметры удара для предмета в руке или unarmed-атаки.
+        """
+        equipment = self.character_repository.load_equipment(character_name)
+        if equipment.main_hand is None:
+            return UNARMED_COMBAT_RULE
+        if not self.character_repository.is_item_equipped(
+            character_name,
+            MAIN_HAND_SLOT,
+            equipment.main_hand,
+        ):
+            return UNARMED_COMBAT_RULE
+        return WEAPON_COMBAT_RULES.get(equipment.main_hand, UNARMED_COMBAT_RULE)
+
+    async def _send_combat_event(
+        self,
+        session: PlayerSession,
+        target_id: str,
+        target_name: str,
+        text: str,
+        floating_text: str,
+        destroyed: bool = False,
+    ) -> None:
+        """
+        Отправляет событие боя инициатору атаки.
+        """
+        await self._send(
+            session.websocket,
+            ProtocolMessage(
+                type=ServerMessageType.COMBAT_EVENT,
+                payload=combat_event_payload(
+                    actor_id=session.player_id,
+                    actor_name=session.character_name,
+                    target_id=target_id,
+                    target_name=target_name,
+                    text=text,
+                    floating_text=floating_text,
+                    created_at=time.time(),
+                    destroyed=destroyed,
+                ),
+            ),
+        )
+
     async def _send_interaction_result(
         self,
         session: PlayerSession,
@@ -1102,6 +1266,7 @@ class MultiplayerServer:
             previous_time = current_time
 
             self.world.tick(delta_seconds)
+            await self._tick_combat(current_time)
             snapshot_elapsed += delta_seconds
             save_elapsed += delta_seconds
 

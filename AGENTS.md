@@ -8,7 +8,7 @@
 
 ## Текущий статус
 
-Текущий этап: MVP 8.
+Текущий этап: MVP 9.
 
 Уже есть:
 
@@ -60,7 +60,12 @@
 - обмен `Шерсть x1` на `Gold x1` у NPC `Fogu`;
 - `lootable` world-object `Тренировочный манекен`;
 - persistent loot-claim для одноразовой выдачи предмета из объекта мира;
-- предмет `Ржавый меч`, экипируемый в `main_hand`.
+- предмет `Ржавый меч`, экипируемый в `main_hand`;
+- component-based entities в JSON-карте и `world_snapshot`;
+- `attack_requested`, `stop_attack_requested` и `combat_event`;
+- боевой режим по `Tab`;
+- attackable/destructible тренировочный манекен с runtime HP и respawn;
+- auto-attack с server-side cooldown, дистанцией, hit roll и combat text.
 
 ## Важное решение: локальный режим не поддерживаем
 
@@ -102,6 +107,8 @@ client -> server: chat_sent
 client -> server: interact_requested
 client -> server: equip_item_requested
 client -> server: unequip_item_requested
+client -> server: attack_requested
+client -> server: stop_attack_requested
 
 server -> client: connection_accepted
 server -> client: world_snapshot
@@ -109,6 +116,7 @@ server -> client: chat_message
 server -> client: interaction_result
 server -> client: inventory_updated
 server -> client: equipment_updated
+server -> client: combat_event
 server -> client: entity_removed
 server -> client: error
 ```
@@ -120,6 +128,8 @@ server -> client: error
 - `shared/` - протокол сообщений, DTO/schema, сериализация;
 - `domain/` - чистая игровая логика без pygame/websocket;
 - `storage/` - загрузка карты и сохранение persistent-состояния.
+
+Сущности карты сейчас component-based. `kind` описывает широкую категорию/визуальный тип, а gameplay-возможности задаются компонентами вроде `interaction`, `lootable`, `combat`, `respawn`, `gate` и `shearable`. Не добавлять новые gameplay-возможности как новые `kind`, если они лучше выражаются компонентом.
 
 ## Правила реализации
 
@@ -142,8 +152,13 @@ server -> client: error
 - `Esc` - отменить активный ввод чата.
 - `J` - показать/скрыть журнал сообщений.
 - `B` - показать/скрыть инвентарь и paperdoll.
+- `Tab` - включить/выключить боевой режим.
+- При выключении боевого режима клиент отправляет `stop_attack_requested`.
 - Клик по экипируемому предмету в панели `B` - запросить экипировку в `main_hand`.
 - Клик по занятому слоту `В руке` в панели `B` - запросить снятие предмета.
+- В боевом режиме наведение на attackable-объект подсвечивает его красным.
+- В боевом режиме клик по attackable-объекту отправляет `attack_requested` и запоминает выбранную цель.
+- Выбранная боевая цель отмечается темно-красным перекрестием.
 - Клик по другому игроку - временно показать его никнейм.
 - Наведение на NPC - показать имя NPC.
 - Наведение на creature-сущность - показать имя объекта.
@@ -152,7 +167,7 @@ server -> client: error
 - `F` - отправить `interact_requested` для объекта или ресурсного тайла строго под курсором.
 - Клиент закрывается через крестик окна, не через `Esc`.
 
-## Правила текущей игровой петли MVP 8
+## Правила текущей игровой петли MVP 9
 
 - `Funday` говорит `Иди и поймай мне рыбу`.
 - Если у персонажа нет `Удочка`, `Funday` выдает ее один раз через явное правило `add_item_if_absent`.
@@ -195,6 +210,17 @@ server -> client: error
 - Игрок видит `Вы вытащили Ржавый меч из манекена`, сообщение попадает в журнал.
 - Повторные взаимодействия того же персонажа с манекеном ничего не делают.
 - `Ржавый меч` можно взять в руку через панель `B`.
+- Loot манекена независим от его разрушения: `F`-взаимодействие может выдать меч один раз, даже если манекен разрушен.
+- Манекен является `attackable` и `destructible` объектом с `20 HP`.
+- Auto-attack выбирается кликом по манекену в боевом режиме.
+- Если персонаж дальше `64 px`, auto-attack не сбрасывается и молчит до возвращения в радиус.
+- При выключении боевого режима auto-attack сбрасывается через `stop_attack_requested`.
+- Шанс попадания в MVP 9 фиксированный: `0.85`.
+- Без подходящего оружия используется unarmed-атака `1-2`.
+- `Ржавый меч` наносит `3-6` урона с cooldown `1.2s`.
+- Каждый удар или промах отправляется как `combat_event` и попадает в журнал: `Вы атаковали Тренировочный манекен: -4` или `Вы промахнулись`.
+- При `0 HP` манекен становится `Разрушенный тренировочный манекен`, остается solid, выбранная цель сбрасывается.
+- Через 10 секунд server-time манекен восстанавливается до `20 HP` и снова становится attackable.
 
 ## Проверки перед сдачей
 

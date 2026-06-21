@@ -2,7 +2,17 @@ from __future__ import annotations
 
 import pytest
 
-from basic_mmo_rpg.domain.entities import EntityKind, WorldEntity
+from basic_mmo_rpg.domain.entities import (
+    BodyComponent,
+    CombatComponent,
+    EntityKind,
+    IdentityComponent,
+    InteractionComponent,
+    LootableComponent,
+    LootClaimPolicy,
+    RespawnComponent,
+    WorldEntity,
+)
 from basic_mmo_rpg.domain.equipment import MAIN_HAND_SLOT, Equipment
 from basic_mmo_rpg.domain.geometry import Vec2
 from basic_mmo_rpg.domain.inventory import FISHING_ROD_ITEM_ID, ItemStack
@@ -14,8 +24,11 @@ from basic_mmo_rpg.shared.protocol import (
     PlayerSnapshot,
     ProtocolError,
     ProtocolMessage,
+    attack_requested_payload,
+    attack_target_from_payload,
     character_name_from_payload,
     chat_text_from_payload,
+    combat_event_payload,
     decode_message,
     encode_message,
     entities_from_snapshot_payload,
@@ -125,12 +138,22 @@ def test_world_snapshot_payload_round_trips_dynamic_entity_state() -> None:
     )
     lootable = WorldEntity(
         entity_id="lootable-training-dummy",
-        kind=EntityKind.LOOTABLE,
-        name="Тренировочный манекен",
-        position=Vec2(128, 32),
-        width=24,
-        height=34,
-        solid=True,
+        identity=IdentityComponent(
+            kind=EntityKind.OBJECT,
+            name="Тренировочный манекен",
+            destroyed_name="Разрушенный тренировочный манекен",
+            visual="training_dummy",
+        ),
+        body=BodyComponent(position=Vec2(128, 32), width=24, height=34, solid=True),
+        interaction=InteractionComponent(radius=64, dialogue=""),
+        lootable=LootableComponent(
+            reward_item_id="rusty_sword",
+            reward_quantity=1,
+            success_text="Вы вытащили Ржавый меч из манекена",
+            claim_policy=LootClaimPolicy.ALWAYS,
+        ),
+        combat=CombatComponent(hit_points=20, max_hit_points=20),
+        respawn=RespawnComponent(seconds=10),
     )
 
     payload = world_snapshot_payload(
@@ -165,6 +188,33 @@ def test_interaction_target_payload_is_validated() -> None:
         interaction_target_from_payload({"target_tile": [True, 4]})
     with pytest.raises(ProtocolError):
         interaction_target_from_payload({"target_tile": [-1, 4]})
+
+
+def test_combat_payloads_are_validated() -> None:
+    """
+    Проверяет payload-ы выбора цели атаки и серверного события боя.
+    """
+    target = attack_target_from_payload(attack_requested_payload("lootable-training-dummy"))
+    event = combat_event_payload(
+        actor_id="player-1",
+        actor_name="Alice",
+        target_id="lootable-training-dummy",
+        target_name="Тренировочный манекен",
+        text="Вы атаковали Тренировочный манекен: -4",
+        floating_text="-4",
+        created_at=123.0,
+        destroyed=False,
+    )
+
+    assert target.entity_id == "lootable-training-dummy"
+    assert event["actor_id"] == "player-1"
+    assert event["actor_name"] == "Alice"
+    assert event["target_id"] == "lootable-training-dummy"
+    assert event["floating_text"] == "-4"
+    assert event["add_to_journal"] is True
+    assert event["destroyed"] is False
+    with pytest.raises(ProtocolError):
+        attack_target_from_payload({"target_id": ""})
 
 
 def test_inventory_updated_payload_round_trips_items() -> None:

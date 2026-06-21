@@ -120,6 +120,53 @@ def _open_map_with_gate_in_sheep_path() -> object:
     }
 
 
+def _open_map_with_training_dummy() -> object:
+    """
+    Возвращает карту с attackable-манекеном для тестов combat-runtime.
+    """
+    return {
+        "tile_size": 32,
+        "spawn": [32, 32],
+        "legend": {
+            ".": {"name": "floor", "solid": False, "color": [50, 120, 60]},
+            "#": {"name": "wall", "solid": True, "color": [90, 90, 90]},
+        },
+        "tiles": [
+            ".....",
+            ".....",
+            ".....",
+            ".....",
+        ],
+        "entities": [
+            {
+                "id": "lootable-training-dummy",
+                "components": {
+                    "identity": {
+                        "kind": "object",
+                        "name": "Тренировочный манекен",
+                        "destroyed_name": "Разрушенный тренировочный манекен",
+                        "visual": "training_dummy",
+                    },
+                    "body": {
+                        "position": [64, 32],
+                        "size": [24, 34],
+                        "solid": True,
+                    },
+                    "combat": {
+                        "hit_points": 20,
+                        "max_hit_points": 20,
+                        "attackable": True,
+                        "destroyed": False,
+                    },
+                    "respawn": {
+                        "seconds": 10,
+                    },
+                },
+            }
+        ],
+    }
+
+
 def test_world_spawns_players_and_returns_snapshot() -> None:
     """
     Проверяет, что серверный мир добавляет игроков и отдает их в snapshot-е.
@@ -281,3 +328,28 @@ def test_world_regrows_creature_wool_after_timer() -> None:
     assert sheared is not None
     assert sheared.has_wool is False
     assert entities["creature-barbara"].has_wool is True
+
+
+def test_world_destroys_and_respawns_training_dummy() -> None:
+    """
+    Проверяет разрушение и runtime-восстановление attackable-манекена.
+    """
+    world = MultiplayerWorld(tile_map=tile_map_from_dict(_open_map_with_training_dummy()))
+
+    result = world.damage_entity("lootable-training-dummy", 20)
+    destroyed_dummy = world.get_entity("lootable-training-dummy")
+    assert result is not None
+    assert result[1] is True
+    assert destroyed_dummy is not None
+    assert destroyed_dummy.name == "Разрушенный тренировочный манекен"
+    assert destroyed_dummy.hit_points == 0
+    assert destroyed_dummy.is_attackable is False
+    assert destroyed_dummy.solid is True
+
+    world.tick(10.0)
+    restored_dummy = world.get_entity("lootable-training-dummy")
+
+    assert restored_dummy is not None
+    assert restored_dummy.name == "Тренировочный манекен"
+    assert restored_dummy.hit_points == 20
+    assert restored_dummy.is_attackable is True

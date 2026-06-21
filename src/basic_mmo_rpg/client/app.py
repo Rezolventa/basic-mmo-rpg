@@ -114,6 +114,9 @@ class GameClient:
         self.inventory_visible = False
         self.inventory_items: list[ItemStack] = []
         self.equipment = Equipment()
+        self.combat_mode_active = False
+        self.hovered_attackable_entity_id: str | None = None
+        self.selected_attack_target_id: str | None = None
         self.chat_lines: deque[ChatLine] = deque(maxlen=MAX_CHAT_LOG_MESSAGES)
         self.speech_bubbles: dict[str, TimedText] = {}
         self.entity_speech_bubbles: dict[str, TimedText] = {}
@@ -187,6 +190,9 @@ class GameClient:
             inventory_items=self.inventory_items,
             equipment=self.equipment,
             inventory_visible=self.inventory_visible,
+            combat_mode_active=self.combat_mode_active,
+            hovered_attackable_entity_id=self.hovered_attackable_entity_id,
+            selected_attack_target_id=self.selected_attack_target_id,
         )
         pygame.display.flip()
 
@@ -214,8 +220,21 @@ class GameClient:
             self.chat_journal_visible = not self.chat_journal_visible
         elif event.key == pygame.K_b:
             self.inventory_visible = not self.inventory_visible
+        elif event.key == pygame.K_TAB:
+            self._toggle_combat_mode()
         elif event.key == pygame.K_f:
             self._send_interaction_under_cursor()
+
+    def _toggle_combat_mode(self) -> None:
+        """
+        Переключает боевой режим клиента и сбрасывает auto-attack при выключении.
+        """
+        self.combat_mode_active = not self.combat_mode_active
+        if self.combat_mode_active:
+            return
+        self.selected_attack_target_id = None
+        self.hovered_attackable_entity_id = None
+        self.network_client.send_stop_attack_request()
 
     def _handle_chat_input_key(self, event: pygame.event.Event) -> None:
         """
@@ -252,6 +271,13 @@ class GameClient:
         """
         if self.inventory_visible and self._handle_inventory_click(position):
             return
+
+        if self.combat_mode_active:
+            entity = self._attackable_entity_at_screen_position(position)
+            if entity is not None:
+                self.selected_attack_target_id = entity.entity_id
+                self.network_client.send_attack_request(entity.entity_id)
+                return
 
         now = time.monotonic()
         for player_view in self.other_players.values():
@@ -328,6 +354,8 @@ class GameClient:
                 self._apply_chat_message(message.payload)
             elif message.type == ServerMessageType.INTERACTION_RESULT:
                 self._apply_interaction_result(message.payload)
+            elif message.type == ServerMessageType.COMBAT_EVENT:
+                self._apply_combat_event(message.payload)
             elif message.type == ServerMessageType.INVENTORY_UPDATED:
                 self._apply_inventory_updated(message.payload)
             elif message.type == ServerMessageType.EQUIPMENT_UPDATED:
@@ -351,6 +379,7 @@ class GameClient:
             return
 
         self.world_entities = {entity.entity_id: entity for entity in entities}
+        self._clear_stale_attack_target()
         next_other_players: dict[str, PlayerState] = {}
         next_other_names: dict[str, str] = {}
         for snapshot in snapshots:
@@ -425,6 +454,49 @@ class GameClient:
         else:
             self.player_names[target_id] = target_name
             self.speech_bubbles[target_id] = timed_text
+
+    def _apply_combat_event(self, payload: dict[str, object]) -> None:
+        """
+        Добавляет событие боя в журнал и показывает floating text над целью.
+        """
+        actor_id = payload.get("actor_id")
+        actor_name = payload.get("actor_name")
+        target_id = payload.get("target_id")
+        target_name = payload.get("target_name")
+        text = payload.get("text")
+        floating_text = payload.get("floating_text")
+        created_at = payload.get("created_at")
+        add_to_journal = payload.get("add_to_journal", True)
+        destroyed = payload.get("destroyed", False)
+        if not isinstance(actor_id, str) or not isinstance(actor_name, str):
+            return
+        if not isinstance(target_id, str) or not isinstance(target_name, str):
+            return
+        if not isinstance(text, str) or not isinstance(floating_text, str):
+            return
+        if not isinstance(created_at, int | float):
+            created_at = time.time()
+
+        if isinstance(add_to_journal, bool) and add_to_journal:
+            self.chat_lines.append(
+                ChatLine(
+                    player_id=actor_id,
+                    name=actor_name,
+                    text=text,
+                    created_at=float(created_at),
+                )
+            )
+        timed_text = TimedText(
+            text=floating_text,
+            expires_at=time.monotonic() + FLOATING_TEXT_SECONDS,
+        )
+        if target_id in self.world_entities:
+            self.entity_speech_bubbles[target_id] = timed_text
+        else:
+            self.player_names[target_id] = target_name
+            self.speech_bubbles[target_id] = timed_text
+        if destroyed is True and getattr(self, "selected_attack_target_id", None) == target_id:
+            self.selected_attack_target_id = None
 
     def _apply_inventory_updated(self, payload: dict[str, object]) -> None:
         """
@@ -540,9 +612,15 @@ class GameClient:
         mouse_position = pygame.mouse.get_pos()
         entity = self._entity_at_screen_position(mouse_position)
         self.hovered_entity_id = entity.entity_id if entity is not None else None
-        self.hovered_tile = None if entity is not None else self._resource_tile_at_screen_position(
-            mouse_position
+        self.hovered_attackable_entity_id = (
+            entity.entity_id
+            if self.combat_mode_active and entity is not None and entity.is_attackable
+            else None
         )
+        if self.combat_mode_active or entity is not None:
+            self.hovered_tile = None
+        else:
+            self.hovered_tile = self._resource_tile_at_screen_position(mouse_position)
 
     def _entity_at_screen_position(self, position: tuple[int, int]) -> WorldEntity | None:
         """
@@ -553,6 +631,29 @@ class GameClient:
             if entity.rect.contains_point(world_position):
                 return entity
         return None
+
+    def _attackable_entity_at_screen_position(
+        self,
+        position: tuple[int, int],
+    ) -> WorldEntity | None:
+        """
+        Возвращает attackable-объект мира под экранной позицией курсора.
+        """
+        entity = self._entity_at_screen_position(position)
+        if entity is None or not entity.is_attackable:
+            return None
+        return entity
+
+    def _clear_stale_attack_target(self) -> None:
+        """
+        Сбрасывает выбранную цель, если она исчезла или больше не attackable.
+        """
+        target_id = getattr(self, "selected_attack_target_id", None)
+        if target_id is None:
+            return
+        entity = self.world_entities.get(target_id)
+        if entity is None or not entity.is_attackable:
+            self.selected_attack_target_id = None
 
     def _water_tile_at_screen_position(self, position: tuple[int, int]) -> tuple[int, int] | None:
         """

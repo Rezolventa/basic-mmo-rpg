@@ -6,7 +6,19 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any
 
-from basic_mmo_rpg.domain.entities import EntityKind, WorldEntity
+from basic_mmo_rpg.domain.entities import (
+    BodyComponent,
+    CombatComponent,
+    EntityKind,
+    GateComponent,
+    IdentityComponent,
+    InteractionComponent,
+    LootableComponent,
+    LootClaimPolicy,
+    RespawnComponent,
+    ShearableComponent,
+    WorldEntity,
+)
 from basic_mmo_rpg.domain.equipment import MAIN_HAND_SLOT, Equipment, validate_equipment_slot
 from basic_mmo_rpg.domain.geometry import Vec2
 from basic_mmo_rpg.domain.inventory import ItemStack
@@ -24,6 +36,8 @@ class ClientMessageType(StrEnum):
     INTERACT_REQUESTED = "interact_requested"
     EQUIP_ITEM_REQUESTED = "equip_item_requested"
     UNEQUIP_ITEM_REQUESTED = "unequip_item_requested"
+    ATTACK_REQUESTED = "attack_requested"
+    STOP_ATTACK_REQUESTED = "stop_attack_requested"
 
 
 class ServerMessageType(StrEnum):
@@ -40,6 +54,7 @@ class ServerMessageType(StrEnum):
     ENTITY_REMOVED = "entity_removed"
     INVENTORY_UPDATED = "inventory_updated"
     EQUIPMENT_UPDATED = "equipment_updated"
+    COMBAT_EVENT = "combat_event"
     ERROR = "error"
 
 
@@ -92,6 +107,15 @@ class InteractionTarget:
 
     entity_id: str | None = None
     tile: tuple[int, int] | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class AttackTarget:
+    """
+    Хранит цель клиентского запроса атаки.
+    """
+
+    entity_id: str
 
 
 def encode_message(message: ProtocolMessage) -> str:
@@ -256,6 +280,31 @@ def interaction_target_from_payload(payload: Mapping[str, Any]) -> InteractionTa
     raise ProtocolError(msg)
 
 
+def attack_requested_payload(target_id: str) -> dict[str, Any]:
+    """
+    Создает payload клиентского запроса атаки объекта мира.
+    """
+    return {"target_id": target_id}
+
+
+def attack_target_from_payload(payload: Mapping[str, Any]) -> AttackTarget:
+    """
+    Извлекает цель из payload-а запроса атаки.
+    """
+    target_id = payload.get("target_id")
+    if not isinstance(target_id, str) or not target_id:
+        msg = "attack target_id must be a non-empty string"
+        raise ProtocolError(msg)
+    return AttackTarget(entity_id=target_id)
+
+
+def stop_attack_requested_payload() -> dict[str, Any]:
+    """
+    Создает payload клиентского запроса остановки auto-attack.
+    """
+    return {}
+
+
 def interaction_result_payload(
     actor_id: str,
     target_id: str,
@@ -274,6 +323,33 @@ def interaction_result_payload(
         "text": text,
         "created_at": created_at,
         "add_to_journal": add_to_journal,
+    }
+
+
+def combat_event_payload(
+    actor_id: str,
+    actor_name: str,
+    target_id: str,
+    target_name: str,
+    text: str,
+    floating_text: str,
+    created_at: float,
+    add_to_journal: bool = True,
+    destroyed: bool = False,
+) -> dict[str, Any]:
+    """
+    Создает payload серверного события боя.
+    """
+    return {
+        "actor_id": actor_id,
+        "actor_name": actor_name,
+        "target_id": target_id,
+        "target_name": target_name,
+        "text": text,
+        "floating_text": floating_text,
+        "created_at": created_at,
+        "add_to_journal": add_to_journal,
+        "destroyed": destroyed,
     }
 
 
@@ -446,28 +522,52 @@ def player_snapshot_from_payload(payload: Mapping[str, Any]) -> PlayerSnapshot:
 
 def entity_to_payload(entity: WorldEntity) -> dict[str, Any]:
     """
-    Преобразует объект мира в JSON-готовый элемент payload-а snapshot-а.
+    Преобразует объект мира в JSON-готовый component-based элемент snapshot-а.
     """
-    payload: dict[str, Any] = {
-        "id": entity.entity_id,
-        "kind": entity.kind.value,
-        "name": entity.name,
-        "x": entity.position.x,
-        "y": entity.position.y,
-        "width": entity.width,
-        "height": entity.height,
-        "interaction_radius": entity.interaction_radius,
-        "solid": entity.solid,
+    components: dict[str, Any] = {
+        "identity": {
+            "kind": entity.identity.kind.value,
+            "name": entity.identity.name,
+        },
+        "body": {
+            "position": [entity.body.position.x, entity.body.position.y],
+            "size": [entity.body.width, entity.body.height],
+            "solid": entity.body.solid,
+        },
     }
-    if entity.is_open is not None:
-        payload["is_open"] = entity.is_open
-    if entity.hit_points is not None:
-        payload["hit_points"] = entity.hit_points
-    if entity.max_hit_points is not None:
-        payload["max_hit_points"] = entity.max_hit_points
-    if entity.has_wool is not None:
-        payload["has_wool"] = entity.has_wool
-    return payload
+    if entity.identity.destroyed_name is not None:
+        components["identity"]["destroyed_name"] = entity.identity.destroyed_name
+    if entity.identity.visual:
+        components["identity"]["visual"] = entity.identity.visual
+    if entity.interaction is not None:
+        components["interaction"] = {
+            "radius": entity.interaction.radius,
+            "dialogue": entity.interaction.dialogue,
+        }
+    if entity.lootable is not None:
+        components["lootable"] = {
+            "reward_item_id": entity.lootable.reward_item_id,
+            "reward_quantity": entity.lootable.reward_quantity,
+            "success_text": entity.lootable.success_text,
+            "claim_policy": entity.lootable.claim_policy.value,
+        }
+    if entity.combat is not None:
+        components["combat"] = {
+            "hit_points": entity.combat.hit_points,
+            "max_hit_points": entity.combat.max_hit_points,
+            "attackable": entity.combat.attackable,
+            "destroyed": entity.combat.destroyed,
+        }
+    if entity.respawn is not None:
+        components["respawn"] = {
+            "seconds": entity.respawn.seconds,
+            "remaining": entity.respawn.remaining,
+        }
+    if entity.gate is not None:
+        components["gate"] = {"is_open": entity.gate.is_open}
+    if entity.shearable is not None:
+        components["shearable"] = {"has_wool": entity.shearable.has_wool}
+    return {"id": entity.entity_id, "components": components}
 
 
 def entity_from_payload(payload: Mapping[str, Any]) -> WorldEntity:
@@ -479,6 +579,47 @@ def entity_from_payload(payload: Mapping[str, Any]) -> WorldEntity:
         msg = "entity id must be a string"
         raise ProtocolError(msg)
 
+    raw_components = payload.get("components")
+    if raw_components is not None:
+        if not isinstance(raw_components, Mapping):
+            msg = "entity components must be an object"
+            raise ProtocolError(msg)
+        return _component_entity_from_payload(entity_id, raw_components)
+
+    return _legacy_entity_from_payload(entity_id, payload)
+
+
+def _component_entity_from_payload(
+    entity_id: str,
+    raw_components: Mapping[str, Any],
+) -> WorldEntity:
+    """
+    Создает объект мира из component-based payload-а snapshot-а.
+    """
+    return WorldEntity(
+        entity_id=entity_id,
+        identity=_identity_component_from_payload(
+            _required_component_payload(raw_components, "identity")
+        ),
+        body=_body_component_from_payload(_required_component_payload(raw_components, "body")),
+        interaction=_optional_interaction_component_from_payload(
+            raw_components.get("interaction")
+        ),
+        lootable=_optional_lootable_component_from_payload(raw_components.get("lootable")),
+        combat=_optional_combat_component_from_payload(raw_components.get("combat")),
+        respawn=_optional_respawn_component_from_payload(raw_components.get("respawn")),
+        gate=_optional_gate_component_from_payload(raw_components.get("gate")),
+        shearable=_optional_shearable_component_from_payload(raw_components.get("shearable")),
+    )
+
+
+def _legacy_entity_from_payload(
+    entity_id: str,
+    payload: Mapping[str, Any],
+) -> WorldEntity:
+    """
+    Создает объект мира из старого плоского payload-а snapshot-а.
+    """
     raw_kind = payload.get("kind")
     if not isinstance(raw_kind, str):
         msg = "entity kind must be a string"
@@ -511,6 +652,132 @@ def entity_from_payload(payload: Mapping[str, Any]) -> WorldEntity:
         max_hit_points=_optional_int_field(payload, "max_hit_points"),
         has_wool=_optional_bool_field(payload, "has_wool"),
     )
+
+
+def _identity_component_from_payload(payload: Mapping[str, Any]) -> IdentityComponent:
+    """
+    Создает identity-компонент из payload-а snapshot-а.
+    """
+    raw_kind = payload.get("kind")
+    if not isinstance(raw_kind, str):
+        msg = "entity kind must be a string"
+        raise ProtocolError(msg)
+    try:
+        kind = EntityKind(raw_kind)
+    except ValueError as exc:
+        msg = f"unsupported entity kind: {raw_kind!r}"
+        raise ProtocolError(msg) from exc
+    return IdentityComponent(
+        kind=kind,
+        name=_string_field(payload, "name"),
+        destroyed_name=_optional_string_field(payload, "destroyed_name"),
+        visual=_optional_string_field(payload, "visual") or "",
+    )
+
+
+def _body_component_from_payload(payload: Mapping[str, Any]) -> BodyComponent:
+    """
+    Создает body-компонент из payload-а snapshot-а.
+    """
+    position = _vec2_from_payload(payload.get("position"), "body position")
+    width, height = _size_from_payload(payload.get("size"), "body size")
+    return BodyComponent(
+        position=position,
+        width=width,
+        height=height,
+        solid=_bool_field(payload, "solid"),
+    )
+
+
+def _optional_interaction_component_from_payload(
+    raw_component: Any,
+) -> InteractionComponent | None:
+    """
+    Создает необязательный interaction-компонент из payload-а snapshot-а.
+    """
+    if raw_component is None:
+        return None
+    payload = _component_payload(raw_component, "interaction")
+    dialogue = payload.get("dialogue", "")
+    if not isinstance(dialogue, str):
+        msg = "dialogue must be a string"
+        raise ProtocolError(msg)
+    return InteractionComponent(
+        radius=_number_field(payload, "radius"),
+        dialogue=dialogue,
+    )
+
+
+def _optional_lootable_component_from_payload(raw_component: Any) -> LootableComponent | None:
+    """
+    Создает необязательный lootable-компонент из payload-а snapshot-а.
+    """
+    if raw_component is None:
+        return None
+    payload = _component_payload(raw_component, "lootable")
+    raw_policy = payload.get("claim_policy")
+    if not isinstance(raw_policy, str):
+        msg = "lootable claim_policy must be a string"
+        raise ProtocolError(msg)
+    try:
+        claim_policy = LootClaimPolicy(raw_policy)
+    except ValueError as exc:
+        msg = f"unsupported lootable claim_policy: {raw_policy!r}"
+        raise ProtocolError(msg) from exc
+    return LootableComponent(
+        reward_item_id=_string_field(payload, "reward_item_id"),
+        reward_quantity=_positive_int_field(payload, "reward_quantity"),
+        success_text=_string_field(payload, "success_text"),
+        claim_policy=claim_policy,
+    )
+
+
+def _optional_combat_component_from_payload(raw_component: Any) -> CombatComponent | None:
+    """
+    Создает необязательный combat-компонент из payload-а snapshot-а.
+    """
+    if raw_component is None:
+        return None
+    payload = _component_payload(raw_component, "combat")
+    return CombatComponent(
+        hit_points=_non_negative_int_field(payload, "hit_points"),
+        max_hit_points=_positive_int_field(payload, "max_hit_points"),
+        attackable=_bool_field(payload, "attackable"),
+        destroyed=_bool_field(payload, "destroyed"),
+    )
+
+
+def _optional_respawn_component_from_payload(raw_component: Any) -> RespawnComponent | None:
+    """
+    Создает необязательный respawn-компонент из payload-а snapshot-а.
+    """
+    if raw_component is None:
+        return None
+    payload = _component_payload(raw_component, "respawn")
+    return RespawnComponent(
+        seconds=_number_field(payload, "seconds"),
+        remaining=_number_field(payload, "remaining"),
+    )
+
+
+def _optional_gate_component_from_payload(raw_component: Any) -> GateComponent | None:
+    """
+    Создает необязательный gate-компонент из payload-а snapshot-а.
+    """
+    if raw_component is None:
+        return None
+    payload = _component_payload(raw_component, "gate")
+    return GateComponent(is_open=_bool_field(payload, "is_open"))
+
+
+def _optional_shearable_component_from_payload(raw_component: Any) -> ShearableComponent | None:
+    """
+    Создает необязательный shearable-компонент из payload-а snapshot-а.
+    """
+    if raw_component is None:
+        return None
+    payload = _component_payload(raw_component, "shearable")
+    return ShearableComponent(has_wool=_bool_field(payload, "has_wool"))
 
 
 def entity_snapshot_to_payload(snapshot: EntitySnapshot) -> dict[str, Any]:
@@ -591,6 +858,117 @@ def world_snapshot_payload(
     }
 
 
+def _required_component_payload(
+    raw_components: Mapping[str, Any],
+    key: str,
+) -> Mapping[str, Any]:
+    """
+    Читает обязательный компонент entity payload-а.
+    """
+    return _component_payload(raw_components.get(key), key)
+
+
+def _component_payload(raw_component: Any, key: str) -> Mapping[str, Any]:
+    """
+    Проверяет, что компонент entity payload-а является объектом.
+    """
+    if not isinstance(raw_component, Mapping):
+        msg = f"entity {key} component must be an object"
+        raise ProtocolError(msg)
+    return raw_component
+
+
+def _string_field(payload: Mapping[str, Any], key: str) -> str:
+    """
+    Читает непустое строковое поле из payload-а сообщения.
+    """
+    value = payload.get(key)
+    if not isinstance(value, str) or not value:
+        msg = f"{key} must be a non-empty string"
+        raise ProtocolError(msg)
+    return value
+
+
+def _optional_string_field(payload: Mapping[str, Any], key: str) -> str | None:
+    """
+    Читает необязательное непустое строковое поле из payload-а сообщения.
+    """
+    value = payload.get(key)
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value:
+        msg = f"{key} must be a non-empty string"
+        raise ProtocolError(msg)
+    return value
+
+
+def _vec2_from_payload(raw_value: Any, field_name: str) -> Vec2:
+    """
+    Читает пару координат из payload-а сообщения.
+    """
+    if not isinstance(raw_value, list) or len(raw_value) != 2:
+        msg = f"{field_name} must be a two-item list"
+        raise ProtocolError(msg)
+    x, y = raw_value
+    if (
+        not isinstance(x, int | float)
+        or isinstance(x, bool)
+        or not isinstance(y, int | float)
+        or isinstance(y, bool)
+    ):
+        msg = f"{field_name} coordinates must be numbers"
+        raise ProtocolError(msg)
+    return Vec2(float(x), float(y))
+
+
+def _size_from_payload(raw_value: Any, field_name: str) -> tuple[int, int]:
+    """
+    Читает размер объекта из payload-а сообщения.
+    """
+    if not isinstance(raw_value, list) or len(raw_value) != 2:
+        msg = f"{field_name} must be a two-item list"
+        raise ProtocolError(msg)
+    width, height = raw_value
+    if not isinstance(width, int) or isinstance(width, bool):
+        msg = f"{field_name} must contain integers"
+        raise ProtocolError(msg)
+    if not isinstance(height, int) or isinstance(height, bool):
+        msg = f"{field_name} must contain integers"
+        raise ProtocolError(msg)
+    if width <= 0 or height <= 0:
+        msg = f"{field_name} must be positive"
+        raise ProtocolError(msg)
+    return width, height
+
+
+def _positive_int_field(payload: Mapping[str, Any], key: str) -> int:
+    """
+    Читает положительное целое число из payload-а сообщения.
+    """
+    value = payload.get(key)
+    if not isinstance(value, int) or isinstance(value, bool):
+        msg = f"{key} must be an integer"
+        raise ProtocolError(msg)
+    if value <= 0:
+        msg = f"{key} must be positive"
+        raise ProtocolError(msg)
+    return value
+
+
+def _non_negative_int_field(payload: Mapping[str, Any], key: str) -> int:
+    """
+    Читает неотрицательное целое число из payload-а сообщения.
+    """
+    value = payload.get(key)
+    if not isinstance(value, int) or isinstance(value, bool):
+        msg = f"{key} must be an integer"
+        raise ProtocolError(msg)
+    if value < 0:
+        msg = f"{key} must be non-negative"
+        raise ProtocolError(msg)
+    return value
+
+
 def _bool_field(payload: Mapping[str, Any], key: str) -> bool:
     """
     Читает boolean-поле из payload-а сообщения и отклоняет другие типы поля.
@@ -633,7 +1011,7 @@ def _number_field(payload: Mapping[str, Any], key: str) -> float:
     Читает числовое поле из payload-а сообщения и отклоняет другие типы поля.
     """
     value = payload.get(key)
-    if not isinstance(value, int | float):
+    if not isinstance(value, int | float) or isinstance(value, bool):
         msg = f"{key} must be a number"
         raise ProtocolError(msg)
     return float(value)

@@ -38,6 +38,8 @@ TREE_HOVER_FILL = (204, 179, 89, 85)
 TREE_HOVER_BORDER = (235, 209, 118)
 ROCK_HOVER_FILL = (178, 184, 192, 85)
 ROCK_HOVER_BORDER = (218, 224, 232)
+ATTACK_HOVER_OUTLINE = (172, 38, 48)
+TARGET_CROSSHAIR = (92, 9, 22)
 TEXT_COLOR = (236, 238, 241)
 MUTED_TEXT_COLOR = (180, 187, 196)
 EQUIPPABLE_TEXT_COLOR = (223, 215, 166)
@@ -87,6 +89,9 @@ class Renderer:
         inventory_items: Sequence[ItemStack] = (),
         equipment: Equipment | None = None,
         inventory_visible: bool = False,
+        combat_mode_active: bool = False,
+        hovered_attackable_entity_id: str | None = None,
+        selected_attack_target_id: str | None = None,
     ) -> None:
         """
         Рисует полный игровой кадр на переданной поверхности.
@@ -109,6 +114,10 @@ class Renderer:
                 camera,
                 entity,
                 hovered=entity.entity_id == hovered_entity_id,
+                attack_hovered=(
+                    combat_mode_active and entity.entity_id == hovered_attackable_entity_id
+                ),
+                selected=entity.entity_id == selected_attack_target_id,
             )
         for other_player in other_player_list:
             self._draw_player(
@@ -248,20 +257,32 @@ class Renderer:
         camera: Camera,
         entity: WorldEntity,
         hovered: bool,
+        attack_hovered: bool,
+        selected: bool,
     ) -> None:
         """
         Рисует один объект мира в экранных координатах.
         """
         body = self._entity_screen_rect(camera, entity)
-        outline_color = HOVER_OUTLINE if hovered else NPC_OUTLINE
+        outline_color = NPC_OUTLINE
+        if hovered:
+            outline_color = HOVER_OUTLINE
+        if attack_hovered:
+            outline_color = ATTACK_HOVER_OUTLINE
         if entity.kind == EntityKind.GATE:
             self._draw_gate(screen, body, entity, outline_color)
+            if selected:
+                self._draw_target_crosshair(screen, body)
             return
         if entity.kind == EntityKind.CREATURE:
             self._draw_creature(screen, body, entity, outline_color)
+            if selected:
+                self._draw_target_crosshair(screen, body)
             return
-        if entity.kind == EntityKind.LOOTABLE:
+        if entity.kind == EntityKind.LOOTABLE or entity.visual == "training_dummy":
             self._draw_lootable(screen, body, outline_color)
+            if selected:
+                self._draw_target_crosshair(screen, body)
             return
 
         pygame.draw.rect(screen, outline_color, body.inflate(6, 6), border_radius=3)
@@ -271,6 +292,44 @@ class Renderer:
         pygame.draw.rect(screen, NPC_TUNIC, tunic, border_radius=2)
         face = pygame.Rect(body.left + 7, body.top + 4, body.width - 14, 7)
         pygame.draw.rect(screen, TEXT_COLOR, face, border_radius=2)
+        if selected:
+            self._draw_target_crosshair(screen, body)
+
+    def _draw_target_crosshair(self, screen: pygame.Surface, body: pygame.Rect) -> None:
+        """
+        Рисует темно-красное перекрестие выбранной боевой цели.
+        """
+        center = body.center
+        outer = max(body.width, body.height) // 2 + 7
+        gap = max(5, min(body.width, body.height) // 3)
+        pygame.draw.line(
+            screen,
+            TARGET_CROSSHAIR,
+            (center[0] - outer, center[1]),
+            (center[0] - gap, center[1]),
+            width=2,
+        )
+        pygame.draw.line(
+            screen,
+            TARGET_CROSSHAIR,
+            (center[0] + gap, center[1]),
+            (center[0] + outer, center[1]),
+            width=2,
+        )
+        pygame.draw.line(
+            screen,
+            TARGET_CROSSHAIR,
+            (center[0], center[1] - outer),
+            (center[0], center[1] - gap),
+            width=2,
+        )
+        pygame.draw.line(
+            screen,
+            TARGET_CROSSHAIR,
+            (center[0], center[1] + gap),
+            (center[0], center[1] + outer),
+            width=2,
+        )
 
     def _draw_gate(
         self,

@@ -8,12 +8,22 @@ import pygame
 from basic_mmo_rpg.client.app import GameClient, RemotePlayerView, _smooth_player_toward
 from basic_mmo_rpg.client.rendering import Renderer
 from basic_mmo_rpg.client.ui import InventoryPanelHit
-from basic_mmo_rpg.domain.entities import EntityKind, WorldEntity
+from basic_mmo_rpg.domain.entities import (
+    BodyComponent,
+    CombatComponent,
+    EntityKind,
+    IdentityComponent,
+    WorldEntity,
+)
 from basic_mmo_rpg.domain.equipment import MAIN_HAND_SLOT, Equipment
 from basic_mmo_rpg.domain.geometry import Vec2
 from basic_mmo_rpg.domain.inventory import FISHING_ROD_ITEM_ID, ItemStack
 from basic_mmo_rpg.domain.movement import PlayerState
-from basic_mmo_rpg.shared.protocol import equipment_updated_payload, inventory_updated_payload
+from basic_mmo_rpg.shared.protocol import (
+    combat_event_payload,
+    equipment_updated_payload,
+    inventory_updated_payload,
+)
 from basic_mmo_rpg.storage.map_loader import tile_map_from_dict
 
 
@@ -128,6 +138,49 @@ def test_inventory_hotkey_toggles_inventory_panel() -> None:
     assert client.inventory_visible is False
 
 
+def test_combat_hotkey_toggles_mode_and_stops_attack() -> None:
+    """
+    Проверяет, что Tab включает боевой режим и при выключении сбрасывает auto-attack.
+    """
+    client = object.__new__(GameClient)
+    network = _NetworkRecorder()
+    client.chat_input_active = False
+    client.inventory_visible = False
+    client.combat_mode_active = False
+    client.selected_attack_target_id = "lootable-training-dummy"
+    client.hovered_attackable_entity_id = "lootable-training-dummy"
+    client.network_client = network
+
+    client._handle_key_down(SimpleNamespace(key=pygame.K_TAB, unicode=""))
+    assert client.combat_mode_active is True
+    assert network.stop_attack_requests == 0
+
+    client._handle_key_down(SimpleNamespace(key=pygame.K_TAB, unicode=""))
+    assert client.combat_mode_active is False
+    assert client.selected_attack_target_id is None
+    assert client.hovered_attackable_entity_id is None
+    assert network.stop_attack_requests == 1
+
+
+def test_combat_click_requests_attack_target() -> None:
+    """
+    Проверяет, что клик по attackable-объекту в боевом режиме выбирает цель.
+    """
+    client = object.__new__(GameClient)
+    network = _NetworkRecorder()
+    entity = _attackable_dummy()
+    client.inventory_visible = False
+    client.combat_mode_active = True
+    client.camera = SimpleNamespace(screen_to_world=lambda position: Vec2(*position))
+    client.world_entities = {entity.entity_id: entity}
+    client.network_client = network
+
+    client._handle_left_click((70, 40))
+
+    assert client.selected_attack_target_id == entity.entity_id
+    assert network.attack_targets == [entity.entity_id]
+
+
 def test_client_applies_interaction_result_to_log_and_entity_bubble() -> None:
     """
     Проверяет, что клиент показывает результат взаимодействия в журнале и над объектом.
@@ -159,6 +212,38 @@ def test_client_applies_interaction_result_to_log_and_entity_bubble() -> None:
     assert client.chat_lines[-1].name == "Funday"
     assert client.chat_lines[-1].text == "Hello, developer"
     assert client.entity_speech_bubbles["npc-funday"].text == "Hello, developer"
+
+
+def test_client_applies_combat_event_to_log_and_entity_bubble() -> None:
+    """
+    Проверяет, что событие боя пишет журнал и floating text над целью.
+    """
+    client = object.__new__(GameClient)
+    entity = _attackable_dummy()
+    client.chat_lines = deque(maxlen=50)
+    client.entity_speech_bubbles = {}
+    client.speech_bubbles = {}
+    client.player_names = {}
+    client.world_entities = {entity.entity_id: entity}
+    client.selected_attack_target_id = entity.entity_id
+
+    client._apply_combat_event(
+        combat_event_payload(
+            actor_id="player-1",
+            actor_name="Alice",
+            target_id=entity.entity_id,
+            target_name=entity.name,
+            text="Вы атаковали Тренировочный манекен: -4",
+            floating_text="-4",
+            created_at=123.0,
+            destroyed=True,
+        )
+    )
+
+    assert client.chat_lines[-1].name == "Alice"
+    assert client.chat_lines[-1].text == "Вы атаковали Тренировочный манекен: -4"
+    assert client.entity_speech_bubbles[entity.entity_id].text == "-4"
+    assert client.selected_attack_target_id is None
 
 
 def test_client_can_show_interaction_bubble_without_journal_entry() -> None:
@@ -376,6 +461,22 @@ def _client_without_pygame(player: PlayerState) -> GameClient:
     return client
 
 
+def _attackable_dummy() -> WorldEntity:
+    """
+    Создает attackable-тестовый манекен.
+    """
+    return WorldEntity(
+        entity_id="lootable-training-dummy",
+        identity=IdentityComponent(
+            kind=EntityKind.OBJECT,
+            name="Тренировочный манекен",
+            visual="training_dummy",
+        ),
+        body=BodyComponent(position=Vec2(64, 32), width=24, height=34, solid=True),
+        combat=CombatComponent(hit_points=20, max_hit_points=20, attackable=True),
+    )
+
+
 class _NetworkRecorder:
     """
     Запоминает equip/unequip-запросы клиента для UI-тестов.
@@ -387,6 +488,8 @@ class _NetworkRecorder:
         """
         self.equipped_items: list[str] = []
         self.unequipped_slots: list[str] = []
+        self.attack_targets: list[str] = []
+        self.stop_attack_requests = 0
 
     def send_equip_item_request(self, item_id: str) -> None:
         """
@@ -399,3 +502,15 @@ class _NetworkRecorder:
         Запоминает запрос снятия предмета.
         """
         self.unequipped_slots.append(slot)
+
+    def send_attack_request(self, target_id: str) -> None:
+        """
+        Запоминает запрос выбора цели атаки.
+        """
+        self.attack_targets.append(target_id)
+
+    def send_stop_attack_request(self) -> None:
+        """
+        Запоминает запрос остановки auto-attack.
+        """
+        self.stop_attack_requests += 1

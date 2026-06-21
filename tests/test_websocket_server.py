@@ -34,6 +34,7 @@ from basic_mmo_rpg.shared.protocol import (
     ClientMessageType,
     ProtocolMessage,
     ServerMessageType,
+    attack_requested_payload,
     chat_sent_payload,
     decode_message,
     encode_message,
@@ -322,12 +323,38 @@ def _open_map_with_training_dummy() -> object:
         "entities": [
             {
                 "id": "lootable-training-dummy",
-                "kind": "lootable",
-                "name": "Тренировочный манекен",
-                "position": [64, 32],
-                "size": [24, 34],
-                "interaction_radius": 64,
-                "solid": True,
+                "components": {
+                    "identity": {
+                        "kind": "object",
+                        "name": "Тренировочный манекен",
+                        "destroyed_name": "Разрушенный тренировочный манекен",
+                        "visual": "training_dummy",
+                    },
+                    "body": {
+                        "position": [64, 32],
+                        "size": [24, 34],
+                        "solid": True,
+                    },
+                    "interaction": {
+                        "radius": 64,
+                        "dialogue": "",
+                    },
+                    "lootable": {
+                        "reward_item_id": RUSTY_SWORD_ITEM_ID,
+                        "reward_quantity": 1,
+                        "success_text": "Вы вытащили Ржавый меч из манекена",
+                        "claim_policy": "always",
+                    },
+                    "combat": {
+                        "hit_points": 20,
+                        "max_hit_points": 20,
+                        "attackable": True,
+                        "destroyed": False,
+                    },
+                    "respawn": {
+                        "seconds": 10,
+                    },
+                },
             }
         ],
     }
@@ -390,6 +417,13 @@ def test_websocket_server_training_dummy_grants_rusty_sword_once(
     Проверяет одноразовую выдачу Ржавого меча из тренировочного манекена.
     """
     asyncio.run(_training_dummy_grants_rusty_sword_once_smoke(tmp_path))
+
+
+def test_websocket_server_auto_attacks_training_dummy(tmp_path: Path) -> None:
+    """
+    Проверяет базовый server-authoritative auto-attack по тренировочному манекену.
+    """
+    asyncio.run(_auto_attacks_training_dummy_smoke(tmp_path))
 
 
 def test_websocket_server_ignores_interaction_when_target_is_too_far(tmp_path: Path) -> None:
@@ -905,6 +939,53 @@ async def _training_dummy_grants_rusty_sword_once_smoke(tmp_path: Path) -> None:
     assert equipment_from_payload(equipment_message.payload) == Equipment(
         main_hand=RUSTY_SWORD_ITEM_ID
     )
+
+
+async def _auto_attacks_training_dummy_smoke(tmp_path: Path) -> None:
+    """
+    Запускает сервер и проверяет auto-attack по тренировочному манекену.
+    """
+    multiplayer_server = _server_for_test(
+        tmp_path,
+        raw_map=_open_map_with_training_dummy(),
+        random_source=random.Random(0),
+    )
+    multiplayer_server.character_repository.load_or_create("Alice", Vec2(32, 32))
+    multiplayer_server.character_repository.add_item("Alice", RUSTY_SWORD_ITEM_ID)
+    multiplayer_server.character_repository.equip_item("Alice", RUSTY_SWORD_ITEM_ID)
+
+    async with _running_test_server(multiplayer_server) as uri, connect(uri) as first_client:
+        await _send_join(first_client, "Alice")
+        first_id = await _recv_player_id(first_client)
+        await _recv_message_type(first_client, ServerMessageType.INVENTORY_UPDATED)
+        await _recv_message_type(first_client, ServerMessageType.EQUIPMENT_UPDATED)
+
+        await first_client.send(
+            encode_message(
+                ProtocolMessage(
+                    type=ClientMessageType.ATTACK_REQUESTED,
+                    payload=attack_requested_payload("lootable-training-dummy"),
+                )
+            )
+        )
+        combat_message = await _recv_message_type(
+            first_client,
+            ServerMessageType.COMBAT_EVENT,
+        )
+
+    event = combat_message.payload
+    assert event["actor_id"] == first_id
+    assert event["actor_name"] == "Alice"
+    assert event["target_id"] == "lootable-training-dummy"
+    assert event["target_name"] == "Тренировочный манекен"
+    assert event["text"].startswith("Вы атаковали Тренировочный манекен: -")
+    assert event["floating_text"].startswith("-")
+    assert event["add_to_journal"] is True
+    damage = int(str(event["floating_text"]).removeprefix("-"))
+    assert 3 <= damage <= 6
+    entity = multiplayer_server.world.get_entity("lootable-training-dummy")
+    assert entity is not None
+    assert entity.hit_points == 20 - damage
 
 
 async def _interaction_too_far_smoke(tmp_path: Path) -> None:

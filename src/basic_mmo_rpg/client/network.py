@@ -13,6 +13,7 @@ from basic_mmo_rpg.shared.protocol import (
     ProtocolError,
     ProtocolMessage,
     ServerMessageType,
+    attack_requested_payload,
     chat_sent_payload,
     decode_message,
     encode_message,
@@ -21,6 +22,7 @@ from basic_mmo_rpg.shared.protocol import (
     interact_tile_requested_payload,
     join_request_payload,
     movement_intent_to_payload,
+    stop_attack_requested_payload,
     unequip_item_requested_payload,
 )
 
@@ -136,6 +138,28 @@ class NetworkClient:
             ProtocolMessage(
                 type=ClientMessageType.UNEQUIP_ITEM_REQUESTED,
                 payload=unequip_item_requested_payload(slot),
+            )
+        )
+
+    def send_attack_request(self, target_id: str) -> None:
+        """
+        Ставит запрос выбора цели auto-attack в очередь отправки на сервер.
+        """
+        self._outgoing.put(
+            ProtocolMessage(
+                type=ClientMessageType.ATTACK_REQUESTED,
+                payload=attack_requested_payload(target_id),
+            )
+        )
+
+    def send_stop_attack_request(self) -> None:
+        """
+        Ставит запрос остановки auto-attack в очередь отправки на сервер.
+        """
+        self._outgoing.put(
+            ProtocolMessage(
+                type=ClientMessageType.STOP_ATTACK_REQUESTED,
+                payload=stop_attack_requested_payload(),
             )
         )
 

@@ -112,6 +112,7 @@ class MultiplayerWorld:
                 blockers,
             )
         self._tick_creatures(delta_seconds)
+        self._tick_respawns(delta_seconds)
 
     def snapshot_payload(self) -> dict[str, object]:
         """
@@ -148,14 +149,18 @@ class MultiplayerWorld:
         Переключает runtime-состояние калитки и возвращает обновленную сущность.
         """
         entity = self.entity_states.get(entity_id)
-        if entity is None or entity.kind != EntityKind.GATE:
+        if entity is None or entity.gate is None:
             return None
 
         if entity.is_open and self.is_gate_occupied(entity_id):
             return None
 
         is_open = not bool(entity.is_open)
-        updated = replace(entity, is_open=is_open, solid=not is_open)
+        updated = replace(
+            entity,
+            body=replace(entity.body, solid=not is_open),
+            gate=replace(entity.gate, is_open=is_open),
+        )
         self.entity_states[entity_id] = updated
         return updated
 
@@ -164,7 +169,7 @@ class MultiplayerWorld:
         Проверяет, пересекается ли калитка с игроком или другой solid-сущностью.
         """
         entity = self.entity_states.get(entity_id)
-        if entity is None or entity.kind != EntityKind.GATE:
+        if entity is None or entity.gate is None:
             return False
 
         blockers = (
@@ -184,15 +189,71 @@ class MultiplayerWorld:
         Снимает шерсть с creature-сущности и запускает таймер отрастания.
         """
         entity = self.entity_states.get(entity_id)
-        if entity is None or entity.kind != EntityKind.CREATURE or entity.has_wool is not True:
+        if entity is None or entity.kind != EntityKind.CREATURE or entity.shearable is None:
+            return None
+        if entity.shearable.has_wool is not True:
             return None
 
-        updated = replace(entity, has_wool=False)
+        updated = replace(entity, shearable=replace(entity.shearable, has_wool=False))
         self.entity_states[entity_id] = updated
         motion = self.creature_motions.get(entity_id)
         if motion is not None:
             motion.wool_regrow_remaining = wool_regrow_seconds
         return updated
+
+    def damage_entity(self, entity_id: str, amount: int) -> tuple[WorldEntity, bool] | None:
+        """
+        Наносит урон combat-компоненту объекта и возвращает флаг нового разрушения.
+        """
+        if amount <= 0:
+            msg = "damage amount must be positive"
+            raise ValueError(msg)
+
+        entity = self.entity_states.get(entity_id)
+        if entity is None or entity.combat is None or entity.combat.destroyed:
+            return None
+
+        next_hit_points = max(0, entity.combat.hit_points - amount)
+        destroyed = next_hit_points == 0
+        updated_combat = replace(
+            entity.combat,
+            hit_points=next_hit_points,
+            destroyed=destroyed,
+        )
+        updated_respawn = entity.respawn
+        if destroyed and entity.respawn is not None:
+            updated_respawn = replace(entity.respawn, remaining=entity.respawn.seconds)
+        updated = replace(entity, combat=updated_combat, respawn=updated_respawn)
+        self.entity_states[entity_id] = updated
+        return updated, destroyed
+
+    def _tick_respawns(self, delta_seconds: float) -> None:
+        """
+        Обновляет таймеры восстановления destructible-объектов мира.
+        """
+        if delta_seconds <= 0:
+            return
+
+        for entity in list(self.entity_states.values()):
+            if entity.respawn is None or entity.combat is None:
+                continue
+            if entity.respawn.remaining <= 0:
+                continue
+
+            remaining = max(0.0, entity.respawn.remaining - delta_seconds)
+            updated_respawn = replace(entity.respawn, remaining=remaining)
+            updated_combat = entity.combat
+            if remaining == 0.0:
+                updated_combat = replace(
+                    entity.combat,
+                    hit_points=entity.combat.max_hit_points,
+                    destroyed=False,
+                )
+            self.entity_states[entity.entity_id] = replace(
+                entity,
+                combat=updated_combat,
+                respawn=updated_respawn,
+            )
 
     def _select_spawn_position(self, preferred_position: Vec2 | None) -> Vec2:
         """
@@ -266,8 +327,15 @@ class MultiplayerWorld:
             return
 
         entity = self.entity_states.get(motion.entity_id)
-        if entity is not None and entity.kind == EntityKind.CREATURE:
-            self.entity_states[motion.entity_id] = replace(entity, has_wool=True)
+        if (
+            entity is not None
+            and entity.kind == EntityKind.CREATURE
+            and entity.shearable is not None
+        ):
+            self.entity_states[motion.entity_id] = replace(
+                entity,
+                shearable=replace(entity.shearable, has_wool=True),
+            )
 
     def _continue_creature_action(
         self,
@@ -286,7 +354,10 @@ class MultiplayerWorld:
                 motion.target_position,
                 progress,
             )
-            self.entity_states[entity.entity_id] = replace(entity, position=position)
+            self.entity_states[entity.entity_id] = replace(
+                entity,
+                body=replace(entity.body, position=position),
+            )
 
         if motion.action_remaining > 0:
             return
@@ -295,7 +366,7 @@ class MultiplayerWorld:
             updated = self.entity_states[entity.entity_id]
             self.entity_states[entity.entity_id] = replace(
                 updated,
-                position=motion.target_position,
+                body=replace(updated.body, position=motion.target_position),
             )
         motion.start_position = None
         motion.target_position = None
@@ -325,7 +396,8 @@ class MultiplayerWorld:
         """
         Проверяет, может ли creature занять целевую позицию.
         """
-        target_rect = replace(entity, position=target_position).rect
+        target_entity = replace(entity, body=replace(entity.body, position=target_position))
+        target_rect = target_entity.rect
         blockers = (
             *self.solid_entity_rects(exclude_entity_id=entity.entity_id),
             *(player.rect for player in self.players.values()),
@@ -342,7 +414,11 @@ class MultiplayerWorld:
             creature = self.entity_states.get(motion.entity_id)
             if creature is None:
                 continue
-            target_rect = replace(creature, position=motion.target_position).rect
+            target_creature = replace(
+                creature,
+                body=replace(creature.body, position=motion.target_position),
+            )
+            target_rect = target_creature.rect
             if gate.rect.intersects(target_rect):
                 return True
         return False
