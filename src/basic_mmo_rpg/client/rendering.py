@@ -28,6 +28,13 @@ GATE_OPEN = (91, 65, 42)
 SHEEP_WOOL = (226, 226, 213)
 SHEEP_SHORN = (176, 169, 158)
 SHEEP_FACE = (58, 49, 44)
+BOAR_BODY = (92, 67, 52)
+BOAR_BACK = (122, 91, 68)
+BOAR_SNOUT = (65, 45, 38)
+CORPSE_BODY = (82, 64, 56)
+CORPSE_OUTLINE = (42, 34, 32)
+RESPAWN_CROSS = (219, 214, 196)
+RESPAWN_CROSS_SHADOW = (78, 72, 65)
 DUMMY_WOOD = (147, 102, 58)
 DUMMY_CLOTH = (117, 85, 54)
 DUMMY_BASE = (82, 60, 42)
@@ -40,6 +47,8 @@ ROCK_HOVER_FILL = (178, 184, 192, 85)
 ROCK_HOVER_BORDER = (218, 224, 232)
 ATTACK_HOVER_OUTLINE = (172, 38, 48)
 TARGET_CROSSHAIR = (92, 9, 22)
+HEALTH_BAR_BACK = (45, 18, 20)
+HEALTH_BAR_FILL = (176, 43, 54)
 TEXT_COLOR = (236, 238, 241)
 MUTED_TEXT_COLOR = (180, 187, 196)
 EQUIPPABLE_TEXT_COLOR = (223, 215, 166)
@@ -92,6 +101,7 @@ class Renderer:
         combat_mode_active: bool = False,
         hovered_attackable_entity_id: str | None = None,
         selected_attack_target_id: str | None = None,
+        death_dialog_visible: bool = False,
     ) -> None:
         """
         Рисует полный игровой кадр на переданной поверхности.
@@ -102,7 +112,7 @@ class Renderer:
         name_tags = name_tags or {}
         entity_speech_bubbles = entity_speech_bubbles or {}
         equipment = equipment or Equipment()
-        entity_list = list(world_entities)
+        entity_list = [entity for entity in world_entities if entity.visible]
 
         screen.fill(BACKGROUND)
         self._draw_map(screen, camera)
@@ -120,20 +130,22 @@ class Renderer:
                 selected=entity.entity_id == selected_attack_target_id,
             )
         for other_player in other_player_list:
+            if other_player.is_alive:
+                self._draw_player(
+                    screen,
+                    camera,
+                    other_player,
+                    body_color=REMOTE_PLAYER_BODY,
+                    tunic_color=REMOTE_PLAYER_TUNIC,
+                )
+        if player.is_alive:
             self._draw_player(
                 screen,
                 camera,
-                other_player,
-                body_color=REMOTE_PLAYER_BODY,
-                tunic_color=REMOTE_PLAYER_TUNIC,
+                player,
+                body_color=PLAYER_BODY,
+                tunic_color=PLAYER_TUNIC,
             )
-        self._draw_player(
-            screen,
-            camera,
-            player,
-            body_color=PLAYER_BODY,
-            tunic_color=PLAYER_TUNIC,
-        )
         self._draw_floating_texts(
             screen=screen,
             camera=camera,
@@ -155,6 +167,8 @@ class Renderer:
             self._draw_inventory(screen, inventory_items, equipment)
         if chat_input_active:
             self._draw_chat_input(screen, chat_input_text)
+        if death_dialog_visible:
+            self._draw_death_dialog(screen)
 
     def inventory_hit_at_position(
         self,
@@ -174,6 +188,16 @@ class Renderer:
             if row_rect.collidepoint(position) and is_equippable_item(item.item_id):
                 return InventoryPanelHit(item_id=item.item_id)
         return InventoryPanelHit()
+
+    def respawn_button_hit_at_position(
+        self,
+        screen: pygame.Surface,
+        position: tuple[int, int],
+    ) -> bool:
+        """
+        Возвращает, попал ли клик по кнопке возрождения.
+        """
+        return self._respawn_button_rect(screen).collidepoint(position)
 
     def _draw_map(self, screen: pygame.Surface, camera: Camera) -> None:
         """
@@ -269,18 +293,27 @@ class Renderer:
             outline_color = HOVER_OUTLINE
         if attack_hovered:
             outline_color = ATTACK_HOVER_OUTLINE
+        if entity.visual == "boar_corpse":
+            self._draw_boar_corpse(screen, body, outline_color)
+            return
+        if entity.visual == "respawn_cross":
+            self._draw_respawn_cross(screen, body, outline_color)
+            return
         if entity.kind == EntityKind.GATE:
             self._draw_gate(screen, body, entity, outline_color)
             if selected:
                 self._draw_target_crosshair(screen, body)
+            self._draw_health_bar(screen, body, entity, selected or attack_hovered)
             return
         if entity.kind == EntityKind.CREATURE:
             self._draw_creature(screen, body, entity, outline_color)
+            self._draw_health_bar(screen, body, entity, selected or attack_hovered)
             if selected:
                 self._draw_target_crosshair(screen, body)
             return
         if entity.kind == EntityKind.LOOTABLE or entity.visual == "training_dummy":
             self._draw_lootable(screen, body, outline_color)
+            self._draw_health_bar(screen, body, entity, selected or attack_hovered)
             if selected:
                 self._draw_target_crosshair(screen, body)
             return
@@ -294,6 +327,7 @@ class Renderer:
         pygame.draw.rect(screen, TEXT_COLOR, face, border_radius=2)
         if selected:
             self._draw_target_crosshair(screen, body)
+        self._draw_health_bar(screen, body, entity, selected or attack_hovered)
 
     def _draw_target_crosshair(self, screen: pygame.Surface, body: pygame.Rect) -> None:
         """
@@ -364,11 +398,92 @@ class Renderer:
         """
         Рисует creature-сущность мира.
         """
+        if entity.visual == "boar":
+            self._draw_boar(screen, body, outline_color)
+            return
         pygame.draw.rect(screen, outline_color, body.inflate(4, 4), border_radius=6)
         body_color = SHEEP_WOOL if entity.has_wool is not False else SHEEP_SHORN
         pygame.draw.rect(screen, body_color, body, border_radius=7)
         face = pygame.Rect(body.left + body.width - 9, body.top + 8, 8, 12)
         pygame.draw.rect(screen, SHEEP_FACE, face, border_radius=3)
+
+    def _draw_boar(
+        self,
+        screen: pygame.Surface,
+        body: pygame.Rect,
+        outline_color: tuple[int, int, int],
+    ) -> None:
+        """
+        Рисует кабана.
+        """
+        pygame.draw.rect(screen, outline_color, body.inflate(4, 4), border_radius=6)
+        pygame.draw.ellipse(screen, BOAR_BODY, body)
+        back = pygame.Rect(body.left + 3, body.top + 3, body.width - 7, body.height // 2)
+        pygame.draw.ellipse(screen, BOAR_BACK, back)
+        snout = pygame.Rect(body.right - 7, body.centery - 4, 9, 8)
+        pygame.draw.rect(screen, BOAR_SNOUT, snout, border_radius=3)
+        tusk_y = body.centery + 3
+        pygame.draw.line(
+            screen,
+            RESPAWN_CROSS,
+            (body.right - 1, tusk_y),
+            (body.right + 4, tusk_y),
+        )
+
+    def _draw_boar_corpse(
+        self,
+        screen: pygame.Surface,
+        body: pygame.Rect,
+        outline_color: tuple[int, int, int],
+    ) -> None:
+        """
+        Рисует лежащий труп кабана.
+        """
+        corpse_rect = body.inflate(4, -4)
+        pygame.draw.rect(screen, outline_color, corpse_rect.inflate(4, 4), border_radius=6)
+        pygame.draw.ellipse(screen, CORPSE_BODY, corpse_rect)
+        pygame.draw.line(
+            screen,
+            CORPSE_OUTLINE,
+            (corpse_rect.left + 5, corpse_rect.centery),
+            (corpse_rect.right - 5, corpse_rect.centery + 2),
+            width=2,
+        )
+
+    def _draw_respawn_cross(
+        self,
+        screen: pygame.Surface,
+        body: pygame.Rect,
+        outline_color: tuple[int, int, int],
+    ) -> None:
+        """
+        Рисует точку возрождения персонажа.
+        """
+        pygame.draw.rect(screen, outline_color, body.inflate(4, 4), border_radius=3)
+        pygame.draw.rect(screen, RESPAWN_CROSS_SHADOW, body, border_radius=3)
+        vertical = pygame.Rect(body.centerx - 4, body.top + 3, 8, body.height - 6)
+        horizontal = pygame.Rect(body.left + 3, body.centery - 4, body.width - 6, 8)
+        pygame.draw.rect(screen, RESPAWN_CROSS, vertical, border_radius=2)
+        pygame.draw.rect(screen, RESPAWN_CROSS, horizontal, border_radius=2)
+
+    def _draw_health_bar(
+        self,
+        screen: pygame.Surface,
+        body: pygame.Rect,
+        entity: WorldEntity,
+        visible: bool,
+    ) -> None:
+        """
+        Рисует маленькую полоску HP над боевой целью.
+        """
+        if not visible or entity.combat is None or entity.combat.max_hit_points <= 0:
+            return
+        ratio = max(0.0, min(1.0, entity.combat.hit_points / entity.combat.max_hit_points))
+        width = max(24, body.width + 8)
+        rect = pygame.Rect(body.centerx - width // 2, body.top - 9, width, 4)
+        pygame.draw.rect(screen, HEALTH_BAR_BACK, rect)
+        fill = pygame.Rect(rect.left, rect.top, int(rect.width * ratio), rect.height)
+        pygame.draw.rect(screen, HEALTH_BAR_FILL, fill)
 
     def _draw_lootable(
         self,
@@ -570,6 +685,60 @@ class Renderer:
         text = f"{prefix}{visible_text}"
         surface = self.font.render(text, True, TEXT_COLOR)
         screen.blit(surface, (rect.left + 10, rect.centery - surface.get_height() // 2))
+
+    def _draw_death_dialog(self, screen: pygame.Surface) -> None:
+        """
+        Рисует окно смерти персонажа.
+        """
+        overlay = pygame.Surface(screen.get_size(), pygame.SRCALPHA)
+        overlay.fill((0, 0, 0, 110))
+        screen.blit(overlay, (0, 0))
+
+        dialog = self._death_dialog_rect(screen)
+        pygame.draw.rect(screen, PANEL_BACKGROUND, dialog, border_radius=6)
+        pygame.draw.rect(screen, BUBBLE_BORDER, dialog, width=1, border_radius=6)
+
+        title = self.font.render("Вы погибли", True, TEXT_COLOR)
+        screen.blit(title, (dialog.centerx - title.get_width() // 2, dialog.top + 28))
+
+        button = self._respawn_button_rect(screen)
+        pygame.draw.rect(screen, SLOT_BACKGROUND, button, border_radius=5)
+        pygame.draw.rect(screen, EQUIPPED_BORDER, button, width=1, border_radius=5)
+        text = self.font.render("Возродиться", True, TEXT_COLOR)
+        screen.blit(
+            text,
+            (
+                button.centerx - text.get_width() // 2,
+                button.centery - text.get_height() // 2,
+            ),
+        )
+
+    def _death_dialog_rect(self, screen: pygame.Surface) -> pygame.Rect:
+        """
+        Возвращает прямоугольник окна смерти.
+        """
+        width = min(300, screen.get_width() - 40)
+        height = 150
+        return pygame.Rect(
+            screen.get_width() // 2 - width // 2,
+            screen.get_height() // 2 - height // 2,
+            width,
+            height,
+        )
+
+    def _respawn_button_rect(self, screen: pygame.Surface) -> pygame.Rect:
+        """
+        Возвращает прямоугольник кнопки возрождения.
+        """
+        dialog = self._death_dialog_rect(screen)
+        width = min(180, dialog.width - 40)
+        height = 38
+        return pygame.Rect(
+            dialog.centerx - width // 2,
+            dialog.bottom - height - 24,
+            width,
+            height,
+        )
 
     def _draw_inventory(
         self,

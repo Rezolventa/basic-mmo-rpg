@@ -182,6 +182,50 @@
       }
     },
     {
+      "id": "object-player-respawn",
+      "components": {
+        "identity": {
+          "kind": "object",
+          "name": "Крест возрождения",
+          "visual": "respawn_cross"
+        },
+        "body": {
+          "position": [96, 96],
+          "size": [28, 28],
+          "solid": false
+        }
+      }
+    },
+    {
+      "id": "creature-boar",
+      "components": {
+        "identity": {
+          "kind": "creature",
+          "name": "Кабан",
+          "visual": "boar"
+        },
+        "body": {
+          "position": [64, 544],
+          "size": [24, 22],
+          "solid": true
+        },
+        "combat": {
+          "hit_points": 18,
+          "max_hit_points": 18,
+          "attackable": true,
+          "destroyed": false,
+          "min_damage": 2,
+          "max_damage": 4,
+          "hit_chance": 0.75,
+          "attack_distance": 64,
+          "swing_cooldown_seconds": 1.6
+        },
+        "respawn": {
+          "seconds": 60
+        }
+      }
+    },
+    {
       "id": "lootable-training-dummy",
       "components": {
         "identity": {

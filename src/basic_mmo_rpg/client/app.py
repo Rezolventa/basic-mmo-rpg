@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 import time
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import pygame
@@ -37,6 +37,9 @@ LOCAL_SNAP_DISTANCE = 96.0
 REMOTE_INTERPOLATION_RATE = 14.0
 REMOTE_INTERPOLATION_DEAD_ZONE = 0.25
 REMOTE_SNAP_DISTANCE = 128.0
+ENTITY_INTERPOLATION_RATE = 18.0
+ENTITY_INTERPOLATION_DEAD_ZONE = 0.25
+ENTITY_SNAP_DISTANCE = 128.0
 FLOATING_TEXT_SECONDS = 3.0
 MAX_CHAT_LOG_MESSAGES = 50
 MAX_CHAT_INPUT_LENGTH = 160
@@ -73,6 +76,42 @@ class RemotePlayerView:
         )
 
 
+@dataclass(slots=True)
+class WorldEntityView:
+    """
+    Хранит отображаемое и целевое состояние world-entity для интерполяции.
+    """
+
+    rendered: WorldEntity
+    target: WorldEntity
+
+    def set_target(self, target: WorldEntity) -> None:
+        """
+        Обновляет целевое authoritative-состояние и сразу применяет не-позиционные поля.
+        """
+        self.target = target
+        if target.visible and not self.rendered.visible:
+            self.rendered = target
+            return
+        if (target.position - self.rendered.position).length >= ENTITY_SNAP_DISTANCE:
+            self.rendered = target
+            return
+        self.rendered = _entity_with_position(target, self.rendered.position)
+
+    def update(self, delta_seconds: float) -> None:
+        """
+        Плавно приближает отображаемую позицию к последнему server snapshot-у.
+        """
+        self.rendered = _smooth_entity_toward(
+            current=self.rendered,
+            target=self.target,
+            delta_seconds=delta_seconds,
+            rate=ENTITY_INTERPOLATION_RATE,
+            snap_distance=ENTITY_SNAP_DISTANCE,
+            dead_zone=ENTITY_INTERPOLATION_DEAD_ZONE,
+        )
+
+
 class GameClient:
     """
     Управляет pygame-клиентом, локальным рендером и сетевой игрой.
@@ -101,9 +140,12 @@ class GameClient:
         self.authoritative_player: PlayerState | None = None
         self.local_correction_offset = Vec2(0, 0)
         self.other_players: dict[str, RemotePlayerView] = {}
-        self.world_entities: dict[str, WorldEntity] = {
-            entity.entity_id: entity for entity in self.tile_map.entities
+        self.world_entity_views: dict[str, WorldEntityView] = {
+            entity.entity_id: WorldEntityView(rendered=entity, target=entity)
+            for entity in self.tile_map.entities
         }
+        self.world_entities: dict[str, WorldEntity] = {}
+        self._sync_rendered_world_entities()
         self.hovered_entity_id: str | None = None
         self.hovered_tile: tuple[int, int] | None = None
         self.local_player_id: str | None = PLAYER_ID
@@ -117,6 +159,7 @@ class GameClient:
         self.combat_mode_active = False
         self.hovered_attackable_entity_id: str | None = None
         self.selected_attack_target_id: str | None = None
+        self.death_dialog_visible = False
         self.chat_lines: deque[ChatLine] = deque(maxlen=MAX_CHAT_LOG_MESSAGES)
         self.speech_bubbles: dict[str, TimedText] = {}
         self.entity_speech_bubbles: dict[str, TimedText] = {}
@@ -158,6 +201,7 @@ class GameClient:
         self._predict_local_player(intent, delta_seconds)
         self._reconcile_local_player(delta_seconds)
         self._update_remote_players(delta_seconds)
+        self._update_world_entities(delta_seconds)
 
         viewport = Vec2(*self.screen.get_size())
         self.camera.follow(
@@ -170,7 +214,11 @@ class GameClient:
         """
         Отрисовывает текущий кадр и показывает его на экране.
         """
-        other_players = [player_view.rendered for player_view in self.other_players.values()]
+        other_players = [
+            player_view.rendered
+            for player_view in self.other_players.values()
+            if player_view.rendered.is_alive
+        ]
         self.renderer.draw(
             screen=self.screen,
             camera=self.camera,
@@ -193,6 +241,7 @@ class GameClient:
             combat_mode_active=self.combat_mode_active,
             hovered_attackable_entity_id=self.hovered_attackable_entity_id,
             selected_attack_target_id=self.selected_attack_target_id,
+            death_dialog_visible=getattr(self, "death_dialog_visible", False),
         )
         pygame.display.flip()
 
@@ -211,6 +260,8 @@ class GameClient:
         """
         if self.chat_input_active:
             self._handle_chat_input_key(event)
+            return
+        if getattr(self, "death_dialog_visible", False):
             return
 
         if event.key == pygame.K_RETURN:
@@ -269,6 +320,11 @@ class GameClient:
         """
         Обрабатывает клики по UI и показывает никнейм удаленного персонажа.
         """
+        if getattr(self, "death_dialog_visible", False):
+            if self.renderer.respawn_button_hit_at_position(self.screen, position):
+                self.network_client.send_respawn_request()
+            return
+
         if self.inventory_visible and self._handle_inventory_click(position):
             return
 
@@ -311,6 +367,9 @@ class GameClient:
         """
         Отправляет запрос взаимодействия с объектом, который находится строго под курсором.
         """
+        if getattr(self, "death_dialog_visible", False):
+            return
+
         entity = self._entity_at_screen_position(pygame.mouse.get_pos())
         if entity is not None:
             self.network_client.send_interaction_request(entity.entity_id)
@@ -325,6 +384,8 @@ class GameClient:
         Читает состояние клавиатуры и преобразует его в намерение движения.
         """
         if self.chat_input_active:
+            return MovementIntent()
+        if getattr(self, "death_dialog_visible", False):
             return MovementIntent()
 
         pressed = pygame.key.get_pressed()
@@ -378,7 +439,7 @@ class GameClient:
         except ProtocolError:
             return
 
-        self.world_entities = {entity.entity_id: entity for entity in entities}
+        self._receive_world_entities(entities)
         self._clear_stale_attack_target()
         next_other_players: dict[str, PlayerState] = {}
         next_other_names: dict[str, str] = {}
@@ -520,6 +581,8 @@ class GameClient:
         """
         Сразу применяет локальный ввод игрока до получения подтверждения сервера.
         """
+        if getattr(self, "death_dialog_visible", False):
+            return
         self.player = move_player(
             self.player,
             intent,
@@ -547,6 +610,11 @@ class GameClient:
         Сохраняет authoritative-состояние локального игрока из server snapshot-а.
         """
         self.authoritative_player = player
+        self.death_dialog_visible = not player.is_alive
+        if getattr(self, "death_dialog_visible", False):
+            self.combat_mode_active = False
+            self.hovered_attackable_entity_id = None
+            self.selected_attack_target_id = None
         if self.player.entity_id != player.entity_id:
             self.player = player
             self.local_correction_offset = Vec2(0, 0)
@@ -558,8 +626,10 @@ class GameClient:
             self.player = player
             self.local_correction_offset = Vec2(0, 0)
         elif distance > LOCAL_RECONCILE_DEAD_ZONE:
+            self.player = _player_with_position(player, self.player.position)
             self.local_correction_offset = difference
         else:
+            self.player = player
             self.local_correction_offset = Vec2(0, 0)
 
     def _receive_remote_players(
@@ -590,6 +660,41 @@ class GameClient:
         for player_view in self.other_players.values():
             player_view.update(delta_seconds)
 
+    def _receive_world_entities(self, entities: list[WorldEntity]) -> None:
+        """
+        Обновляет целевые состояния world-entity и удаляет пропавшие сущности.
+        """
+        next_entities = {entity.entity_id: entity for entity in entities}
+        for entity_id, entity in next_entities.items():
+            if entity_id in self.world_entity_views:
+                self.world_entity_views[entity_id].set_target(entity)
+            else:
+                self.world_entity_views[entity_id] = WorldEntityView(
+                    rendered=entity,
+                    target=entity,
+                )
+
+        for entity_id in set(self.world_entity_views) - set(next_entities):
+            del self.world_entity_views[entity_id]
+        self._sync_rendered_world_entities()
+
+    def _update_world_entities(self, delta_seconds: float) -> None:
+        """
+        Обновляет интерполированные позиции world-entity на клиентском кадре.
+        """
+        for entity_view in self.world_entity_views.values():
+            entity_view.update(delta_seconds)
+        self._sync_rendered_world_entities()
+
+    def _sync_rendered_world_entities(self) -> None:
+        """
+        Обновляет словарь сущностей, который используют рендер, hover и prediction.
+        """
+        self.world_entities = {
+            entity_id: entity_view.rendered
+            for entity_id, entity_view in self.world_entity_views.items()
+        }
+
     def _prune_timed_texts(self, now: float) -> None:
         """
         Удаляет истекшие временные реплики и никнеймы.
@@ -609,6 +714,12 @@ class GameClient:
         """
         Обновляет объект или водный тайл под курсором мыши.
         """
+        if getattr(self, "death_dialog_visible", False):
+            self.hovered_entity_id = None
+            self.hovered_attackable_entity_id = None
+            self.hovered_tile = None
+            return
+
         mouse_position = pygame.mouse.get_pos()
         entity = self._entity_at_screen_position(mouse_position)
         self.hovered_entity_id = entity.entity_id if entity is not None else None
@@ -628,7 +739,7 @@ class GameClient:
         """
         world_position = self.camera.screen_to_world(position)
         for entity in self.world_entities.values():
-            if entity.rect.contains_point(world_position):
+            if entity.visible and entity.rect.contains_point(world_position):
                 return entity
         return None
 
@@ -691,7 +802,11 @@ class GameClient:
         """
         Возвращает прямоугольники коллизионных объектов, известных клиенту.
         """
-        return tuple(entity.rect for entity in self.world_entities.values() if entity.solid)
+        return tuple(
+            entity.rect
+            for entity in self.world_entities.values()
+            if entity.visible and entity.solid
+        )
 
 
 def _smooth_player_toward(
@@ -717,6 +832,29 @@ def _smooth_player_toward(
     return _player_with_position(target, position)
 
 
+def _smooth_entity_toward(
+    current: WorldEntity,
+    target: WorldEntity,
+    delta_seconds: float,
+    rate: float,
+    snap_distance: float,
+    dead_zone: float,
+) -> WorldEntity:
+    """
+    Возвращает world-entity, плавно сдвинутую от текущей позиции к целевой.
+    """
+    difference = target.position - current.position
+    distance = difference.length
+    if distance <= dead_zone or distance >= snap_distance:
+        return target
+    if delta_seconds <= 0:
+        return _entity_with_position(target, current.position)
+
+    alpha = min(1.0, rate * delta_seconds)
+    position = current.position + difference * alpha
+    return _entity_with_position(target, position)
+
+
 def _player_with_position(player: PlayerState, position: Vec2) -> PlayerState:
     """
     Создает копию состояния игрока с новой позицией.
@@ -727,7 +865,16 @@ def _player_with_position(player: PlayerState, position: Vec2) -> PlayerState:
         width=player.width,
         height=player.height,
         speed=player.speed,
+        hit_points=player.hit_points,
+        max_hit_points=player.max_hit_points,
     )
+
+
+def _entity_with_position(entity: WorldEntity, position: Vec2) -> WorldEntity:
+    """
+    Создает копию world-entity с новой позицией тела.
+    """
+    return replace(entity, body=replace(entity.body, position=position))
 
 
 def _active_timed_texts(texts: dict[str, TimedText], now: float) -> dict[str, TimedText]:

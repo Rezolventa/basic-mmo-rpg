@@ -22,6 +22,7 @@ from basic_mmo_rpg.shared.protocol import (
     interact_tile_requested_payload,
     join_request_payload,
     movement_intent_to_payload,
+    respawn_requested_payload,
     stop_attack_requested_payload,
     unequip_item_requested_payload,
 )
@@ -160,6 +161,17 @@ class NetworkClient:
             ProtocolMessage(
                 type=ClientMessageType.STOP_ATTACK_REQUESTED,
                 payload=stop_attack_requested_payload(),
+            )
+        )
+
+    def send_respawn_request(self) -> None:
+        """
+        Ставит запрос возрождения персонажа в очередь отправки на сервер.
+        """
+        self._outgoing.put(
+            ProtocolMessage(
+                type=ClientMessageType.RESPAWN_REQUESTED,
+                payload=respawn_requested_payload(),
             )
         )
 

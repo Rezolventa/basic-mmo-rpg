@@ -38,6 +38,7 @@ class ClientMessageType(StrEnum):
     UNEQUIP_ITEM_REQUESTED = "unequip_item_requested"
     ATTACK_REQUESTED = "attack_requested"
     STOP_ATTACK_REQUESTED = "stop_attack_requested"
+    RESPAWN_REQUESTED = "respawn_requested"
 
 
 class ServerMessageType(StrEnum):
@@ -305,6 +306,13 @@ def stop_attack_requested_payload() -> dict[str, Any]:
     return {}
 
 
+def respawn_requested_payload() -> dict[str, Any]:
+    """
+    Создает payload клиентского запроса возрождения персонажа.
+    """
+    return {}
+
+
 def interaction_result_payload(
     actor_id: str,
     target_id: str,
@@ -478,6 +486,8 @@ def player_to_payload(player: PlayerState, name: str | None = None) -> dict[str,
         "width": player.width,
         "height": player.height,
         "speed": player.speed,
+        "hit_points": player.hit_points,
+        "max_hit_points": player.max_hit_points,
     }
 
 
@@ -490,6 +500,22 @@ def player_from_payload(payload: Mapping[str, Any]) -> PlayerState:
         msg = "player id must be a string"
         raise ProtocolError(msg)
 
+    hit_points = _optional_int_field(payload, "hit_points")
+    max_hit_points = _optional_int_field(payload, "max_hit_points")
+    if hit_points is None:
+        hit_points = 30
+    if max_hit_points is None:
+        max_hit_points = 30
+    if hit_points < 0:
+        msg = "player hit_points must be non-negative"
+        raise ProtocolError(msg)
+    if max_hit_points <= 0:
+        msg = "player max_hit_points must be positive"
+        raise ProtocolError(msg)
+    if hit_points > max_hit_points:
+        msg = "player hit_points must not exceed max_hit_points"
+        raise ProtocolError(msg)
+
     return PlayerState(
         entity_id=entity_id,
         position=Vec2(
@@ -499,6 +525,8 @@ def player_from_payload(payload: Mapping[str, Any]) -> PlayerState:
         width=int(_number_field(payload, "width")),
         height=int(_number_field(payload, "height")),
         speed=_number_field(payload, "speed"),
+        hit_points=hit_points,
+        max_hit_points=max_hit_points,
     )
 
 
@@ -533,6 +561,7 @@ def entity_to_payload(entity: WorldEntity) -> dict[str, Any]:
             "position": [entity.body.position.x, entity.body.position.y],
             "size": [entity.body.width, entity.body.height],
             "solid": entity.body.solid,
+            "visible": entity.body.visible,
         },
     }
     if entity.identity.destroyed_name is not None:
@@ -557,6 +586,11 @@ def entity_to_payload(entity: WorldEntity) -> dict[str, Any]:
             "max_hit_points": entity.combat.max_hit_points,
             "attackable": entity.combat.attackable,
             "destroyed": entity.combat.destroyed,
+            "min_damage": entity.combat.min_damage,
+            "max_damage": entity.combat.max_damage,
+            "hit_chance": entity.combat.hit_chance,
+            "attack_distance": entity.combat.attack_distance,
+            "swing_cooldown_seconds": entity.combat.swing_cooldown_seconds,
         }
     if entity.respawn is not None:
         components["respawn"] = {
@@ -681,11 +715,16 @@ def _body_component_from_payload(payload: Mapping[str, Any]) -> BodyComponent:
     """
     position = _vec2_from_payload(payload.get("position"), "body position")
     width, height = _size_from_payload(payload.get("size"), "body size")
+    visible = payload.get("visible", True)
+    if not isinstance(visible, bool):
+        msg = "body visible must be a boolean"
+        raise ProtocolError(msg)
     return BodyComponent(
         position=position,
         width=width,
         height=height,
         solid=_bool_field(payload, "solid"),
+        visible=visible,
     )
 
 
@@ -739,11 +778,35 @@ def _optional_combat_component_from_payload(raw_component: Any) -> CombatCompone
     if raw_component is None:
         return None
     payload = _component_payload(raw_component, "combat")
+    min_damage = _optional_int_field(payload, "min_damage")
+    max_damage = _optional_int_field(payload, "max_damage")
+    hit_chance = _optional_number_field(payload, "hit_chance", 0.85)
+    attack_distance = _optional_number_field(payload, "attack_distance", 64.0)
+    swing_cooldown = _optional_number_field(payload, "swing_cooldown_seconds", 1.5)
+    min_damage = 0 if min_damage is None else min_damage
+    max_damage = 0 if max_damage is None else max_damage
+    if min_damage < 0 or max_damage < 0 or max_damage < min_damage:
+        msg = "combat damage range must be non-negative and ordered"
+        raise ProtocolError(msg)
+    if not 0.0 <= hit_chance <= 1.0:
+        msg = "combat hit_chance must be between 0 and 1"
+        raise ProtocolError(msg)
+    if attack_distance <= 0:
+        msg = "combat attack_distance must be positive"
+        raise ProtocolError(msg)
+    if swing_cooldown <= 0:
+        msg = "combat swing_cooldown_seconds must be positive"
+        raise ProtocolError(msg)
     return CombatComponent(
         hit_points=_non_negative_int_field(payload, "hit_points"),
         max_hit_points=_positive_int_field(payload, "max_hit_points"),
         attackable=_bool_field(payload, "attackable"),
         destroyed=_bool_field(payload, "destroyed"),
+        min_damage=min_damage,
+        max_damage=max_damage,
+        hit_chance=hit_chance,
+        attack_distance=attack_distance,
+        swing_cooldown_seconds=swing_cooldown,
     )
 
 
@@ -1011,6 +1074,21 @@ def _number_field(payload: Mapping[str, Any], key: str) -> float:
     Читает числовое поле из payload-а сообщения и отклоняет другие типы поля.
     """
     value = payload.get(key)
+    if not isinstance(value, int | float) or isinstance(value, bool):
+        msg = f"{key} must be a number"
+        raise ProtocolError(msg)
+    return float(value)
+
+
+def _optional_number_field(
+    payload: Mapping[str, Any],
+    key: str,
+    default: float,
+) -> float:
+    """
+    Читает необязательное числовое поле из payload-а сообщения.
+    """
+    value = payload.get(key, default)
     if not isinstance(value, int | float) or isinstance(value, bool):
         msg = f"{key} must be a number"
         raise ProtocolError(msg)

@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import random
+from dataclasses import replace
 
 from basic_mmo_rpg.domain.geometry import Vec2
+from basic_mmo_rpg.domain.inventory import LEATHER_ITEM_ID
 from basic_mmo_rpg.domain.movement import MovementIntent
 from basic_mmo_rpg.server.world import MultiplayerWorld
 from basic_mmo_rpg.shared.protocol import (
@@ -60,6 +62,40 @@ def _open_map_with_gate_and_sheep() -> object:
                 "solid": True,
                 "is_open": False,
             },
+            {
+                "id": "creature-barbara",
+                "kind": "creature",
+                "name": "Овца",
+                "position": [34, 66],
+                "size": [20, 20],
+                "interaction_radius": 64,
+                "solid": True,
+                "hit_points": 15,
+                "max_hit_points": 15,
+                "has_wool": True,
+            },
+        ],
+    }
+
+
+def _wide_open_map_with_sheep() -> object:
+    """
+    Возвращает широкую карту с овцой для тестов leash-возврата.
+    """
+    return {
+        "tile_size": 32,
+        "spawn": [32, 32],
+        "legend": {
+            ".": {"name": "floor", "solid": False, "color": [50, 120, 60]},
+            "#": {"name": "wall", "solid": True, "color": [90, 90, 90]},
+        },
+        "tiles": [
+            "................",
+            "................",
+            "................",
+            "................",
+        ],
+        "entities": [
             {
                 "id": "creature-barbara",
                 "kind": "creature",
@@ -167,6 +203,72 @@ def _open_map_with_training_dummy() -> object:
     }
 
 
+def _open_map_with_boar_and_respawn_cross() -> object:
+    """
+    Возвращает карту с кабаном и точкой возрождения для combat-runtime тестов.
+    """
+    return {
+        "tile_size": 32,
+        "spawn": [32, 32],
+        "legend": {
+            ".": {"name": "floor", "solid": False, "color": [50, 120, 60]},
+            "#": {"name": "wall", "solid": True, "color": [90, 90, 90]},
+        },
+        "tiles": [
+            "......",
+            "......",
+            "......",
+            "......",
+        ],
+        "entities": [
+            {
+                "id": "object-player-respawn",
+                "components": {
+                    "identity": {
+                        "kind": "object",
+                        "name": "Крест возрождения",
+                        "visual": "respawn_cross",
+                    },
+                    "body": {
+                        "position": [96, 32],
+                        "size": [28, 28],
+                        "solid": False,
+                    },
+                },
+            },
+            {
+                "id": "creature-boar",
+                "components": {
+                    "identity": {
+                        "kind": "creature",
+                        "name": "Кабан",
+                        "visual": "boar",
+                    },
+                    "body": {
+                        "position": [64, 32],
+                        "size": [24, 22],
+                        "solid": True,
+                    },
+                    "combat": {
+                        "hit_points": 18,
+                        "max_hit_points": 18,
+                        "attackable": True,
+                        "destroyed": False,
+                        "min_damage": 2,
+                        "max_damage": 4,
+                        "hit_chance": 0.75,
+                        "attack_distance": 64,
+                        "swing_cooldown_seconds": 1.6,
+                    },
+                    "respawn": {
+                        "seconds": 60,
+                    },
+                },
+            },
+        ],
+    }
+
+
 def test_world_spawns_players_and_returns_snapshot() -> None:
     """
     Проверяет, что серверный мир добавляет игроков и отдает их в snapshot-е.
@@ -179,6 +281,7 @@ def test_world_spawns_players_and_returns_snapshot() -> None:
 
     assert first.entity_id == "p1"
     assert second.entity_id == "p2"
+    assert first.position == world.tile_map.spawn
     assert {player.entity_id for player in players} == {"p1", "p2"}
 
 
@@ -225,6 +328,22 @@ def test_world_reuses_only_unoccupied_spawn_positions() -> None:
     assert third.position != second.position
 
 
+def test_world_uses_nearby_position_when_saved_position_is_occupied() -> None:
+    """
+    Проверяет, что занятая сохраненная позиция не сбрасывает игрока к общему spawn-у.
+    """
+    world = MultiplayerWorld(tile_map=tile_map_from_dict(_open_map()))
+    saved_position = Vec2(128, 64)
+
+    first = world.add_player("p1", "Alice", position=saved_position)
+    second = world.add_player("p2", "Bob", position=saved_position)
+
+    assert first.position == saved_position
+    assert second.position != saved_position
+    assert second.position != world.tile_map.spawn
+    assert (second.position - saved_position).length <= world.tile_map.tile_size
+
+
 def test_world_toggles_gate_collision_state() -> None:
     """
     Проверяет, что открытая калитка перестает быть solid-сущностью.
@@ -269,6 +388,25 @@ def test_world_treats_gate_as_occupied_by_creature_pending_target() -> None:
     assert world.get_entity("gate-sheep-pen") == opened_gate
 
 
+def test_world_blocks_player_from_creature_reserved_target() -> None:
+    """
+    Проверяет, что игрок не может войти в тайл, куда creature уже начала движение.
+    """
+    world = MultiplayerWorld(
+        tile_map=tile_map_from_dict(_open_map_with_gate_and_sheep()),
+        random_source=random.Random(0),
+    )
+    player = world.add_player("p1", "Alice", position=Vec2(66, 32))
+
+    world.tick(2.0)
+    reserved_targets = world.creature_reserved_rects()
+    world.set_intent("p1", MovementIntent(down=True))
+    world.tick(0.2)
+
+    assert len(reserved_targets) == 1
+    assert world.players["p1"].position == player.position
+
+
 def test_world_moves_creature_smoothly_between_tiles() -> None:
     """
     Проверяет, что овца плавно проходит к свободному соседнему тайлу.
@@ -290,6 +428,32 @@ def test_world_moves_creature_smoothly_between_tiles() -> None:
     assert moved_sheep is not None
     assert halfway_sheep.position == Vec2(sheep.position.x + 16, sheep.position.y)
     assert moved_sheep.position == Vec2(sheep.position.x + 32, sheep.position.y)
+
+
+def test_world_returns_neutral_creature_after_leash_distance() -> None:
+    """
+    Проверяет, что neutral creature возвращается домой, если ушла за leash-радиус.
+    """
+    world = MultiplayerWorld(tile_map=tile_map_from_dict(_wide_open_map_with_sheep()))
+    sheep = world.get_entity("creature-barbara")
+    assert sheep is not None
+    far_position = Vec2(sheep.position.x + 320, sheep.position.y)
+    world.entity_states[sheep.entity_id] = replace(
+        sheep,
+        body=replace(sheep.body, position=far_position),
+    )
+    motion = world.creature_motions[sheep.entity_id]
+
+    world.tick(0.1)
+    expected_step = Vec2(far_position.x - world.tile_map.tile_size, far_position.y)
+    reserved_step = motion.target_position
+    world.tick(0.7)
+    returned_sheep = world.get_entity("creature-barbara")
+
+    assert motion.aggro_target_id is None
+    assert reserved_step == expected_step
+    assert returned_sheep is not None
+    assert returned_sheep.position == expected_step
 
 
 def test_world_keeps_creature_in_place_when_target_is_blocked() -> None:
@@ -353,3 +517,68 @@ def test_world_destroys_and_respawns_training_dummy() -> None:
     assert restored_dummy.name == "Тренировочный манекен"
     assert restored_dummy.hit_points == 20
     assert restored_dummy.is_attackable is True
+
+
+def test_world_spawns_boar_corpse_and_respawns_boar_later() -> None:
+    """
+    Проверяет, что смерть кабана оставляет runtime-труп и не мешает respawn-у кабана.
+    """
+    world = MultiplayerWorld(tile_map=tile_map_from_dict(_open_map_with_boar_and_respawn_cross()))
+
+    result = world.damage_entity("creature-boar", 18)
+    dead_boar = world.get_entity("creature-boar")
+    corpses = [
+        entity
+        for entity in world.entities
+        if entity.entity_id.startswith("corpse-creature-boar-")
+    ]
+
+    assert result is not None
+    assert result[1] is True
+    assert dead_boar is not None
+    assert dead_boar.visible is False
+    assert dead_boar.solid is False
+    assert dead_boar.is_attackable is False
+    assert len(corpses) == 1
+    corpse = corpses[0]
+    assert corpse.name == "Труп кабана"
+    assert corpse.solid is False
+    assert corpse.is_attackable is False
+    assert corpse.lootable is not None
+    assert corpse.lootable.reward_item_id == LEATHER_ITEM_ID
+    assert corpse.lootable.reward_quantity == 2
+
+    world.tick(60.0)
+    respawned_boar = world.get_entity("creature-boar")
+    assert respawned_boar is not None
+    assert respawned_boar.visible is True
+    assert respawned_boar.solid is True
+    assert respawned_boar.hit_points == 18
+    assert world.get_entity(corpse.entity_id) is not None
+
+    world.tick(240.0)
+    assert world.get_entity(corpse.entity_id) is None
+
+
+def test_world_kills_and_respawns_player_at_cross() -> None:
+    """
+    Проверяет runtime-смерть игрока и возрождение с половиной max HP.
+    """
+    world = MultiplayerWorld(tile_map=tile_map_from_dict(_open_map_with_boar_and_respawn_cross()))
+    player = world.add_player("p1", "Alice")
+
+    damage_result = world.damage_player("p1", 30)
+    world.set_intent("p1", MovementIntent(right=True))
+    world.tick(1.0)
+    dead_player = world.players["p1"]
+
+    assert damage_result is not None
+    assert damage_result[1] is True
+    assert dead_player.hit_points == 0
+    assert dead_player.position == player.position
+
+    respawned = world.respawn_player("p1")
+    assert respawned is not None
+    assert respawned.hit_points == 15
+    assert respawned.max_hit_points == 30
+    assert respawned.position == Vec2(96, 32)

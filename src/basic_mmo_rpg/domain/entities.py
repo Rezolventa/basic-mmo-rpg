@@ -25,6 +25,7 @@ class LootClaimPolicy(StrEnum):
 
     ALWAYS = "always"
     AFTER_DESTROYED = "after_destroyed"
+    RUNTIME_ONCE = "runtime_once"
 
 
 @dataclass(frozen=True, slots=True)
@@ -49,6 +50,7 @@ class BodyComponent:
     width: int
     height: int
     solid: bool = True
+    visible: bool = True
 
 
 @dataclass(frozen=True, slots=True)
@@ -83,6 +85,11 @@ class CombatComponent:
     max_hit_points: int
     attackable: bool = True
     destroyed: bool = False
+    min_damage: int = 0
+    max_damage: int = 0
+    hit_chance: float = 0.85
+    attack_distance: float = 64.0
+    swing_cooldown_seconds: float = 1.5
 
 
 @dataclass(frozen=True, slots=True)
@@ -149,6 +156,7 @@ class WorldEntity:
         interaction_radius: float = 64.0,
         dialogue: str = "",
         solid: bool = True,
+        visible: bool = True,
         is_open: bool | None = None,
         hit_points: int | None = None,
         max_hit_points: int | None = None,
@@ -167,6 +175,7 @@ class WorldEntity:
                 width=width,
                 height=height,
                 solid=solid,
+                visible=visible,
             )
             interaction = InteractionComponent(
                 radius=interaction_radius,
@@ -255,6 +264,13 @@ class WorldEntity:
         Возвращает, блокирует ли объект движение.
         """
         return self.body.solid
+
+    @property
+    def visible(self) -> bool:
+        """
+        Возвращает, нужно ли показывать объект клиентам как видимый объект мира.
+        """
+        return self.body.visible
 
     @property
     def interaction_radius(self) -> float:

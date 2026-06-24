@@ -164,6 +164,7 @@ def _parse_body_component(raw_component: dict[str, Any]) -> BodyComponent:
         width=width,
         height=height,
         solid=_bool_field(raw_component, "solid", True),
+        visible=_bool_field(raw_component, "visible", True),
     )
 
 
@@ -216,11 +217,29 @@ def _parse_optional_combat_component(raw_component: object) -> CombatComponent |
     if hit_points > max_hit_points:
         msg = "combat hit_points must not exceed max_hit_points"
         raise ValueError(msg)
+    min_damage = _non_negative_int_field(component, "min_damage", 0)
+    max_damage = _non_negative_int_field(component, "max_damage", 0)
+    if max_damage < min_damage:
+        msg = "combat max_damage must not be lower than min_damage"
+        raise ValueError(msg)
+    hit_chance = _non_negative_number_field(component, "hit_chance", 0.85)
+    if hit_chance > 1.0:
+        msg = "combat hit_chance must be between 0 and 1"
+        raise ValueError(msg)
     return CombatComponent(
         hit_points=hit_points,
         max_hit_points=max_hit_points,
         attackable=_bool_field(component, "attackable", True),
         destroyed=_bool_field(component, "destroyed", False),
+        min_damage=min_damage,
+        max_damage=max_damage,
+        hit_chance=hit_chance,
+        attack_distance=_positive_number_field(component, "attack_distance", 64.0),
+        swing_cooldown_seconds=_positive_number_field(
+            component,
+            "swing_cooldown_seconds",
+            1.5,
+        ),
     )
 
 
@@ -387,6 +406,24 @@ def _positive_int_field(
         raise ValueError(msg)
     if value <= 0:
         msg = f"map entity {key} must be positive"
+        raise ValueError(msg)
+    return value
+
+
+def _non_negative_int_field(
+    raw_entity: dict[str, Any],
+    key: str,
+    default: int,
+) -> int:
+    """
+    Читает неотрицательное целочисленное поле объекта карты.
+    """
+    value = raw_entity.get(key, default)
+    if not isinstance(value, int) or isinstance(value, bool):
+        msg = f"map entity {key} must be an integer"
+        raise ValueError(msg)
+    if value < 0:
+        msg = f"map entity {key} must be non-negative"
         raise ValueError(msg)
     return value
 

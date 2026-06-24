@@ -32,6 +32,7 @@ from basic_mmo_rpg.domain.inventory import (
     InventoryLimitError,
     ItemStack,
 )
+from basic_mmo_rpg.domain.movement import PlayerState
 from basic_mmo_rpg.server.world import MultiplayerWorld
 from basic_mmo_rpg.shared.protocol import (
     ClientMessageType,
@@ -88,6 +89,7 @@ UNARMED_SWING_COOLDOWN_SECONDS = 1.5
 RUSTY_SWORD_MIN_DAMAGE = 3
 RUSTY_SWORD_MAX_DAMAGE = 6
 RUSTY_SWORD_SWING_COOLDOWN_SECONDS = 1.2
+PLAYER_DEATH_TEXT = "Вы погибли"
 
 logger = logging.getLogger(__name__)
 
@@ -202,6 +204,10 @@ class MultiplayerServer:
         self.gathering_available_at: dict[str, float] = {}
         self.combat_targets: dict[str, str] = {}
         self.next_combat_swing_at: dict[str, float] = {}
+        self.enemy_damage_totals: dict[str, dict[str, int]] = {}
+        self.next_enemy_swing_at: dict[str, float] = {}
+        self.runtime_loot_claims: set[str] = set()
+        self.disconnected_player_states: dict[str, PlayerState] = {}
         self.random = random_source or random.Random()
 
     async def run(self, host: str, port: int) -> None:
@@ -270,7 +276,11 @@ class MultiplayerServer:
             name=character_name,
             default_position=self.world.tile_map.spawn,
         )
-        self.world.add_player(player_id, character_name, character.position)
+        disconnected_state = self.disconnected_player_states.pop(character_name, None)
+        if disconnected_state is None:
+            self.world.add_player(player_id, character_name, character.position)
+        else:
+            self.world.add_player_state(player_id, character_name, disconnected_state)
 
         session = PlayerSession(
             session_id=session_id,
@@ -297,6 +307,7 @@ class MultiplayerServer:
             self.active_character_sessions.pop(character_name, None)
             return
 
+        self._remember_disconnected_player_state(session)
         self._save_session_position(session)
         self._remove_session_state(session)
         logger.info("Player kicked by reconnect: name=%s", character_name)
@@ -320,6 +331,7 @@ class MultiplayerServer:
         if self.active_character_sessions.get(session.character_name) != session.session_id:
             return
 
+        self._remember_disconnected_player_state(session)
         self._save_session_position(session)
         self._remove_session_state(session)
         logger.info("Player left: name=%s player_id=%s", session.character_name, session.player_id)
@@ -334,6 +346,7 @@ class MultiplayerServer:
         self.connections.pop(session.player_id, None)
         self.combat_targets.pop(session.player_id, None)
         self.next_combat_swing_at.pop(session.player_id, None)
+        self._clear_enemy_targeting_player(session.player_id)
         self.sessions.pop(session.session_id, None)
         self.active_character_sessions.pop(session.character_name, None)
 
@@ -342,7 +355,7 @@ class MultiplayerServer:
         Сохраняет текущую позицию персонажа, если он еще есть в мире.
         """
         player = self.world.players.get(session.player_id)
-        if player is None:
+        if player is None or not player.is_alive:
             return
         self.character_repository.save_position(session.character_name, player.position)
         logger.debug(
@@ -351,6 +364,18 @@ class MultiplayerServer:
             player.position.x,
             player.position.y,
         )
+
+    def _remember_disconnected_player_state(self, session: PlayerSession) -> None:
+        """
+        Запоминает runtime-смерть персонажа, чтобы reconnect не обходил respawn.
+        """
+        player = self.world.players.get(session.player_id)
+        if player is None:
+            return
+        if player.is_alive:
+            self.disconnected_player_states.pop(session.character_name, None)
+            return
+        self.disconnected_player_states[session.character_name] = player
 
     async def _handle_raw_message(
         self,
@@ -382,6 +407,8 @@ class MultiplayerServer:
                 await self._handle_attack_request(session, message.payload)
             elif message.type == ClientMessageType.STOP_ATTACK_REQUESTED:
                 self._stop_attack(session)
+            elif message.type == ClientMessageType.RESPAWN_REQUESTED:
+                await self._handle_respawn_request(session)
         except (ProtocolError, UnicodeDecodeError) as exc:
             await self._send_error(session.player_id, str(exc))
             logger.warning("Protocol error from %s: %s", session.character_name, exc)
@@ -394,6 +421,9 @@ class MultiplayerServer:
         """
         Проверяет и запоминает цель auto-attack для игрока.
         """
+        if not self._is_player_alive(session.player_id):
+            return
+
         target = attack_target_from_payload(payload)
         entity = self.world.get_entity(target.entity_id)
         if entity is None or not entity.is_attackable:
@@ -404,8 +434,11 @@ class MultiplayerServer:
             )
             return
 
+        rule = self._combat_rule_for_character(session.character_name)
         self.combat_targets[session.player_id] = target.entity_id
-        self.next_combat_swing_at[session.player_id] = 0.0
+        self.next_combat_swing_at[session.player_id] = (
+            time.monotonic() + rule.swing_cooldown_seconds
+        )
         logger.info(
             "Attack target selected: name=%s target_id=%s",
             session.character_name,
@@ -419,6 +452,16 @@ class MultiplayerServer:
         self.combat_targets.pop(session.player_id, None)
         self.next_combat_swing_at.pop(session.player_id, None)
         logger.info("Attack stopped: name=%s", session.character_name)
+
+    async def _handle_respawn_request(self, session: PlayerSession) -> None:
+        """
+        Возрождает персонажа после смерти по явному запросу клиента.
+        """
+        respawned = self.world.respawn_player(session.player_id)
+        if respawned is None:
+            return
+        self._stop_attack(session)
+        await self._broadcast_snapshot()
 
     async def _handle_equip_item(
         self,
@@ -493,6 +536,9 @@ class MultiplayerServer:
         """
         Проверяет запрос взаимодействия и отправляет результат только инициатору.
         """
+        if not self._is_player_alive(session.player_id):
+            return
+
         target = interaction_target_from_payload(payload)
         if target.entity_id is not None:
             await self._handle_entity_interaction(session, target.entity_id)
@@ -577,6 +623,9 @@ class MultiplayerServer:
                 entity.name,
                 entity.dialogue,
             )
+            return
+
+        if not entity.dialogue:
             return
 
         await self._send(
@@ -864,6 +913,9 @@ class MultiplayerServer:
                 entity.entity_id,
             )
             return
+        if lootable.claim_policy == LootClaimPolicy.RUNTIME_ONCE:
+            await self._handle_runtime_loot_interaction(session, entity)
+            return
 
         try:
             inventory, claimed = self.character_repository.claim_loot_once(
@@ -898,6 +950,44 @@ class MultiplayerServer:
             target_name=session.character_name,
             text=lootable.success_text,
         )
+
+    async def _handle_runtime_loot_interaction(
+        self,
+        session: PlayerSession,
+        entity: WorldEntity,
+    ) -> None:
+        """
+        Выдает runtime-добычу из временного объекта без persistent loot-claim.
+        """
+        lootable = entity.lootable
+        if lootable is None or entity.entity_id in self.runtime_loot_claims:
+            return
+
+        try:
+            inventory = self.character_repository.add_item(
+                session.character_name,
+                lootable.reward_item_id,
+                quantity=lootable.reward_quantity,
+            )
+        except InventoryLimitError as exc:
+            await self._send_inventory_limit_result(
+                session,
+                session.player_id,
+                session.character_name,
+                exc,
+            )
+            return
+
+        self.runtime_loot_claims.add(entity.entity_id)
+        self.world.clear_entity_lootable(entity.entity_id)
+        await self._send_inventory_update(session, inventory)
+        await self._send_interaction_result(
+            session=session,
+            target_id=session.player_id,
+            target_name=session.character_name,
+            text=lootable.success_text,
+        )
+        await self._broadcast_snapshot()
 
     async def _handle_creature_interaction(
         self,
@@ -1044,6 +1134,10 @@ class MultiplayerServer:
         Выполняет server-authoritative auto-attack для активных целей игроков.
         """
         for session in list(self.sessions.values()):
+            if not self._is_player_alive(session.player_id):
+                self._stop_attack(session)
+                continue
+
             target_id = self.combat_targets.get(session.player_id)
             if target_id is None:
                 continue
@@ -1064,6 +1158,8 @@ class MultiplayerServer:
             self.next_combat_swing_at[session.player_id] = now + rule.swing_cooldown_seconds
             target_name = target.base_name
             if self.random.random() >= ATTACK_HIT_CHANCE:
+                if target.kind == EntityKind.CREATURE:
+                    self.world.aggro_creature(target.entity_id, session.player_id)
                 await self._send_combat_event(
                     session=session,
                     target_id=target.entity_id,
@@ -1080,6 +1176,8 @@ class MultiplayerServer:
                 continue
 
             _, destroyed = damage_result
+            if target.kind == EntityKind.CREATURE:
+                self._add_enemy_damage(target.entity_id, session.player_id, damage)
             await self._send_combat_event(
                 session=session,
                 target_id=target.entity_id,
@@ -1089,14 +1187,91 @@ class MultiplayerServer:
                 destroyed=destroyed,
             )
             if destroyed:
-                self._stop_attack(session)
+                self._stop_attacks_against(target.entity_id)
+                self._clear_enemy_state(target.entity_id)
+                destroyed_text = f"{target_name} разрушен"
+                destroyed_floating_text = "Разрушен"
+                if target.kind == EntityKind.CREATURE:
+                    destroyed_text = f"{target_name} погиб"
+                    destroyed_floating_text = "Погиб"
                 await self._send_combat_event(
                     session=session,
                     target_id=target.entity_id,
                     target_name=target_name,
-                    text=f"{target_name} разрушен",
-                    floating_text="Разрушен",
+                    text=destroyed_text,
+                    floating_text=destroyed_floating_text,
                     destroyed=True,
+                )
+            await self._broadcast_snapshot()
+
+    async def _tick_enemy_combat(self, now: float) -> None:
+        """
+        Выполняет ответные auto-attack удары creature-врагов по игрокам.
+        """
+        for entity in self.world.entities:
+            if entity.kind != EntityKind.CREATURE or entity.combat is None:
+                continue
+            if not entity.visible or entity.is_destroyed:
+                continue
+            if entity.combat.max_damage <= 0:
+                continue
+
+            target_player_id = self.world.creature_target_player_id(entity.entity_id)
+            if target_player_id is None:
+                continue
+            target_session = self._session_for_player_id(target_player_id)
+            target_player = self.world.players.get(target_player_id)
+            if target_session is None or target_player is None or not target_player.is_alive:
+                self._clear_enemy_targeting_player(target_player_id)
+                continue
+
+            distance = (entity.center - target_player.center).length
+            if distance > entity.combat.attack_distance:
+                continue
+            if now < self.next_enemy_swing_at.get(entity.entity_id, 0.0):
+                continue
+
+            self.next_enemy_swing_at[entity.entity_id] = (
+                now + entity.combat.swing_cooldown_seconds
+            )
+            if self.random.random() >= entity.combat.hit_chance:
+                await self._send_combat_event_to_session(
+                    session=target_session,
+                    actor_id=entity.entity_id,
+                    actor_name=entity.base_name,
+                    target_id=target_session.player_id,
+                    target_name=target_session.character_name,
+                    text=f"{entity.base_name} промахнулся",
+                    floating_text="Промах",
+                )
+                continue
+
+            damage = self.random.randint(entity.combat.min_damage, entity.combat.max_damage)
+            damage_result = self.world.damage_player(target_player_id, damage)
+            if damage_result is None:
+                continue
+            _, killed = damage_result
+            await self._send_combat_event_to_session(
+                session=target_session,
+                actor_id=entity.entity_id,
+                actor_name=entity.base_name,
+                target_id=target_session.player_id,
+                target_name=target_session.character_name,
+                text=f"{entity.base_name} атаковал вас: -{damage}",
+                floating_text=f"-{damage}",
+            )
+            if killed:
+                self._stop_attack(target_session)
+                self._clear_enemy_targeting_player(target_session.player_id)
+                await self._send_combat_event_to_session(
+                    session=target_session,
+                    actor_id=entity.entity_id,
+                    actor_name=entity.base_name,
+                    target_id=target_session.player_id,
+                    target_name=target_session.character_name,
+                    text=PLAYER_DEATH_TEXT,
+                    floating_text=PLAYER_DEATH_TEXT,
+                    add_to_journal=False,
                 )
             await self._broadcast_snapshot()
 
@@ -1114,6 +1289,83 @@ class MultiplayerServer:
         ):
             return UNARMED_COMBAT_RULE
         return WEAPON_COMBAT_RULES.get(equipment.main_hand, UNARMED_COMBAT_RULE)
+
+    def _is_player_alive(self, player_id: str) -> bool:
+        """
+        Проверяет, может ли персонаж выполнять gameplay-действия.
+        """
+        player = self.world.players.get(player_id)
+        return player is not None and player.is_alive
+
+    def _session_for_player_id(self, player_id: str) -> PlayerSession | None:
+        """
+        Возвращает активную websocket-сессию по id персонажа.
+        """
+        for session in self.sessions.values():
+            if session.player_id == player_id:
+                return session
+        return None
+
+    def _add_enemy_damage(self, entity_id: str, player_id: str, damage: int) -> None:
+        """
+        Запоминает нанесенный врагу урон и обновляет цель по наибольшему вкладу.
+        """
+        totals = self.enemy_damage_totals.setdefault(entity_id, {})
+        totals[player_id] = totals.get(player_id, 0) + damage
+        preferred_target = self._preferred_enemy_target(entity_id)
+        if preferred_target is not None:
+            self.world.aggro_creature(entity_id, preferred_target)
+
+    def _preferred_enemy_target(self, entity_id: str) -> str | None:
+        """
+        Выбирает живого персонажа, нанесшего врагу больше всего урона.
+        """
+        totals = self.enemy_damage_totals.get(entity_id, {})
+        alive_totals = {
+            player_id: damage
+            for player_id, damage in totals.items()
+            if self._is_player_alive(player_id)
+        }
+        if not alive_totals:
+            return None
+        return max(alive_totals, key=lambda player_id: alive_totals[player_id])
+
+    def _clear_enemy_state(self, entity_id: str) -> None:
+        """
+        Сбрасывает runtime-боевое состояние врага.
+        """
+        self.enemy_damage_totals.pop(entity_id, None)
+        self.next_enemy_swing_at.pop(entity_id, None)
+        self.world.clear_creature_aggro(entity_id, return_home=False)
+
+    def _clear_enemy_targeting_player(self, player_id: str) -> None:
+        """
+        Убирает персонажа из целей врагов и при возможности выбирает следующую цель.
+        """
+        for entity_id, totals in list(self.enemy_damage_totals.items()):
+            totals.pop(player_id, None)
+            if not totals:
+                self.enemy_damage_totals.pop(entity_id, None)
+            if self.world.creature_target_player_id(entity_id) != player_id:
+                continue
+            preferred_target = self._preferred_enemy_target(entity_id)
+            if preferred_target is None:
+                self.world.clear_creature_aggro(entity_id, return_home=True)
+            else:
+                self.world.aggro_creature(entity_id, preferred_target)
+        for entity in self.world.entities:
+            if self.world.creature_target_player_id(entity.entity_id) == player_id:
+                self.world.clear_creature_aggro(entity.entity_id, return_home=True)
+
+    def _stop_attacks_against(self, target_id: str) -> None:
+        """
+        Сбрасывает auto-attack у всех игроков, которые били указанную цель.
+        """
+        for player_id, current_target_id in list(self.combat_targets.items()):
+            if current_target_id != target_id:
+                continue
+            self.combat_targets.pop(player_id, None)
+            self.next_combat_swing_at.pop(player_id, None)
 
     async def _send_combat_event(
         self,
@@ -1139,6 +1391,39 @@ class MultiplayerServer:
                     text=text,
                     floating_text=floating_text,
                     created_at=time.time(),
+                    destroyed=destroyed,
+                ),
+            ),
+        )
+
+    async def _send_combat_event_to_session(
+        self,
+        session: PlayerSession,
+        actor_id: str,
+        actor_name: str,
+        target_id: str,
+        target_name: str,
+        text: str,
+        floating_text: str,
+        destroyed: bool = False,
+        add_to_journal: bool = True,
+    ) -> None:
+        """
+        Отправляет combat_event конкретному клиенту с произвольным actor-ом.
+        """
+        await self._send(
+            session.websocket,
+            ProtocolMessage(
+                type=ServerMessageType.COMBAT_EVENT,
+                payload=combat_event_payload(
+                    actor_id=actor_id,
+                    actor_name=actor_name,
+                    target_id=target_id,
+                    target_name=target_name,
+                    text=text,
+                    floating_text=floating_text,
+                    created_at=time.time(),
+                    add_to_journal=add_to_journal,
                     destroyed=destroyed,
                 ),
             ),
@@ -1267,6 +1552,7 @@ class MultiplayerServer:
 
             self.world.tick(delta_seconds)
             await self._tick_combat(current_time)
+            await self._tick_enemy_combat(current_time)
             snapshot_elapsed += delta_seconds
             save_elapsed += delta_seconds
 

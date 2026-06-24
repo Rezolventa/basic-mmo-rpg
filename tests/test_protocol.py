@@ -48,6 +48,7 @@ from basic_mmo_rpg.shared.protocol import (
     movement_intent_to_payload,
     player_snapshots_from_payload,
     players_from_snapshot_payload,
+    respawn_requested_payload,
     unequip_item_requested_payload,
     world_snapshot_payload,
 )
@@ -80,7 +81,7 @@ def test_world_snapshot_payload_round_trips_players() -> None:
     """
     Проверяет, что игроки сериализуются и восстанавливаются из payload snapshot-а.
     """
-    player = PlayerState(entity_id="p1", position=Vec2(10, 20), speed=123)
+    player = PlayerState(entity_id="p1", position=Vec2(10, 20), speed=123, hit_points=12)
     snapshot = PlayerSnapshot(state=player, name="Alice")
 
     payload = world_snapshot_payload([snapshot])
@@ -213,6 +214,7 @@ def test_combat_payloads_are_validated() -> None:
     assert event["floating_text"] == "-4"
     assert event["add_to_journal"] is True
     assert event["destroyed"] is False
+    assert respawn_requested_payload() == {}
     with pytest.raises(ProtocolError):
         attack_target_from_payload({"target_id": ""})
 

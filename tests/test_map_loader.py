@@ -21,7 +21,7 @@ def test_starter_map_loads() -> None:
     assert tile_map.is_solid_tile(0, 0)
     assert not tile_map.is_solid_tile(2, 2)
     entities = {entity.entity_id: entity for entity in tile_map.entities}
-    assert len(entities) == 7
+    assert len(entities) == 9
     assert entities["npc-funday"].kind == EntityKind.NPC
     assert entities["npc-funday"].name == "Funday"
     assert entities["npc-funday"].dialogue == "Иди и поймай мне рыбу"
@@ -49,6 +49,21 @@ def test_starter_map_loads() -> None:
     assert entities["creature-barbara"].hit_points == 15
     assert entities["creature-barbara"].max_hit_points == 15
     assert entities["creature-barbara"].has_wool is True
+    assert entities["object-player-respawn"].kind == EntityKind.OBJECT
+    assert entities["object-player-respawn"].visual == "respawn_cross"
+    assert not entities["object-player-respawn"].solid
+    assert entities["creature-boar"].kind == EntityKind.CREATURE
+    assert entities["creature-boar"].name == "Кабан"
+    assert entities["creature-boar"].visual == "boar"
+    assert entities["creature-boar"].is_attackable
+    assert entities["creature-boar"].hit_points == 18
+    assert entities["creature-boar"].max_hit_points == 18
+    assert entities["creature-boar"].combat is not None
+    assert entities["creature-boar"].combat.min_damage == 2
+    assert entities["creature-boar"].combat.max_damage == 4
+    assert entities["creature-boar"].combat.hit_chance == 0.75
+    assert entities["creature-boar"].respawn is not None
+    assert entities["creature-boar"].respawn.seconds == 60
     assert entities["lootable-training-dummy"].kind == EntityKind.OBJECT
     assert entities["lootable-training-dummy"].name == "Тренировочный манекен"
     assert entities["lootable-training-dummy"].solid

@@ -1,11 +1,17 @@
 from __future__ import annotations
 
 from collections import deque
+from dataclasses import replace
 from types import SimpleNamespace
 
 import pygame
 
-from basic_mmo_rpg.client.app import GameClient, RemotePlayerView, _smooth_player_toward
+from basic_mmo_rpg.client.app import (
+    GameClient,
+    RemotePlayerView,
+    WorldEntityView,
+    _smooth_player_toward,
+)
 from basic_mmo_rpg.client.rendering import Renderer
 from basic_mmo_rpg.client.ui import InventoryPanelHit
 from basic_mmo_rpg.domain.entities import (
@@ -65,6 +71,60 @@ def test_remote_player_view_interpolates_to_snapshot_target() -> None:
     view.update(1 / 60)
 
     assert 0 < view.rendered.position.x < 30
+
+
+def test_world_entity_view_interpolates_to_snapshot_target() -> None:
+    """
+    Проверяет, что world-entity плавно движется к позиции из server snapshot-а.
+    """
+    entity = _attackable_dummy()
+    target = replace(entity, body=replace(entity.body, position=Vec2(96, 32)))
+    view = WorldEntityView(rendered=entity, target=target)
+
+    view.update(1 / 60)
+
+    assert entity.position.x < view.rendered.position.x < target.position.x
+    assert view.rendered.position.y == target.position.y
+
+
+def test_world_entity_view_updates_state_without_snapping_position() -> None:
+    """
+    Проверяет, что новое состояние entity применяется без мгновенного snap-а позиции.
+    """
+    entity = _attackable_dummy()
+    target = replace(
+        entity,
+        body=replace(entity.body, position=Vec2(96, 32)),
+        combat=replace(entity.combat, hit_points=12) if entity.combat is not None else None,
+    )
+    view = WorldEntityView(rendered=entity, target=entity)
+
+    view.set_target(target)
+
+    assert view.rendered.position == entity.position
+    assert view.rendered.hit_points == 12
+    assert view.target.position == Vec2(96, 32)
+
+
+def test_world_entity_view_snaps_when_entity_becomes_visible() -> None:
+    """
+    Проверяет, что respawn entity не протаскивается из старой invisible-позиции.
+    """
+    entity = _attackable_dummy()
+    hidden = replace(
+        entity,
+        body=replace(entity.body, position=Vec2(64, 32), visible=False),
+    )
+    respawned = replace(
+        entity,
+        body=replace(entity.body, position=Vec2(96, 32), visible=True),
+    )
+    view = WorldEntityView(rendered=hidden, target=hidden)
+
+    view.set_target(respawned)
+
+    assert view.rendered.position == respawned.position
+    assert view.rendered.visible is True
 
 
 def test_smooth_player_toward_keeps_current_position_without_elapsed_time() -> None:
@@ -179,6 +239,44 @@ def test_combat_click_requests_attack_target() -> None:
 
     assert client.selected_attack_target_id == entity.entity_id
     assert network.attack_targets == [entity.entity_id]
+
+
+def test_dead_authoritative_player_opens_death_dialog_and_clears_attack() -> None:
+    """
+    Проверяет, что snapshot смерти включает окно смерти и сбрасывает боевую цель.
+    """
+    client = _client_without_pygame(PlayerState(entity_id="p1", position=Vec2(0, 0)))
+    client.combat_mode_active = True
+    client.hovered_attackable_entity_id = "creature-boar"
+    client.selected_attack_target_id = "creature-boar"
+
+    client._receive_authoritative_local_player(
+        PlayerState(entity_id="p1", position=Vec2(0, 0), hit_points=0)
+    )
+
+    assert client.death_dialog_visible is True
+    assert client.combat_mode_active is False
+    assert client.hovered_attackable_entity_id is None
+    assert client.selected_attack_target_id is None
+    assert client.player.is_alive is False
+
+
+def test_death_dialog_click_requests_respawn() -> None:
+    """
+    Проверяет, что кнопка окна смерти отправляет respawn_requested.
+    """
+    client = object.__new__(GameClient)
+    network = _NetworkRecorder()
+    client.death_dialog_visible = True
+    client.screen = object()
+    client.renderer = SimpleNamespace(
+        respawn_button_hit_at_position=lambda screen, position: True
+    )
+    client.network_client = network
+
+    client._handle_left_click((10, 10))
+
+    assert network.respawn_requests == 1
 
 
 def test_client_applies_interaction_result_to_log_and_entity_bubble() -> None:
@@ -490,6 +588,7 @@ class _NetworkRecorder:
         self.unequipped_slots: list[str] = []
         self.attack_targets: list[str] = []
         self.stop_attack_requests = 0
+        self.respawn_requests = 0
 
     def send_equip_item_request(self, item_id: str) -> None:
         """
@@ -514,3 +613,9 @@ class _NetworkRecorder:
         Запоминает запрос остановки auto-attack.
         """
         self.stop_attack_requests += 1
+
+    def send_respawn_request(self) -> None:
+        """
+        Запоминает запрос возрождения персонажа.
+        """
+        self.respawn_requests += 1

@@ -19,6 +19,7 @@ from basic_mmo_rpg.domain.inventory import (
     FISH_ITEM_ID,
     FISHING_ROD_ITEM_ID,
     GOLD_ITEM_ID,
+    LEATHER_ITEM_ID,
     LOG_ITEM_ID,
     LUMBER_AXE_ITEM_ID,
     PICKAXE_ITEM_ID,
@@ -28,7 +29,7 @@ from basic_mmo_rpg.domain.inventory import (
     WOOL_ITEM_ID,
 )
 from basic_mmo_rpg.domain.movement import MovementIntent, PlayerState
-from basic_mmo_rpg.server.app import MultiplayerServer
+from basic_mmo_rpg.server.app import MultiplayerServer, PlayerSession
 from basic_mmo_rpg.server.world import MultiplayerWorld
 from basic_mmo_rpg.shared.protocol import (
     ClientMessageType,
@@ -47,6 +48,7 @@ from basic_mmo_rpg.shared.protocol import (
     join_request_payload,
     movement_intent_to_payload,
     players_from_snapshot_payload,
+    respawn_requested_payload,
     unequip_item_requested_payload,
 )
 from basic_mmo_rpg.storage.characters import CharacterRepository
@@ -361,6 +363,72 @@ def _open_map_with_training_dummy() -> object:
     return raw_map
 
 
+def _open_map_with_lethal_boar() -> object:
+    """
+    Возвращает карту с кабаном, который гарантированно убивает игрока одним ударом.
+    """
+    return {
+        "tile_size": 32,
+        "spawn": [32, 32],
+        "legend": {
+            ".": {"name": "floor", "solid": False, "color": [50, 120, 60]},
+            "#": {"name": "wall", "solid": True, "color": [90, 90, 90]},
+        },
+        "tiles": [
+            "..........",
+            "..........",
+            "..........",
+            "..........",
+        ],
+        "entities": [
+            {
+                "id": "object-player-respawn",
+                "components": {
+                    "identity": {
+                        "kind": "object",
+                        "name": "Крест возрождения",
+                        "visual": "respawn_cross",
+                    },
+                    "body": {
+                        "position": [96, 32],
+                        "size": [28, 28],
+                        "solid": False,
+                    },
+                },
+            },
+            {
+                "id": "creature-boar",
+                "components": {
+                    "identity": {
+                        "kind": "creature",
+                        "name": "Кабан",
+                        "visual": "boar",
+                    },
+                    "body": {
+                        "position": [64, 32],
+                        "size": [24, 22],
+                        "solid": True,
+                    },
+                    "combat": {
+                        "hit_points": 100,
+                        "max_hit_points": 100,
+                        "attackable": True,
+                        "destroyed": False,
+                        "min_damage": 30,
+                        "max_damage": 30,
+                        "hit_chance": 1.0,
+                        "attack_distance": 64,
+                        "swing_cooldown_seconds": 0.1,
+                    },
+                    "respawn": {
+                        "seconds": 60,
+                    },
+                },
+            },
+        ],
+    }
+
+
 def test_websocket_server_accepts_two_clients_and_broadcasts_movement(tmp_path: Path) -> None:
     """
     Проверяет websocket-сценарий с двумя клиентами и серверной обработкой движения.
@@ -380,6 +448,20 @@ def test_websocket_server_restores_saved_position_on_reconnect(tmp_path: Path) -
     Проверяет, что повторный вход тем же именем восстанавливает сохраненную позицию.
     """
     asyncio.run(_reconnect_restores_position_smoke(tmp_path))
+
+
+def test_websocket_server_loads_existing_character_state_on_join(tmp_path: Path) -> None:
+    """
+    Проверяет, что сервер отдает уже сохраненные позицию, инвентарь и экипировку.
+    """
+    asyncio.run(_existing_character_state_loaded_on_join_smoke(tmp_path))
+
+
+def test_websocket_server_keeps_occupied_saved_position_local(tmp_path: Path) -> None:
+    """
+    Проверяет, что занятая сохраненная позиция не сбрасывается к общему spawn-у.
+    """
+    asyncio.run(_occupied_saved_position_stays_local_smoke(tmp_path))
 
 
 def test_websocket_server_kicks_old_session_for_duplicate_name(tmp_path: Path) -> None:
@@ -424,6 +506,36 @@ def test_websocket_server_auto_attacks_training_dummy(tmp_path: Path) -> None:
     Проверяет базовый server-authoritative auto-attack по тренировочному манекену.
     """
     asyncio.run(_auto_attacks_training_dummy_smoke(tmp_path))
+
+
+def test_server_aggroes_boar_on_swing_not_on_target_selection(tmp_path: Path) -> None:
+    """
+    Проверяет, что выбор цели не агрит кабана до первого swing-а.
+    """
+    asyncio.run(_boar_aggroes_on_swing_not_on_target_selection(tmp_path))
+
+
+def test_websocket_server_boar_kills_and_player_respawns(tmp_path: Path) -> None:
+    """
+    Проверяет ответную атаку кабана, смерть игрока и respawn_requested.
+    """
+    asyncio.run(_boar_kills_and_player_respawns_smoke(tmp_path))
+
+
+def test_websocket_server_dead_player_reconnects_dead_until_respawn(
+    tmp_path: Path,
+) -> None:
+    """
+    Проверяет, что reconnect не оживляет мертвого персонажа без respawn_requested.
+    """
+    asyncio.run(_dead_player_reconnects_dead_until_respawn_smoke(tmp_path))
+
+
+def test_websocket_server_looted_boar_corpse_stays_silent(tmp_path: Path) -> None:
+    """
+    Проверяет, что повторное взаимодействие с облутанным трупом не шлет пустой bubble.
+    """
+    asyncio.run(_looted_boar_corpse_stays_silent_smoke(tmp_path))
 
 
 def test_websocket_server_ignores_interaction_when_target_is_too_far(tmp_path: Path) -> None:
@@ -713,6 +825,59 @@ async def _reconnect_restores_position_smoke(tmp_path: Path) -> None:
         assert restored_player.position.y == moved_player.position.y
 
 
+async def _existing_character_state_loaded_on_join_smoke(tmp_path: Path) -> None:
+    """
+    Запускает сервер и проверяет чтение состояния персонажа, созданного до подключения.
+    """
+    multiplayer_server = _server_for_test(tmp_path)
+    multiplayer_server.character_repository.load_or_create("Alice", Vec2(96, 64))
+    multiplayer_server.character_repository.add_item("Alice", FISHING_ROD_ITEM_ID)
+    multiplayer_server.character_repository.equip_item("Alice", FISHING_ROD_ITEM_ID)
+
+    async with _running_test_server(multiplayer_server) as uri, connect(uri) as client:
+        await _send_join(client, "Alice")
+        player_id = await _recv_player_id(client)
+        inventory_message = await _recv_message_type(client, ServerMessageType.INVENTORY_UPDATED)
+        equipment_message = await _recv_message_type(client, ServerMessageType.EQUIPMENT_UPDATED)
+        players = await _recv_snapshot(client, expected_players=1)
+        player = _find_player(players, player_id)
+
+    assert player.position == Vec2(96, 64)
+    assert inventory_items_from_payload(inventory_message.payload)[0].item_id == FISHING_ROD_ITEM_ID
+    assert equipment_from_payload(equipment_message.payload) == Equipment(
+        main_hand=FISHING_ROD_ITEM_ID
+    )
+
+
+async def _occupied_saved_position_stays_local_smoke(tmp_path: Path) -> None:
+    """
+    Запускает сервер и проверяет fallback рядом с занятой сохраненной позицией.
+    """
+    saved_position = Vec2(96, 64)
+    multiplayer_server = _server_for_test(tmp_path)
+    multiplayer_server.character_repository.load_or_create("Alice", saved_position)
+    multiplayer_server.character_repository.load_or_create("Bob", saved_position)
+
+    async with _running_test_server(multiplayer_server) as uri, connect(uri) as first_client:
+        await _send_join(first_client, "Alice")
+        first_id = await _recv_player_id(first_client)
+        first_players = await _recv_snapshot(first_client, expected_players=1)
+        first_player = _find_player(first_players, first_id)
+
+        async with connect(uri) as second_client:
+            await _send_join(second_client, "Bob")
+            second_id = await _recv_player_id(second_client)
+            second_players = await _recv_snapshot(second_client, expected_players=2)
+            second_player = _find_player(second_players, second_id)
+
+    assert first_player.position == saved_position
+    assert second_player.position != saved_position
+    assert second_player.position != multiplayer_server.world.tile_map.spawn
+    assert (second_player.position - saved_position).length <= (
+        multiplayer_server.world.tile_map.tile_size
+    )
+
+
 async def _duplicate_name_kicks_old_session_smoke(tmp_path: Path) -> None:
     """
     Запускает сервер и проверяет, что одна активная сессия соответствует одному имени.
@@ -968,6 +1133,7 @@ async def _auto_attacks_training_dummy_smoke(tmp_path: Path) -> None:
                 )
             )
         )
+        await _assert_no_message_type(first_client, ServerMessageType.COMBAT_EVENT)
         combat_message = await _recv_message_type(
             first_client,
             ServerMessageType.COMBAT_EVENT,
@@ -986,6 +1152,214 @@ async def _auto_attacks_training_dummy_smoke(tmp_path: Path) -> None:
     entity = multiplayer_server.world.get_entity("lootable-training-dummy")
     assert entity is not None
     assert entity.hit_points == 20 - damage
+
+
+async def _boar_aggroes_on_swing_not_on_target_selection(tmp_path: Path) -> None:
+    """
+    Проверяет server-side момент агро без запуска websocket-сервера.
+    """
+    multiplayer_server = _server_for_test(
+        tmp_path,
+        raw_map=_open_map_with_lethal_boar(),
+        random_source=random.Random(0),
+    )
+    multiplayer_server.character_repository.load_or_create("Alice", Vec2(32, 32))
+    multiplayer_server.world.add_player("player-1", "Alice", Vec2(32, 32))
+    recording_websocket = _RecordingWebSocket()
+    session = PlayerSession(
+        session_id="session-1",
+        player_id="player-1",
+        character_name="Alice",
+        websocket=recording_websocket,
+    )
+    multiplayer_server.sessions[session.session_id] = session
+
+    await multiplayer_server._handle_attack_request(
+        session,
+        attack_requested_payload("creature-boar"),
+    )
+
+    assert multiplayer_server.combat_targets["player-1"] == "creature-boar"
+    assert multiplayer_server.world.creature_target_player_id("creature-boar") is None
+
+    first_swing_at = multiplayer_server.next_combat_swing_at["player-1"]
+    await multiplayer_server._tick_combat(now=first_swing_at - 0.01)
+
+    assert recording_websocket.sent_messages == []
+    assert multiplayer_server.world.creature_target_player_id("creature-boar") is None
+
+    await multiplayer_server._tick_combat(now=first_swing_at)
+
+    assert multiplayer_server.world.creature_target_player_id("creature-boar") == "player-1"
+
+
+async def _boar_kills_and_player_respawns_smoke(tmp_path: Path) -> None:
+    """
+    Запускает сервер и проверяет смерть от кабана с последующим возрождением.
+    """
+    multiplayer_server = _server_for_test(
+        tmp_path,
+        raw_map=_open_map_with_lethal_boar(),
+        random_source=random.Random(0),
+    )
+
+    async with _running_test_server(multiplayer_server) as uri, connect(uri) as first_client:
+        await _send_join(first_client, "Alice")
+        first_id = await _recv_player_id(first_client)
+
+        await first_client.send(
+            encode_message(
+                ProtocolMessage(
+                    type=ClientMessageType.ATTACK_REQUESTED,
+                    payload=attack_requested_payload("creature-boar"),
+                )
+            )
+        )
+        death_message = await _recv_combat_event_matching(
+            first_client,
+            lambda payload: payload.get("target_id") == first_id
+            and payload.get("floating_text") == "Вы погибли",
+        )
+        dead_player = await _recv_player_state_matching(
+            first_client,
+            first_id,
+            lambda player: player.hit_points == 0,
+        )
+
+        await first_client.send(
+            encode_message(
+                ProtocolMessage(
+                    type=ClientMessageType.RESPAWN_REQUESTED,
+                    payload=respawn_requested_payload(),
+                )
+            )
+        )
+        respawned_player = await _recv_player_state_matching(
+            first_client,
+            first_id,
+            lambda player: player.hit_points == 15 and player.position == Vec2(96, 32),
+        )
+
+    assert death_message.payload["add_to_journal"] is False
+    assert dead_player.hit_points == 0
+    assert respawned_player.hit_points == 15
+
+
+async def _dead_player_reconnects_dead_until_respawn_smoke(tmp_path: Path) -> None:
+    """
+    Запускает сервер и проверяет, что смерть сохраняется через reconnect.
+    """
+    multiplayer_server = _server_for_test(
+        tmp_path,
+        raw_map=_open_map_with_lethal_boar(),
+        random_source=random.Random(0),
+    )
+
+    async with _running_test_server(multiplayer_server) as uri:
+        async with connect(uri) as first_client:
+            await _send_join(first_client, "Alice")
+            first_id = await _recv_player_id(first_client)
+
+            await first_client.send(
+                encode_message(
+                    ProtocolMessage(
+                        type=ClientMessageType.ATTACK_REQUESTED,
+                        payload=attack_requested_payload("creature-boar"),
+                    )
+                )
+            )
+            await _recv_combat_event_matching(
+                first_client,
+                lambda payload: payload.get("target_id") == first_id
+                and payload.get("floating_text") == "Вы погибли",
+            )
+            await _recv_player_state_matching(
+                first_client,
+                first_id,
+                lambda player: player.hit_points == 0,
+            )
+
+        await _wait_for_world_player_count(multiplayer_server, expected_players=0)
+
+        async with connect(uri) as second_client:
+            await _send_join(second_client, "Alice")
+            second_id = await _recv_player_id(second_client)
+            reconnected_dead = await _recv_player_state_matching(
+                second_client,
+                second_id,
+                lambda player: player.hit_points == 0,
+            )
+
+            await second_client.send(
+                encode_message(
+                    ProtocolMessage(
+                        type=ClientMessageType.RESPAWN_REQUESTED,
+                        payload=respawn_requested_payload(),
+                    )
+                )
+            )
+            respawned = await _recv_player_state_matching(
+                second_client,
+                second_id,
+                lambda player: player.hit_points == 15
+                and player.position == Vec2(96, 32),
+            )
+
+    assert reconnected_dead.hit_points == 0
+    assert respawned.hit_points == 15
+
+
+async def _looted_boar_corpse_stays_silent_smoke(tmp_path: Path) -> None:
+    """
+    Запускает сервер и проверяет отсутствие пустого interaction_result от трупа.
+    """
+    multiplayer_server = _server_for_test(tmp_path, raw_map=_open_map_with_lethal_boar())
+    multiplayer_server.world.damage_entity("creature-boar", 100)
+    corpse = next(
+        entity
+        for entity in multiplayer_server.world.entities
+        if entity.entity_id.startswith("corpse-creature-boar-")
+    )
+
+    async with _running_test_server(multiplayer_server) as uri, connect(uri) as first_client:
+        await _send_join(first_client, "Alice")
+        first_id = await _recv_player_id(first_client)
+        await _recv_message_type(first_client, ServerMessageType.INVENTORY_UPDATED)
+        await _recv_message_type(first_client, ServerMessageType.EQUIPMENT_UPDATED)
+
+        await first_client.send(
+            encode_message(
+                ProtocolMessage(
+                    type=ClientMessageType.INTERACT_REQUESTED,
+                    payload=interact_requested_payload(corpse.entity_id),
+                )
+            )
+        )
+        inventory_message = await _recv_message_type(
+            first_client,
+            ServerMessageType.INVENTORY_UPDATED,
+        )
+        result_message = await _recv_message_type(
+            first_client,
+            ServerMessageType.INTERACTION_RESULT,
+        )
+
+        await first_client.send(
+            encode_message(
+                ProtocolMessage(
+                    type=ClientMessageType.INTERACT_REQUESTED,
+                    payload=interact_requested_payload(corpse.entity_id),
+                )
+            )
+        )
+        await _assert_no_message_type(first_client, ServerMessageType.INTERACTION_RESULT)
+        await _assert_no_message_type(first_client, ServerMessageType.INVENTORY_UPDATED)
+
+    inventory = inventory_items_from_payload(inventory_message.payload)
+    assert result_message.payload["actor_id"] == first_id
+    assert result_message.payload["text"] == "Вы забрали Кожа x2"
+    assert inventory[0].item_id == LEATHER_ITEM_ID
+    assert inventory[0].quantity == 2
 
 
 async def _interaction_too_far_smoke(tmp_path: Path) -> None:
@@ -2125,6 +2499,21 @@ class _FailingWebSocket:
         raise ConnectionError("connection closed before first server message")
 
 
+class _RecordingWebSocket:
+    """
+    Запоминает отправленные сервером сообщения для точечных server-side тестов.
+    """
+
+    def __init__(self) -> None:
+        self.sent_messages: list[str] = []
+
+    async def send(self, message: str) -> None:
+        """
+        Сохраняет сообщение без реального websocket-соединения.
+        """
+        self.sent_messages.append(message)
+
+
 async def _send_join(websocket: object, name: str) -> None:
     """
     Отправляет join_requested для тестового websocket-клиента.
@@ -2185,6 +2574,44 @@ async def _recv_entity_state(
                 return entity
 
     msg = f"server did not broadcast expected state for {entity_id!r} in time"
+    raise AssertionError(msg)
+
+
+async def _recv_player_state_matching(
+    websocket: object,
+    player_id: str,
+    predicate: Callable[[PlayerState], bool],
+) -> PlayerState:
+    """
+    Получает snapshot-ы, пока нужный игрок не пройдет проверку.
+    """
+    deadline = time.monotonic() + 2.0
+    while time.monotonic() < deadline:
+        message = decode_message(await asyncio.wait_for(websocket.recv(), timeout=0.5))
+        if message.type != ServerMessageType.WORLD_SNAPSHOT:
+            continue
+        for player in players_from_snapshot_payload(message.payload):
+            if player.entity_id == player_id and predicate(player):
+                return player
+
+    msg = f"server did not broadcast expected state for {player_id!r} in time"
+    raise AssertionError(msg)
+
+
+async def _recv_combat_event_matching(
+    websocket: object,
+    predicate: Callable[[dict[str, object]], bool],
+) -> ProtocolMessage:
+    """
+    Получает сообщения, пока combat_event payload не пройдет проверку.
+    """
+    deadline = time.monotonic() + 2.0
+    while time.monotonic() < deadline:
+        message = decode_message(await asyncio.wait_for(websocket.recv(), timeout=0.5))
+        if message.type == ServerMessageType.COMBAT_EVENT and predicate(message.payload):
+            return message
+
+    msg = "server did not send expected combat_event in time"
     raise AssertionError(msg)
 
 
