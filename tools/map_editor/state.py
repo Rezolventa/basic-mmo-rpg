@@ -2,8 +2,10 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
+from typing import Any
 
 from basic_mmo_rpg.domain.tiles import TileDefinition, TileMap
+from tools.map_editor.entities import EditableEntity
 
 
 @dataclass(slots=True)
@@ -15,11 +17,17 @@ class EditableMapState:
     tile_size: int
     definitions: Mapping[str, TileDefinition]
     tiles: list[list[str]]
+    entities: list[EditableEntity]
     selected_tile_key: str
+    selected_entity_id: str | None = None
     dirty: bool = False
 
     @classmethod
-    def from_tile_map(cls, tile_map: TileMap) -> EditableMapState:
+    def from_tile_map(
+        cls,
+        tile_map: TileMap,
+        raw_entities: list[dict[str, Any]] | None = None,
+    ) -> EditableMapState:
         """
         Создает состояние редактора из загруженной игровой карты.
         """
@@ -31,6 +39,10 @@ class EditableMapState:
             tile_size=tile_map.tile_size,
             definitions=tile_map.definitions,
             tiles=[list(row) for row in tile_map.tiles],
+            entities=[
+                EditableEntity.from_raw(raw_entity)
+                for raw_entity in raw_entities or []
+            ],
             selected_tile_key=tile_keys[0],
         )
 
@@ -119,3 +131,77 @@ class EditableMapState:
         self.tiles[tile_y][tile_x] = self.selected_tile_key
         self.dirty = True
         return True
+
+    def entity_at_point(self, x: float, y: float) -> EditableEntity | None:
+        """
+        Возвращает верхнюю entity под точкой или None.
+        """
+        for entity in reversed(self.entities):
+            if entity.contains_point(x, y):
+                return entity
+        return None
+
+    def selected_entity(self) -> EditableEntity | None:
+        """
+        Возвращает выбранную entity или None.
+        """
+        if self.selected_entity_id is None:
+            return None
+        return self.entity_by_id(self.selected_entity_id)
+
+    def entity_by_id(self, entity_id: str) -> EditableEntity | None:
+        """
+        Возвращает entity по id.
+        """
+        return next(
+            (entity for entity in self.entities if entity.entity_id == entity_id),
+            None,
+        )
+
+    def select_entity(self, entity_id: str | None) -> None:
+        """
+        Выбирает entity по id или сбрасывает выбор.
+        """
+        if entity_id is None:
+            self.selected_entity_id = None
+            return
+        if self.entity_by_id(entity_id) is None:
+            msg = f"unknown entity id: {entity_id!r}"
+            raise ValueError(msg)
+        self.selected_entity_id = entity_id
+
+    def move_entity(self, entity_id: str, x: float, y: float) -> bool:
+        """
+        Перемещает entity и возвращает флаг изменения.
+        """
+        entity = self.entity_by_id(entity_id)
+        if entity is None:
+            return False
+        if entity.position == (float(x), float(y)):
+            return False
+        entity.set_position(x, y)
+        self.dirty = True
+        return True
+
+    def snap_entity_center_to_tile(
+        self,
+        entity_id: str,
+        tile_x: int,
+        tile_y: int,
+    ) -> bool:
+        """
+        Притягивает центр entity к центру указанного тайла.
+        """
+        if not self.in_bounds(tile_x, tile_y):
+            return False
+        entity = self.entity_by_id(entity_id)
+        if entity is None:
+            return False
+        width, height = entity.size
+        center_x = tile_x * self.tile_size + self.tile_size / 2
+        center_y = tile_y * self.tile_size + self.tile_size / 2
+        return self.move_entity(
+            entity_id,
+            center_x - width / 2,
+            center_y - height / 2,
+        )

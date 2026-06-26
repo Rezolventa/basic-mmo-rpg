@@ -15,6 +15,11 @@ STATUS_BORDER = (65, 72, 82)
 PALETTE_BACKGROUND = (23, 26, 31)
 PALETTE_SELECTED_BORDER = (245, 225, 118)
 PALETTE_BORDER = (83, 91, 104)
+ENTITY_FILL = (88, 120, 166, 95)
+ENTITY_SOLID_FILL = (161, 116, 74, 110)
+ENTITY_BORDER = (188, 207, 232)
+ENTITY_HOVER_BORDER = (245, 225, 118)
+ENTITY_SELECTED_BORDER = (220, 60, 72)
 TEXT_COLOR = (232, 236, 241)
 MUTED_TEXT_COLOR = (166, 174, 184)
 BOTTOM_PANEL_HEIGHT = 74
@@ -24,7 +29,7 @@ MIN_WINDOW_SIZE = (640, 420)
 MAX_INITIAL_WINDOW_SIZE = (1600, 920)
 
 
-class MapViewerRenderer:
+class MapEditorRenderer:
     """
     Рисует тайловую карту, сетку, палитру и строку состояния редактора.
     """
@@ -49,6 +54,7 @@ class MapViewerRenderer:
         self,
         screen: pygame.Surface,
         hovered_tile: tuple[int, int] | None,
+        status_message: str = "",
     ) -> None:
         """
         Рисует текущий кадр редактора.
@@ -57,10 +63,11 @@ class MapViewerRenderer:
         view_height = self._map_view_height(screen)
         self._draw_tiles(screen, view_height)
         self._draw_grid(screen, view_height)
+        self._draw_entities(screen, view_height, hovered_tile)
         if hovered_tile is not None:
             self._draw_hovered_tile(screen, hovered_tile, view_height)
         self._draw_palette(screen)
-        self._draw_status_bar(screen, hovered_tile)
+        self._draw_status_bar(screen, hovered_tile, status_message)
 
     def tile_at_screen_position(
         self,
@@ -79,6 +86,20 @@ class MapViewerRenderer:
         if not self.state.in_bounds(tile_x, tile_y):
             return None
         return tile_x, tile_y
+
+    def entity_at_screen_position(
+        self,
+        position: tuple[int, int],
+        screen: pygame.Surface,
+    ) -> str | None:
+        """
+        Возвращает id entity под курсором или None.
+        """
+        x, y = position
+        if y < 0 or y >= self._map_view_height(screen):
+            return None
+        entity = self.state.entity_at_point(float(x), float(y))
+        return entity.entity_id if entity is not None else None
 
     def _draw_tiles(self, screen: pygame.Surface, view_height: int) -> None:
         tile_size = self.state.tile_size
@@ -127,10 +148,49 @@ class MapViewerRenderer:
         screen.blit(overlay, rect.topleft)
         pygame.draw.rect(screen, HOVER_BORDER, rect, width=2)
 
+    def _draw_entities(
+        self,
+        screen: pygame.Surface,
+        view_height: int,
+        hovered_tile: tuple[int, int] | None,
+    ) -> None:
+        hovered_entity_id = None
+        if hovered_tile is not None:
+            mouse_x, mouse_y = pygame.mouse.get_pos()
+            entity = self.state.entity_at_point(float(mouse_x), float(mouse_y))
+            hovered_entity_id = entity.entity_id if entity is not None else None
+
+        for entity in self.state.entities:
+            left, top = entity.position
+            width, height = entity.size
+            if top >= view_height:
+                continue
+            rect = pygame.Rect(round(left), round(top), width, height)
+            fill_color = ENTITY_SOLID_FILL if entity.solid else ENTITY_FILL
+            border_color = ENTITY_BORDER
+            border_width = 1
+            if entity.entity_id == hovered_entity_id:
+                border_color = ENTITY_HOVER_BORDER
+                border_width = 2
+            if entity.entity_id == self.state.selected_entity_id:
+                border_color = ENTITY_SELECTED_BORDER
+                border_width = 3
+
+            overlay = pygame.Surface(rect.size, pygame.SRCALPHA)
+            overlay.fill(fill_color)
+            screen.blit(overlay, rect.topleft)
+            pygame.draw.rect(screen, border_color, rect, width=border_width)
+
+            if entity.entity_id == self.state.selected_entity_id:
+                label = self.small_font.render(entity.entity_id, True, TEXT_COLOR)
+                label_y = max(0, rect.top - self.small_font.get_linesize())
+                screen.blit(label, (rect.left, label_y))
+
     def _draw_status_bar(
         self,
         screen: pygame.Surface,
         hovered_tile: tuple[int, int] | None,
+        status_message: str,
     ) -> None:
         rect = pygame.Rect(
             0,
@@ -145,21 +205,29 @@ class MapViewerRenderer:
             f"Map: {self.map_path.name} | {self.state.width}x{self.state.height} "
             f"| selected={self.state.selected_tile_key!r}"
         )
+        selected_entity = self.state.selected_entity()
+        if selected_entity is not None:
+            left, top = selected_entity.position
+            left_text = (
+                f"{left_text} | entity={selected_entity.label} "
+                f"at=({left:g}, {top:g})"
+            )
         if self.state.dirty:
             left_text = f"{left_text} | unsaved"
         left_surface = self.small_font.render(left_text, True, MUTED_TEXT_COLOR)
         screen.blit(left_surface, (10, rect.top + 9))
 
-        detail = "Tile: outside map"
+        detail = status_message or "Tile: outside map"
         if hovered_tile is not None:
             tile_x, tile_y = hovered_tile
             tile_key = self.state.tile_at(tile_x, tile_y)
             definition = self.state.definitions[tile_key]
             solid = "solid" if definition.solid else "walkable"
-            detail = (
+            tile_detail = (
                 f"Tile: ({tile_x}, {tile_y}) key={tile_key!r} "
                 f"name={definition.name!r} {solid}"
             )
+            detail = f"{status_message} | {tile_detail}" if status_message else tile_detail
         detail_surface = self.font.render(detail, True, TEXT_COLOR)
         detail_x = max(10, screen.get_width() - detail_surface.get_width() - 10)
         screen.blit(detail_surface, (detail_x, rect.top + 7))

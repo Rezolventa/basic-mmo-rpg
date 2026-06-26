@@ -64,6 +64,38 @@ Working directory: <project root>
 Python interpreter: <project root>\.venv\Scripts\python.exe
 ```
 
+## Редактор карты
+
+Редактор карты живет отдельно от игрового клиента и сервера:
+
+```powershell
+.\.venv\Scripts\python.exe scripts\run_map_editor.py --map assets\maps\starter_map.json
+```
+
+Управление:
+
+- `1..9` - выбрать тайл из палитры;
+- ЛКМ по карте - рисовать выбранным тайлом;
+- удержание ЛКМ - рисовать кистью 1x1;
+- ПКМ по карте - выбрать тайл под курсором;
+- ЛКМ по entity - выбрать и перетащить entity;
+- `Ctrl` при перетаскивании entity - притянуть центр entity к центру тайла;
+- `Ctrl+S` - сохранить карту.
+
+Перед первой записью за сессию редактор создает backup рядом с картой:
+`starter_map.json.bak`, `starter_map.json.bak.1` и так далее. Backup-файлы игнорируются git-ом.
+Сохранение проходит через загрузчик карты, поэтому карта с entity на solid-тайле или за границей мира не будет записана.
+
+Новая карта произвольного размера создается командой:
+
+```powershell
+.\.venv\Scripts\python.exe scripts\run_map_editor.py --map assets\maps\my_map.json --new 60x35
+```
+
+Новая карта берет `legend` из `starter_map.json`, заполняет внутреннюю область травой `.`, ставит стену `#`
+по периметру и открывается в редакторе. Если файл уже существует, редактор не перезапишет его без флага
+`--overwrite`.
+
 ## Проверки
 
 ```powershell

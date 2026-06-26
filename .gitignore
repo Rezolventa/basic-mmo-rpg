@@ -27,6 +27,8 @@ build/
 *.sqlite
 *.sqlite3
 *.log
+*.json.bak
+*.json.bak.*
 
 # OS noise
 .DS_Store

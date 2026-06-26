@@ -1,1 +1,1 @@
-"""Read-only tile map viewer and future map editor."""
+"""Tile map editor tool."""

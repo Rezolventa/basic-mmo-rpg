@@ -13,7 +13,7 @@ for root in (PROJECT_ROOT, SRC_ROOT):
 
 def run() -> None:
     """
-    Запускает изолированный read-only viewer карты из вспомогательного скрипта.
+    Запускает изолированный редактор карты из вспомогательного скрипта.
     """
     from tools.map_editor.app import main
 
