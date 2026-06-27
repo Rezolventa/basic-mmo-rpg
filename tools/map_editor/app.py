@@ -13,10 +13,14 @@ from tools.map_editor.map_io import (
     save_editable_map,
 )
 from tools.map_editor.rendering import MapEditorRenderer
+from tools.map_editor.viewport import Viewport
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_MAP_PATH = PROJECT_ROOT / "assets" / "maps" / "starter_map.json"
 TARGET_FPS = 60
+WHEEL_SCROLL_PIXELS = 96
+KEYBOARD_SCROLL_SPEED = 720.0
+ZOOM_LEVELS = (1.0, 0.5)
 NUMBER_KEY_TO_INDEX = {
     pygame.K_1: 0,
     pygame.K_2: 1,
@@ -51,7 +55,8 @@ class MapEditorApp:
 
         pygame.init()
         pygame.display.set_caption(f"Basic MMO RPG Map Editor - {map_path.name}")
-        self.renderer = MapEditorRenderer(self.state, map_path)
+        self.viewport = Viewport()
+        self.renderer = MapEditorRenderer(self.state, map_path, self.viewport)
         self.screen = pygame.display.set_mode(
             self.renderer.initial_window_size(),
             pygame.RESIZABLE,
@@ -61,21 +66,26 @@ class MapEditorApp:
         self.painting = False
         self.dragging_entity_id: str | None = None
         self.entity_drag_offset = (0.0, 0.0)
+        self.scrolling_view = False
         self.backup_created = False
         self.status_message = ""
+        self.help_visible = False
 
     def run(self) -> None:
         """
         Выполняет главный цикл редактора до закрытия окна.
         """
         running = True
+        delta_seconds = 1.0 / TARGET_FPS
         while running:
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
                     running = False
                 elif event.type == pygame.MOUSEMOTION:
                     self._update_hovered_tile(event.pos)
-                    if self.dragging_entity_id is not None:
+                    if self.scrolling_view:
+                        self._scroll_view_by_mouse_drag(event.rel)
+                    elif self.dragging_entity_id is not None:
                         self._drag_entity_at_screen_position(event.pos)
                     elif self.painting:
                         self._paint_at_screen_position(event.pos)
@@ -84,13 +94,24 @@ class MapEditorApp:
                 elif event.type == pygame.MOUSEBUTTONUP and event.button == 1:
                     self.painting = False
                     self.dragging_entity_id = None
+                elif event.type == pygame.MOUSEBUTTONUP and event.button == 2:
+                    self.scrolling_view = False
+                elif event.type == pygame.MOUSEWHEEL:
+                    self._handle_mouse_wheel(event.x, event.y)
                 elif event.type == pygame.KEYDOWN:
                     self._handle_keydown(event.key, event.mod)
 
+            self._handle_keyboard_scroll(delta_seconds)
+            self._clamp_viewport()
             self._update_hovered_tile(pygame.mouse.get_pos())
-            self.renderer.draw(self.screen, self.hovered_tile, self.status_message)
+            self.renderer.draw(
+                self.screen,
+                self.hovered_tile,
+                self.status_message,
+                self.help_visible,
+            )
             pygame.display.flip()
-            self.clock.tick(TARGET_FPS)
+            delta_seconds = self.clock.tick(TARGET_FPS) / 1000
 
         pygame.quit()
 
@@ -98,6 +119,12 @@ class MapEditorApp:
         self.hovered_tile = self.renderer.tile_at_screen_position(mouse_position, self.screen)
 
     def _handle_keydown(self, key: int, modifiers: int) -> None:
+        if key == pygame.K_F1:
+            self.help_visible = not self.help_visible
+            return
+        if key == pygame.K_z:
+            self._toggle_zoom()
+            return
         if key == pygame.K_s and modifiers & pygame.KMOD_CTRL:
             self._save_map()
             return
@@ -116,6 +143,9 @@ class MapEditorApp:
             return
         if button == 3:
             self._pick_tile_at_screen_position(position)
+            return
+        if button == 2:
+            self.scrolling_view = True
 
     def _paint_at_screen_position(self, position: tuple[int, int]) -> None:
         tile = self.renderer.tile_at_screen_position(position, self.screen)
@@ -142,8 +172,9 @@ class MapEditorApp:
 
         self.state.select_entity(entity_id)
         left, top = entity.position
+        world_x, world_y = self.renderer.world_position_at_screen_position(position)
         self.dragging_entity_id = entity_id
-        self.entity_drag_offset = (position[0] - left, position[1] - top)
+        self.entity_drag_offset = (world_x - left, world_y - top)
         self.painting = False
         self.status_message = ""
         return True
@@ -159,9 +190,72 @@ class MapEditorApp:
             self.state.snap_entity_center_to_tile(self.dragging_entity_id, tile_x, tile_y)
             return
         offset_x, offset_y = self.entity_drag_offset
-        x = position[0] - offset_x
-        y = position[1] - offset_y
+        world_x, world_y = self.renderer.world_position_at_screen_position(position)
+        x = world_x - offset_x
+        y = world_y - offset_y
         self.state.move_entity(self.dragging_entity_id, x, y)
+
+    def _handle_mouse_wheel(self, wheel_x: int, wheel_y: int) -> None:
+        if pygame.key.get_mods() & pygame.KMOD_SHIFT:
+            delta_x = -wheel_y * WHEEL_SCROLL_PIXELS
+            delta_y = 0
+        else:
+            delta_x = wheel_x * WHEEL_SCROLL_PIXELS
+            delta_y = -wheel_y * WHEEL_SCROLL_PIXELS
+        self._scroll_view(delta_x, delta_y)
+
+    def _handle_keyboard_scroll(self, delta_seconds: float) -> None:
+        if pygame.key.get_mods() & pygame.KMOD_CTRL:
+            return
+        pressed = pygame.key.get_pressed()
+        delta_x = 0.0
+        delta_y = 0.0
+        distance = KEYBOARD_SCROLL_SPEED * delta_seconds
+        if pressed[pygame.K_LEFT] or pressed[pygame.K_a]:
+            delta_x -= distance
+        if pressed[pygame.K_RIGHT] or pressed[pygame.K_d]:
+            delta_x += distance
+        if pressed[pygame.K_UP] or pressed[pygame.K_w]:
+            delta_y -= distance
+        if pressed[pygame.K_DOWN] or pressed[pygame.K_s]:
+            delta_y += distance
+        if delta_x != 0.0 or delta_y != 0.0:
+            self._scroll_view(delta_x, delta_y)
+
+    def _scroll_view_by_mouse_drag(self, relative_motion: tuple[int, int]) -> None:
+        delta_x, delta_y = relative_motion
+        self._scroll_view(-delta_x, -delta_y)
+
+    def _scroll_view(self, delta_x: float, delta_y: float) -> None:
+        self.viewport.scroll(
+            delta_x,
+            delta_y,
+            map_width=self.state.pixel_width,
+            map_height=self.state.pixel_height,
+            view_width=self.screen.get_width(),
+            view_height=self.renderer.map_view_height(self.screen),
+        )
+
+    def _clamp_viewport(self) -> None:
+        self.viewport.clamp(
+            map_width=self.state.pixel_width,
+            map_height=self.state.pixel_height,
+            view_width=self.screen.get_width(),
+            view_height=self.renderer.map_view_height(self.screen),
+        )
+
+    def _toggle_zoom(self) -> None:
+        next_zoom = ZOOM_LEVELS[1] if self.viewport.zoom == ZOOM_LEVELS[0] else ZOOM_LEVELS[0]
+        self.viewport.set_zoom_around_screen_point(
+            next_zoom,
+            self.screen.get_width() // 2,
+            self.renderer.map_view_height(self.screen) // 2,
+            map_width=self.state.pixel_width,
+            map_height=self.state.pixel_height,
+            view_width=self.screen.get_width(),
+            view_height=self.renderer.map_view_height(self.screen),
+        )
+        self.status_message = f"Zoom: {next_zoom:g}x"
 
     def _save_map(self) -> None:
         if not self.state.dirty:

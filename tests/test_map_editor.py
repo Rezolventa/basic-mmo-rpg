@@ -15,6 +15,7 @@ from tools.map_editor.map_io import (
     save_editable_map,
 )
 from tools.map_editor.state import EditableMapState
+from tools.map_editor.viewport import Viewport
 
 
 def test_editable_map_state_paints_without_mutating_source_map() -> None:
@@ -225,3 +226,79 @@ def test_create_empty_map_from_template_refuses_existing_file(tmp_path: Path) ->
             width=5,
             height=4,
         )
+
+
+def test_viewport_scrolls_and_clamps_to_map_bounds() -> None:
+    """
+    Проверяет прокрутку viewport-а в пределах большой карты.
+    """
+    viewport = Viewport()
+
+    viewport.scroll(
+        5000,
+        5000,
+        map_width=3200,
+        map_height=3200,
+        view_width=960,
+        view_height=640,
+    )
+
+    assert viewport.offset_x == 2240
+    assert viewport.offset_y == 2560
+
+
+def test_viewport_converts_between_screen_and_world_coordinates() -> None:
+    """
+    Проверяет перевод координат между экраном и картой.
+    """
+    viewport = Viewport(offset_x=320, offset_y=640)
+
+    assert viewport.screen_to_world(10, 20) == (330, 660)
+    assert viewport.world_to_screen(330, 660) == (10, 20)
+
+
+def test_viewport_converts_coordinates_with_zoom() -> None:
+    """
+    Проверяет перевод координат при отдалении карты.
+    """
+    viewport = Viewport(offset_x=320, offset_y=640, zoom=0.5)
+
+    assert viewport.screen_to_world(10, 20) == (340, 680)
+    assert viewport.world_to_screen(340, 680) == (10, 20)
+
+
+def test_viewport_zoom_clamps_using_visible_world_size() -> None:
+    """
+    Проверяет, что clamp учитывает масштаб viewport-а.
+    """
+    viewport = Viewport(offset_x=3000, offset_y=3000, zoom=0.5)
+
+    viewport.clamp(
+        map_width=3200,
+        map_height=3200,
+        view_width=960,
+        view_height=640,
+    )
+
+    assert viewport.offset_x == 1280
+    assert viewport.offset_y == 1920
+
+
+def test_viewport_set_zoom_keeps_anchor_world_position() -> None:
+    """
+    Проверяет, что смена масштаба сохраняет мировую точку под экранным якорем.
+    """
+    viewport = Viewport(offset_x=1000, offset_y=1000, zoom=1.0)
+    anchor_before = viewport.screen_to_world(480, 320)
+
+    viewport.set_zoom_around_screen_point(
+        0.5,
+        480,
+        320,
+        map_width=3200,
+        map_height=3200,
+        view_width=960,
+        view_height=640,
+    )
+
+    assert viewport.screen_to_world(480, 320) == anchor_before
