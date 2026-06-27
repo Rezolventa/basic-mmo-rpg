@@ -102,6 +102,7 @@ class Renderer:
         hovered_attackable_entity_id: str | None = None,
         selected_attack_target_id: str | None = None,
         death_dialog_visible: bool = False,
+        system_message: str | None = None,
     ) -> None:
         """
         Рисует полный игровой кадр на переданной поверхности.
@@ -167,6 +168,8 @@ class Renderer:
             self._draw_inventory(screen, inventory_items, equipment)
         if chat_input_active:
             self._draw_chat_input(screen, chat_input_text)
+        if system_message:
+            self._draw_system_message(screen, system_message)
         if death_dialog_visible:
             self._draw_death_dialog(screen)
 
@@ -218,6 +221,23 @@ class Renderer:
                 world_position = Vec2(tile_x * tile_size, tile_y * tile_size)
                 screen_position = camera.world_to_screen(world_position)
                 screen.blit(surface, screen_position)
+
+    def _draw_system_message(self, screen: pygame.Surface, message: str) -> None:
+        """
+        Рисует важное системное сообщение поверх игрового кадра.
+        """
+        max_width = min(720, screen.get_width() - 24)
+        lines = self._wrap_text(message, max_width - 24, self.small_font)
+        line_height = self.small_font.get_height() + 3
+        panel_height = 16 + len(lines) * line_height
+        panel = pygame.Rect(12, 12, max_width, panel_height)
+        pygame.draw.rect(screen, INPUT_BACKGROUND, panel, border_radius=6)
+        pygame.draw.rect(screen, SLOT_BORDER, panel, width=1, border_radius=6)
+        y = panel.top + 8
+        for line in lines:
+            text_surface = self.small_font.render(line, True, TEXT_COLOR)
+            screen.blit(text_surface, (panel.left + 12, y))
+            y += line_height
 
     def _draw_hovered_tile(
         self,

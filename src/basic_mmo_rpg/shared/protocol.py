@@ -23,6 +23,7 @@ from basic_mmo_rpg.domain.equipment import MAIN_HAND_SLOT, Equipment, validate_e
 from basic_mmo_rpg.domain.geometry import Vec2
 from basic_mmo_rpg.domain.inventory import ItemStack
 from basic_mmo_rpg.domain.movement import MovementIntent, PlayerState
+from basic_mmo_rpg.domain.tiles import TileDefinition, TileMap
 
 
 class ClientMessageType(StrEnum):
@@ -176,11 +177,14 @@ def movement_intent_from_payload(payload: Mapping[str, Any]) -> MovementIntent:
     )
 
 
-def join_request_payload(name: str) -> dict[str, Any]:
+def join_request_payload(name: str, map_fingerprint: str | None = None) -> dict[str, Any]:
     """
     Создает payload запроса входа персонажа в мир.
     """
-    return {"name": name}
+    payload: dict[str, Any] = {"name": name}
+    if map_fingerprint is not None:
+        payload["map_fingerprint"] = map_fingerprint
+    return payload
 
 
 def character_name_from_payload(payload: Mapping[str, Any]) -> str:
@@ -200,6 +204,89 @@ def character_name_from_payload(payload: Mapping[str, Any]) -> str:
         msg = "character name must be at most 24 characters"
         raise ProtocolError(msg)
     return name
+
+
+def map_fingerprint_from_payload(payload: Mapping[str, Any]) -> str | None:
+    """
+    Извлекает необязательный отпечаток карты из join_requested payload-а.
+    """
+    raw_fingerprint = payload.get("map_fingerprint")
+    if raw_fingerprint is None:
+        return None
+    if not isinstance(raw_fingerprint, str) or not raw_fingerprint.strip():
+        msg = "map_fingerprint must be a non-empty string"
+        raise ProtocolError(msg)
+    return raw_fingerprint.strip()
+
+
+def tile_map_to_payload(tile_map: TileMap) -> dict[str, Any]:
+    """
+    Преобразует карту сервера в JSON-готовый payload для клиента.
+    """
+    return {
+        "tile_size": tile_map.tile_size,
+        "spawn": [tile_map.spawn.x, tile_map.spawn.y],
+        "legend": {
+            key: {
+                "name": definition.name,
+                "solid": definition.solid,
+                "color": list(definition.color),
+            }
+            for key, definition in tile_map.definitions.items()
+        },
+        "tiles": ["".join(row) for row in tile_map.tiles],
+        "entities": [entity_to_payload(entity) for entity in tile_map.entities],
+    }
+
+
+def tile_map_from_payload(payload: Mapping[str, Any]) -> TileMap:
+    """
+    Восстанавливает карту клиента из payload-а, присланного сервером.
+    """
+    tile_size = _positive_int_field(payload, "tile_size")
+    spawn = _vec2_from_payload(payload.get("spawn"), "map spawn")
+    raw_legend = payload.get("legend")
+    if not isinstance(raw_legend, Mapping):
+        msg = "map legend must be an object"
+        raise ProtocolError(msg)
+    definitions: dict[str, TileDefinition] = {}
+    for key, value in raw_legend.items():
+        tile_key = _tile_key(key)
+        definition_payload = _map_payload(value, "tile definition")
+        definitions[tile_key] = TileDefinition(
+            key=tile_key,
+            name=_string_field(definition_payload, "name"),
+            solid=_bool_field(definition_payload, "solid"),
+            color=_color_from_payload(definition_payload.get("color")),
+        )
+
+    raw_tiles = payload.get("tiles")
+    if not isinstance(raw_tiles, list):
+        msg = "map tiles must be a list"
+        raise ProtocolError(msg)
+    tiles: list[tuple[str, ...]] = []
+    for row in raw_tiles:
+        if not isinstance(row, str) or not row:
+            msg = "map tile rows must be non-empty strings"
+            raise ProtocolError(msg)
+        tiles.append(tuple(row))
+
+    raw_entities = payload.get("entities", [])
+    if not isinstance(raw_entities, list):
+        msg = "map entities must be a list"
+        raise ProtocolError(msg)
+    entities = tuple(
+        entity_from_payload(_map_payload(entity, "map entity"))
+        for entity in raw_entities
+    )
+
+    return TileMap(
+        tile_size=tile_size,
+        tiles=tuple(tiles),
+        definitions=definitions,
+        spawn=spawn,
+        entities=entities,
+    )
 
 
 def chat_sent_payload(text: str) -> dict[str, Any]:
@@ -919,6 +1006,37 @@ def world_snapshot_payload(
         "players": [player_snapshot_to_payload(player) for player in players],
         "entities": [entity_snapshot_to_payload(entity) for entity in entity_snapshots],
     }
+
+
+def _tile_key(raw_key: object) -> str:
+    if not isinstance(raw_key, str) or not raw_key:
+        msg = "map tile key must be a non-empty string"
+        raise ProtocolError(msg)
+    return raw_key
+
+
+def _map_payload(raw_payload: object, name: str) -> Mapping[str, Any]:
+    if not isinstance(raw_payload, Mapping):
+        msg = f"{name} must be an object"
+        raise ProtocolError(msg)
+    return raw_payload
+
+
+def _color_from_payload(raw_color: object) -> tuple[int, int, int]:
+    if not isinstance(raw_color, list) or len(raw_color) != 3:
+        msg = "map tile color must be a three-item list"
+        raise ProtocolError(msg)
+
+    channels: list[int] = []
+    for channel in raw_color:
+        if not isinstance(channel, int) or isinstance(channel, bool):
+            msg = "map tile color channels must be integers"
+            raise ProtocolError(msg)
+        if channel < 0 or channel > 255:
+            msg = "map tile color channels must be between 0 and 255"
+            raise ProtocolError(msg)
+        channels.append(channel)
+    return channels[0], channels[1], channels[2]
 
 
 def _required_component_payload(

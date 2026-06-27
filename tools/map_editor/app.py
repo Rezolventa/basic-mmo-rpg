@@ -301,7 +301,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--border",
         default="#",
-        help="Tile key for the border of a new map.",
+        help="Deprecated; new maps are bounded by map size instead of border tiles.",
     )
     parser.add_argument(
         "--overwrite",

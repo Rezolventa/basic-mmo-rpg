@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from math import floor
@@ -92,6 +94,19 @@ class TileMap:
         Возвращает размер карты в пикселях.
         """
         return Vec2(self.width * self.tile_size, self.height * self.tile_size)
+
+    @property
+    def fingerprint(self) -> str:
+        """
+        Возвращает короткий стабильный отпечаток содержимого карты для проверки client/server sync.
+        """
+        encoded = json.dumps(
+            _tile_map_fingerprint_payload(self),
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+        return hashlib.sha256(encoded.encode("utf-8")).hexdigest()[:16]
 
     @property
     def solid_entity_rects(self) -> tuple[Rect, ...]:
@@ -208,3 +223,75 @@ class TileMap:
                 if self.is_solid_tile(tile_x, tile_y):
                     return True
         return False
+
+
+def _tile_map_fingerprint_payload(tile_map: TileMap) -> dict[str, object]:
+    return {
+        "tile_size": tile_map.tile_size,
+        "spawn": [tile_map.spawn.x, tile_map.spawn.y],
+        "legend": {
+            key: {
+                "name": definition.name,
+                "solid": definition.solid,
+                "color": list(definition.color),
+            }
+            for key, definition in sorted(tile_map.definitions.items())
+        },
+        "tiles": ["".join(row) for row in tile_map.tiles],
+        "entities": [
+            _entity_fingerprint_payload(entity)
+            for entity in sorted(tile_map.entities, key=lambda item: item.entity_id)
+        ],
+    }
+
+
+def _entity_fingerprint_payload(entity: WorldEntity) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "id": entity.entity_id,
+        "identity": {
+            "kind": entity.identity.kind.value,
+            "name": entity.identity.name,
+            "destroyed_name": entity.identity.destroyed_name,
+            "visual": entity.identity.visual,
+        },
+        "body": {
+            "position": [entity.body.position.x, entity.body.position.y],
+            "size": [entity.body.width, entity.body.height],
+            "solid": entity.body.solid,
+            "visible": entity.body.visible,
+        },
+    }
+    if entity.interaction is not None:
+        payload["interaction"] = {
+            "radius": entity.interaction.radius,
+            "dialogue": entity.interaction.dialogue,
+        }
+    if entity.lootable is not None:
+        payload["lootable"] = {
+            "reward_item_id": entity.lootable.reward_item_id,
+            "reward_quantity": entity.lootable.reward_quantity,
+            "success_text": entity.lootable.success_text,
+            "claim_policy": entity.lootable.claim_policy.value,
+        }
+    if entity.combat is not None:
+        payload["combat"] = {
+            "hit_points": entity.combat.hit_points,
+            "max_hit_points": entity.combat.max_hit_points,
+            "attackable": entity.combat.attackable,
+            "destroyed": entity.combat.destroyed,
+            "min_damage": entity.combat.min_damage,
+            "max_damage": entity.combat.max_damage,
+            "hit_chance": entity.combat.hit_chance,
+            "attack_distance": entity.combat.attack_distance,
+            "swing_cooldown_seconds": entity.combat.swing_cooldown_seconds,
+        }
+    if entity.respawn is not None:
+        payload["respawn"] = {
+            "seconds": entity.respawn.seconds,
+            "remaining": entity.respawn.remaining,
+        }
+    if entity.gate is not None:
+        payload["gate"] = {"is_open": entity.gate.is_open}
+    if entity.shearable is not None:
+        payload["shearable"] = {"has_wool": entity.shearable.has_wool}
+    return payload

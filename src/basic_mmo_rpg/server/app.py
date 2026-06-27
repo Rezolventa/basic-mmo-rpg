@@ -52,7 +52,9 @@ from basic_mmo_rpg.shared.protocol import (
     interaction_result_payload,
     interaction_target_from_payload,
     inventory_updated_payload,
+    map_fingerprint_from_payload,
     movement_intent_from_payload,
+    tile_map_to_payload,
 )
 from basic_mmo_rpg.storage.characters import CharacterRepository
 from basic_mmo_rpg.storage.map_loader import load_tile_map
@@ -235,6 +237,8 @@ class MultiplayerServer:
                     payload={
                         "player_id": session.player_id,
                         "name": session.character_name,
+                        "map_fingerprint": self.world.tile_map.fingerprint,
+                        "map": tile_map_to_payload(self.world.tile_map),
                     },
                 ),
             )
@@ -260,7 +264,19 @@ class MultiplayerServer:
             if message.type != ClientMessageType.JOIN_REQUESTED:
                 msg = "first message must be join_requested"
                 raise ProtocolError(msg)
-            return character_name_from_payload(message.payload)
+            character_name = character_name_from_payload(message.payload)
+            client_map_fingerprint = map_fingerprint_from_payload(message.payload)
+            if (
+                client_map_fingerprint is not None
+                and client_map_fingerprint != self.world.tile_map.fingerprint
+            ):
+                logger.warning(
+                    "Client map differs from server map: name=%s client=%s server=%s",
+                    character_name,
+                    client_map_fingerprint,
+                    self.world.tile_map.fingerprint,
+                )
+            return character_name
         except (ProtocolError, UnicodeDecodeError, TimeoutError) as exc:
             await self._send_protocol_error(websocket, str(exc))
             logger.warning("Join rejected: %s", exc)
@@ -1675,6 +1691,14 @@ async def async_main(args: argparse.Namespace) -> None:
     """
     configure_logging()
     tile_map = load_tile_map(args.map)
+    logger.info(
+        "Loaded map: path=%s size=%sx%s entities=%s fingerprint=%s",
+        args.map,
+        tile_map.width,
+        tile_map.height,
+        len(tile_map.entities),
+        tile_map.fingerprint,
+    )
     character_repository = CharacterRepository(args.database)
     character_repository.initialize()
     server = MultiplayerServer(

@@ -37,6 +37,7 @@ class NetworkClient:
         self,
         server_url: str,
         character_name: str,
+        map_fingerprint: str | None = None,
         send_rate: float = 30.0,
         reconnect_delay: float = 1.0,
     ) -> None:
@@ -45,6 +46,7 @@ class NetworkClient:
         """
         self.server_url = server_url
         self.character_name = character_name
+        self.map_fingerprint = map_fingerprint
         self.send_rate = send_rate
         self.reconnect_delay = reconnect_delay
         self._incoming: queue.Queue[ProtocolMessage] = queue.Queue()
@@ -218,7 +220,10 @@ class NetworkClient:
                         encode_message(
                             ProtocolMessage(
                                 type=ClientMessageType.JOIN_REQUESTED,
-                                payload=join_request_payload(self.character_name),
+                                payload=join_request_payload(
+                                    self.character_name,
+                                    map_fingerprint=self.map_fingerprint,
+                                ),
                             )
                         )
                     )
@@ -303,4 +308,7 @@ class NetworkClient:
         """
         if message.type != ServerMessageType.ERROR:
             return False
-        return message.payload.get("message") == "character connected elsewhere"
+        error_message = message.payload.get("message")
+        return error_message == "character connected elsewhere" or (
+            isinstance(error_message, str) and error_message.startswith("map mismatch:")
+        )

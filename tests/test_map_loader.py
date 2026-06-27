@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import copy
+import json
 from pathlib import Path
 
 from basic_mmo_rpg.domain.entities import EntityKind
 from basic_mmo_rpg.domain.geometry import Rect, Vec2
-from basic_mmo_rpg.storage.map_loader import load_tile_map
+from basic_mmo_rpg.storage.map_loader import load_tile_map, tile_map_from_dict
 
 
 def test_starter_map_loads() -> None:
@@ -90,3 +92,19 @@ def test_rect_outside_map_is_blocked() -> None:
     assert tile_map.is_rect_blocked(Rect(-1, 32, 20, 20))
     assert tile_map.is_rect_blocked(Rect(32, -1, 20, 20))
     assert tile_map.is_rect_blocked(Rect(tile_map.pixel_size.x - 10, 32, 20, 20))
+
+
+def test_map_fingerprint_changes_when_entity_position_changes() -> None:
+    """
+    Проверяет, что отпечаток карты учитывает позиции объектов мира.
+    """
+    source_path = Path("assets/maps/starter_map.json")
+    raw_map = json.loads(source_path.read_text(encoding="utf-8"))
+    moved_map = copy.deepcopy(raw_map)
+    moved_map["entities"][0]["components"]["body"]["position"][0] += 32
+
+    original_fingerprint = tile_map_from_dict(raw_map).fingerprint
+    moved_fingerprint = tile_map_from_dict(moved_map).fingerprint
+
+    assert len(original_fingerprint) == 16
+    assert original_fingerprint != moved_fingerprint

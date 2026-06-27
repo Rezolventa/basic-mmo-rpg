@@ -60,6 +60,19 @@ def test_network_client_stops_reconnect_after_duplicate_name_kick() -> None:
     assert network_client._is_terminal_server_error(message) is True
 
 
+def test_network_client_stops_reconnect_after_map_mismatch() -> None:
+    """
+    Проверяет, что mismatch карты не запускает бесконечное переподключение.
+    """
+    network_client = NetworkClient("ws://127.0.0.1:1", character_name="Alice")
+    message = ProtocolMessage(
+        type=ServerMessageType.ERROR,
+        payload={"message": "map mismatch: client=aaa server=bbb"},
+    )
+
+    assert network_client._is_terminal_server_error(message) is True
+
+
 async def _network_client_smoke(tmp_path: Path) -> None:
     """
     Запускает сервер и проверяет обмен сообщениями через NetworkClient.

@@ -443,6 +443,15 @@ def test_server_cleans_up_player_when_initial_send_fails(tmp_path: Path) -> None
     asyncio.run(_initial_send_failure_smoke(tmp_path))
 
 
+def test_websocket_server_sends_map_to_client_with_different_local_map(
+    tmp_path: Path,
+) -> None:
+    """
+    Проверяет, что сервер принимает клиента и отдает ему authoritative-карту.
+    """
+    asyncio.run(_server_map_sent_to_mismatched_client_smoke(tmp_path))
+
+
 def test_websocket_server_restores_saved_position_on_reconnect(tmp_path: Path) -> None:
     """
     Проверяет, что повторный вход тем же именем восстанавливает сохраненную позицию.
@@ -783,6 +792,20 @@ async def _initial_send_failure_smoke(tmp_path: Path) -> None:
 
     assert multiplayer_server.world.players == {}
     assert multiplayer_server.connections == {}
+
+
+async def _server_map_sent_to_mismatched_client_smoke(tmp_path: Path) -> None:
+    """
+    Запускает сервер и проверяет handshake с authoritative-картой сервера.
+    """
+    multiplayer_server = _server_for_test(tmp_path)
+
+    async with _running_test_server(multiplayer_server) as uri, connect(uri) as client:
+        await _send_join(client, "Alice", map_fingerprint="definitely-not-this-map")
+        player_id = await _recv_player_id(client)
+        players = await _recv_snapshot(client, expected_players=1)
+
+    assert _find_player(players, player_id).position == multiplayer_server.world.tile_map.spawn
 
 
 async def _reconnect_restores_position_smoke(tmp_path: Path) -> None:
@@ -2514,7 +2537,11 @@ class _RecordingWebSocket:
         self.sent_messages.append(message)
 
 
-async def _send_join(websocket: object, name: str) -> None:
+async def _send_join(
+    websocket: object,
+    name: str,
+    map_fingerprint: str | None = None,
+) -> None:
     """
     Отправляет join_requested для тестового websocket-клиента.
     """
@@ -2522,7 +2549,7 @@ async def _send_join(websocket: object, name: str) -> None:
         encode_message(
             ProtocolMessage(
                 type=ClientMessageType.JOIN_REQUESTED,
-                payload=join_request_payload(name),
+                payload=join_request_payload(name, map_fingerprint=map_fingerprint),
             )
         )
     )
@@ -2534,6 +2561,8 @@ async def _recv_player_id(websocket: object) -> str:
     """
     message = decode_message(await websocket.recv())
     assert message.type == ServerMessageType.CONNECTION_ACCEPTED
+    assert isinstance(message.payload.get("map_fingerprint"), str)
+    assert isinstance(message.payload.get("map"), dict)
     player_id = message.payload.get("player_id")
     assert isinstance(player_id, str)
     return player_id

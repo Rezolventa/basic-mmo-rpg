@@ -198,17 +198,39 @@ def test_create_empty_map_from_template_writes_valid_map(tmp_path: Path) -> None
         width=5,
         height=4,
     )
+    source_document = load_editable_map(Path("assets/maps/starter_map.json"))
     document = load_editable_map(target_path)
 
     assert raw_map["tiles"] == [
-        "#####",
-        "#...#",
-        "#...#",
-        "#####",
+        ".....",
+        ".....",
+        ".....",
+        ".....",
     ]
-    assert raw_map["entities"] == []
+    expected_entity_ids = {
+        entity["id"]
+        for entity in source_document.raw_map["entities"]
+        if entity["components"]["identity"]["kind"] != "gate"
+        and "gate" not in entity["components"]
+    }
+    entity_ids = {entity["id"] for entity in raw_map["entities"]}
+    assert entity_ids == expected_entity_ids
+    assert "gate-sheep-pen" not in entity_ids
+    entity_positions = {
+        entity["id"]: entity["components"]["body"]["position"]
+        for entity in raw_map["entities"]
+    }
+    assert entity_positions["npc-funday"] == [0, 0]
+    assert entity_positions["npc-jack-lumber"] == [32, 0]
+    assert entity_positions["npc-kopai"] == [64, 0]
+    assert entity_positions["npc-fogu"] == [96, 0]
+    assert entity_positions["creature-barbara"] == [128, 0]
+    assert entity_positions["object-player-respawn"] == [0, 32]
+    assert entity_positions["creature-boar"] == [32, 32]
+    assert entity_positions["lootable-training-dummy"] == [64, 32]
     assert document.state.width == 5
     assert document.state.height == 4
+    assert document.state.tile_at(0, 0) == "."
     assert document.state.tile_at(1, 1) == "."
 
 

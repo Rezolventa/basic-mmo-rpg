@@ -81,7 +81,7 @@ def create_empty_map_from_template(
     overwrite: bool = False,
 ) -> dict[str, Any]:
     """
-    Создает новую пустую карту указанного размера на основе legend из шаблона.
+    Создает новую карту указанного размера на основе legend и entities из шаблона.
     """
     if width < 3 or height < 3:
         msg = "map width and height must be at least 3"
@@ -98,9 +98,10 @@ def create_empty_map_from_template(
     if fill_tile not in legend:
         msg = f"unknown fill tile key: {fill_tile!r}"
         raise ValueError(msg)
-    if border_tile not in legend:
-        msg = f"unknown border tile key: {border_tile!r}"
+    if len(fill_tile) != 1:
+        msg = "fill tile key must be one character"
         raise ValueError(msg)
+    _ = border_tile
 
     tile_size = int(template_map.get("tile_size", 32))
     raw_map: dict[str, Any] = {
@@ -111,9 +112,13 @@ def create_empty_map_from_template(
             width=width,
             height=height,
             fill_tile=fill_tile,
-            border_tile=border_tile,
         ),
-        "entities": [],
+        "entities": _entities_for_new_map(
+            template_map=template_map,
+            width=width,
+            height=height,
+            tile_size=tile_size,
+        ),
     }
     tile_map_from_dict(raw_map)
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -202,18 +207,80 @@ def _empty_tile_rows(
     width: int,
     height: int,
     fill_tile: str,
-    border_tile: str,
 ) -> list[str]:
     """
-    Создает строки тайлов для новой карты с solid-периметром.
+    Создает строки тайлов для новой карты без дополнительной стены по периметру.
     """
-    rows: list[str] = []
-    for tile_y in range(height):
-        row = "".join(
-            border_tile
-            if tile_x == 0 or tile_y == 0 or tile_x == width - 1 or tile_y == height - 1
-            else fill_tile
-            for tile_x in range(width)
-        )
-        rows.append(row)
-    return rows
+    return [fill_tile * width for _ in range(height)]
+
+
+def _entities_for_new_map(
+    template_map: dict[str, Any],
+    width: int,
+    height: int,
+    tile_size: int,
+) -> list[dict[str, Any]]:
+    copied_entities: list[dict[str, Any]] = []
+    columns = max(1, width)
+    for raw_entity in _raw_entities(template_map):
+        if _is_gate_entity(raw_entity):
+            continue
+
+        entity = copy.deepcopy(raw_entity)
+        entity_width, entity_height = _entity_size(entity)
+        entity_index = len(copied_entities)
+        tile_x = entity_index % columns
+        tile_y = entity_index // columns
+        x = min(tile_x * tile_size, max(0, width * tile_size - entity_width))
+        y = min(tile_y * tile_size, max(0, height * tile_size - entity_height))
+        _set_entity_position(entity, [x, y])
+        copied_entities.append(entity)
+    return copied_entities
+
+
+def _is_gate_entity(entity: dict[str, Any]) -> bool:
+    return _entity_kind(entity) == "gate" or _entity_component(entity, "gate") is not None
+
+
+def _entity_kind(entity: dict[str, Any]) -> str:
+    identity = _entity_component(entity, "identity")
+    if identity is not None:
+        value = identity.get("kind")
+        return value if isinstance(value, str) else ""
+    value = entity.get("kind")
+    return value if isinstance(value, str) else ""
+
+
+def _entity_size(entity: dict[str, Any]) -> tuple[int, int]:
+    raw_size = _entity_body_field(entity, "size")
+    if (
+        isinstance(raw_size, list)
+        and len(raw_size) == 2
+        and isinstance(raw_size[0], int)
+        and isinstance(raw_size[1], int)
+    ):
+        return raw_size[0], raw_size[1]
+    return 22, 28
+
+
+def _set_entity_position(entity: dict[str, Any], position: list[int]) -> None:
+    body = _entity_component(entity, "body")
+    if body is not None:
+        body["position"] = position
+        return
+    entity["position"] = position
+
+
+def _entity_body_field(entity: dict[str, Any], key: str) -> object:
+    body = _entity_component(entity, "body")
+    if body is not None:
+        return body.get(key)
+    return entity.get(key)
+
+
+def _entity_component(entity: dict[str, Any], key: str) -> dict[str, Any] | None:
+    components = entity.get("components")
+    if not isinstance(components, dict):
+        return None
+    component = components.get(key)
+    return component if isinstance(component, dict) else None

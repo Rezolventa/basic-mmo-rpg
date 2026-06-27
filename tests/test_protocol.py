@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from basic_mmo_rpg.domain.entities import (
@@ -44,14 +46,18 @@ from basic_mmo_rpg.shared.protocol import (
     inventory_items_from_payload,
     inventory_updated_payload,
     join_request_payload,
+    map_fingerprint_from_payload,
     movement_intent_from_payload,
     movement_intent_to_payload,
     player_snapshots_from_payload,
     players_from_snapshot_payload,
     respawn_requested_payload,
+    tile_map_from_payload,
+    tile_map_to_payload,
     unequip_item_requested_payload,
     world_snapshot_payload,
 )
+from basic_mmo_rpg.storage.map_loader import load_tile_map
 
 
 def test_protocol_message_round_trips_through_json() -> None:
@@ -169,6 +175,21 @@ def test_world_snapshot_payload_round_trips_dynamic_entity_state() -> None:
     assert entities_from_snapshot_payload(payload) == [gate, sheep, lootable]
 
 
+def test_tile_map_payload_round_trips_server_map() -> None:
+    """
+    Проверяет, что серверная карта передается клиенту через протокол.
+    """
+    tile_map = load_tile_map(Path("assets/maps/starter_map.json"))
+
+    restored = tile_map_from_payload(tile_map_to_payload(tile_map))
+
+    assert restored.width == tile_map.width
+    assert restored.height == tile_map.height
+    assert restored.tile_size == tile_map.tile_size
+    assert restored.fingerprint == tile_map.fingerprint
+    assert len(restored.entities) == len(tile_map.entities)
+
+
 def test_interaction_target_payload_is_validated() -> None:
     """
     Проверяет payload запроса взаимодействия с объектом мира.
@@ -261,6 +282,19 @@ def test_character_name_payload_is_trimmed_and_limited() -> None:
         character_name_from_payload(join_request_payload(""))
     with pytest.raises(ProtocolError):
         character_name_from_payload(join_request_payload("A" * 25))
+
+
+def test_join_payload_can_include_map_fingerprint() -> None:
+    """
+    Проверяет необязательный отпечаток карты в запросе входа.
+    """
+    payload = join_request_payload("Alice", map_fingerprint="abc123")
+
+    assert payload["map_fingerprint"] == "abc123"
+    assert map_fingerprint_from_payload(payload) == "abc123"
+    assert map_fingerprint_from_payload(join_request_payload("Alice")) is None
+    with pytest.raises(ProtocolError):
+        map_fingerprint_from_payload({"map_fingerprint": ""})
 
 
 def test_chat_text_payload_is_trimmed_and_limited() -> None:

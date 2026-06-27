@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import time
 from collections import deque
+from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
 
@@ -24,6 +25,7 @@ from basic_mmo_rpg.shared.protocol import (
     equipment_from_payload,
     inventory_items_from_payload,
     player_snapshots_from_payload,
+    tile_map_from_payload,
 )
 from basic_mmo_rpg.storage.map_loader import load_tile_map
 
@@ -132,6 +134,7 @@ class GameClient:
         self.screen = pygame.display.set_mode(WINDOW_SIZE, pygame.RESIZABLE)
         self.clock = pygame.time.Clock()
         self.tile_map = load_tile_map(map_path)
+        self.map_fingerprint = self.tile_map.fingerprint
         self.local_character_name = character_name
         self.player = PlayerState(
             entity_id=PLAYER_ID,
@@ -161,12 +164,17 @@ class GameClient:
         self.selected_attack_target_id: str | None = None
         self.death_dialog_visible = False
         self.chat_lines: deque[ChatLine] = deque(maxlen=MAX_CHAT_LOG_MESSAGES)
+        self.system_message: str | None = None
         self.speech_bubbles: dict[str, TimedText] = {}
         self.entity_speech_bubbles: dict[str, TimedText] = {}
         self.name_tags: dict[str, TimedText] = {}
         self.camera = Camera()
         self.renderer = Renderer(self.tile_map)
-        self.network_client = NetworkClient(server_url, character_name=self.local_character_name)
+        self.network_client = NetworkClient(
+            server_url,
+            character_name=self.local_character_name,
+            map_fingerprint=self.map_fingerprint,
+        )
         self.local_player_id = None
         self.network_client.start()
 
@@ -242,6 +250,7 @@ class GameClient:
             hovered_attackable_entity_id=self.hovered_attackable_entity_id,
             selected_attack_target_id=self.selected_attack_target_id,
             death_dialog_visible=getattr(self, "death_dialog_visible", False),
+            system_message=self.system_message,
         )
         pygame.display.flip()
 
@@ -402,6 +411,8 @@ class GameClient:
         """
         for message in self.network_client.drain_messages():
             if message.type == ServerMessageType.CONNECTION_ACCEPTED:
+                if not self._apply_server_map(message.payload):
+                    continue
                 player_id = message.payload.get("player_id")
                 if isinstance(player_id, str):
                     self.local_player_id = player_id
@@ -428,6 +439,51 @@ class GameClient:
                     self.player_names.pop(player_id, None)
                     self.speech_bubbles.pop(player_id, None)
                     self.name_tags.pop(player_id, None)
+            elif message.type == ServerMessageType.ERROR:
+                error_message = message.payload.get("message")
+                if isinstance(error_message, str):
+                    self._show_system_message(error_message)
+
+    def _apply_server_map(self, payload: dict[str, object]) -> bool:
+        """
+        Принимает карту сервера как единственный источник истины для online-мира.
+        """
+        raw_map = payload.get("map")
+        if not isinstance(raw_map, Mapping):
+            self._show_system_message("Server did not send map data; restart the server.")
+            self.network_client.stop()
+            return False
+        try:
+            server_tile_map = tile_map_from_payload(raw_map)
+        except (ProtocolError, ValueError) as exc:
+            self._show_system_message(f"Server sent invalid map data: {exc}")
+            self.network_client.stop()
+            return False
+
+        self.tile_map = server_tile_map
+        self.map_fingerprint = server_tile_map.fingerprint
+        self.renderer = Renderer(self.tile_map)
+        self.world_entity_views = {
+            entity.entity_id: WorldEntityView(rendered=entity, target=entity)
+            for entity in self.tile_map.entities
+        }
+        self._sync_rendered_world_entities()
+        self.system_message = None
+        return True
+
+    def _show_system_message(self, text: str) -> None:
+        """
+        Показывает важное системное сообщение поверх игры и добавляет его в журнал.
+        """
+        self.system_message = text
+        self.chat_lines.append(
+            ChatLine(
+                player_id="system",
+                name="System",
+                text=text,
+                created_at=time.time(),
+            )
+        )
 
     def _apply_world_snapshot(self, payload: dict[str, object]) -> None:
         """
