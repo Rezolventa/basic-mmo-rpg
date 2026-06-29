@@ -22,6 +22,10 @@ def test_starter_map_loads() -> None:
     assert tile_map.tile_size == 32
     assert tile_map.is_solid_tile(0, 0)
     assert not tile_map.is_solid_tile(2, 2)
+    wooden_floor = tile_map.definitions["W"]
+    assert wooden_floor.name == "wooden floor"
+    assert not wooden_floor.solid
+    assert wooden_floor.color == (138, 91, 52)
     entities = {entity.entity_id: entity for entity in tile_map.entities}
     assert len(entities) == 9
     assert entities["npc-funday"].kind == EntityKind.NPC

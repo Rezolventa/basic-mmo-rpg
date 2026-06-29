@@ -72,3 +72,21 @@ def test_player_cannot_move_into_extra_blocker() -> None:
     moved = move_player(player, MovementIntent(right=True), 1.0, tile_map, [blocker])
 
     assert moved.position == player.position
+
+
+def test_busy_player_does_not_move() -> None:
+    """
+    Проверяет, что занятый персонаж игнорирует намерение движения.
+    """
+    tile_map = tile_map_from_dict(_test_map())
+    player = PlayerState(
+        entity_id="p1",
+        position=Vec2(96, 36),
+        speed=64,
+        busy=True,
+        action="gathering",
+    )
+
+    moved = move_player(player, MovementIntent(right=True), 0.5, tile_map)
+
+    assert moved == player

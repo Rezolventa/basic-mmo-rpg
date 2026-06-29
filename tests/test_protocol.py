@@ -20,6 +20,8 @@ from basic_mmo_rpg.domain.geometry import Vec2
 from basic_mmo_rpg.domain.inventory import FISHING_ROD_ITEM_ID, ItemStack
 from basic_mmo_rpg.domain.movement import MovementIntent, PlayerState
 from basic_mmo_rpg.shared.protocol import (
+    INTERACTION_PRESENTATION_BUBBLE,
+    INTERACTION_PRESENTATION_FEED,
     ClientMessageType,
     EntitySnapshot,
     InteractionTarget,
@@ -42,6 +44,8 @@ from basic_mmo_rpg.shared.protocol import (
     equipment_updated_payload,
     interact_requested_payload,
     interact_tile_requested_payload,
+    interaction_presentation_from_payload,
+    interaction_result_payload,
     interaction_target_from_payload,
     inventory_items_from_payload,
     inventory_updated_payload,
@@ -87,7 +91,14 @@ def test_world_snapshot_payload_round_trips_players() -> None:
     """
     Проверяет, что игроки сериализуются и восстанавливаются из payload snapshot-а.
     """
-    player = PlayerState(entity_id="p1", position=Vec2(10, 20), speed=123, hit_points=12)
+    player = PlayerState(
+        entity_id="p1",
+        position=Vec2(10, 20),
+        speed=123,
+        hit_points=12,
+        busy=True,
+        action="gathering",
+    )
     snapshot = PlayerSnapshot(state=player, name="Alice")
 
     payload = world_snapshot_payload([snapshot])
@@ -96,6 +107,30 @@ def test_world_snapshot_payload_round_trips_players() -> None:
 
     assert decoded_players == [player]
     assert decoded_snapshots == [snapshot]
+
+
+def test_interaction_result_payload_carries_presentation() -> None:
+    """
+    Проверяет, что результат взаимодействия явно сообщает способ отображения.
+    """
+    default_payload = interaction_result_payload(
+        actor_id="p1",
+        target_id="p1",
+        target_name="Alice",
+        text="Hello",
+        created_at=123.0,
+    )
+    feed_payload = interaction_result_payload(
+        actor_id="p1",
+        target_id="p1",
+        target_name="Alice",
+        text="Hello",
+        created_at=123.0,
+        presentation=INTERACTION_PRESENTATION_FEED,
+    )
+
+    assert interaction_presentation_from_payload(default_payload) == INTERACTION_PRESENTATION_BUBBLE
+    assert interaction_presentation_from_payload(feed_payload) == INTERACTION_PRESENTATION_FEED
 
 
 def test_world_snapshot_payload_round_trips_entities() -> None:

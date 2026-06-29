@@ -32,6 +32,7 @@ from basic_mmo_rpg.domain.movement import MovementIntent, PlayerState
 from basic_mmo_rpg.server.app import MultiplayerServer, PlayerSession
 from basic_mmo_rpg.server.world import MultiplayerWorld
 from basic_mmo_rpg.shared.protocol import (
+    INTERACTION_PRESENTATION_FEED,
     ClientMessageType,
     ProtocolMessage,
     ServerMessageType,
@@ -556,7 +557,7 @@ def test_websocket_server_ignores_interaction_when_target_is_too_far(tmp_path: P
 
 def test_websocket_server_fishing_requires_rod(tmp_path: Path) -> None:
     """
-    Проверяет, что рыбалка без удочки показывает только локальный пузырь.
+    Проверяет, что рыбалка без удочки показывает локальное feed-сообщение.
     """
     asyncio.run(_fishing_requires_rod_smoke(tmp_path))
 
@@ -619,7 +620,7 @@ def test_websocket_server_jack_lumber_grants_axe(tmp_path: Path) -> None:
 
 def test_websocket_server_lumberjacking_requires_axe(tmp_path: Path) -> None:
     """
-    Проверяет, что рубка без топора показывает только локальный пузырь.
+    Проверяет, что рубка без топора показывает локальное feed-сообщение.
     """
     asyncio.run(_lumberjacking_requires_axe_smoke(tmp_path))
 
@@ -631,13 +632,13 @@ def test_websocket_server_lumberjacking_success_adds_log(tmp_path: Path) -> None
     asyncio.run(_lumberjacking_success_smoke(tmp_path))
 
 
-def test_websocket_server_gathering_cooldown_is_shared_between_resources(
+def test_websocket_server_gathering_busy_state_blocks_controls(
     tmp_path: Path,
 ) -> None:
     """
-    Проверяет, что рыбалка ставит cooldown и для немедленной рубки дерева.
+    Проверяет, что подготовка добычи блокирует управление персонажем.
     """
-    asyncio.run(_gathering_shared_cooldown_smoke(tmp_path))
+    asyncio.run(_gathering_busy_state_blocks_controls_smoke(tmp_path))
 
 
 def test_websocket_server_jack_lumber_exchanges_logs_for_gold(tmp_path: Path) -> None:
@@ -663,7 +664,7 @@ def test_websocket_server_kopai_grants_pickaxe(tmp_path: Path) -> None:
 
 def test_websocket_server_mining_requires_pickaxe(tmp_path: Path) -> None:
     """
-    Проверяет, что добыча камня без кирки показывает только локальный пузырь.
+    Проверяет, что добыча камня без кирки показывает локальное feed-сообщение.
     """
     asyncio.run(_mining_requires_pickaxe_smoke(tmp_path))
 
@@ -1434,6 +1435,7 @@ async def _fishing_requires_rod_smoke(tmp_path: Path) -> None:
     assert message.payload["target_name"] == "Alice"
     assert message.payload["text"] == "Нужна удочка в руке"
     assert message.payload["add_to_journal"] is False
+    assert message.payload["presentation"] == INTERACTION_PRESENTATION_FEED
     assert multiplayer_server.character_repository.load_inventory("Alice") == []
 
 
@@ -1465,6 +1467,7 @@ async def _fishing_requires_equipped_rod_smoke(tmp_path: Path) -> None:
     assert message.payload["target_name"] == "Alice"
     assert message.payload["text"] == "Нужна удочка в руке"
     assert message.payload["add_to_journal"] is False
+    assert message.payload["presentation"] == INTERACTION_PRESENTATION_FEED
     assert multiplayer_server.character_repository.item_quantity("Alice", FISH_ITEM_ID) == 0
 
 
@@ -1509,6 +1512,7 @@ async def _fishing_success_smoke(tmp_path: Path) -> None:
     assert result_message.payload["target_id"] == first_id
     assert result_message.payload["text"] == "Вы поймали рыбу"
     assert result_message.payload["add_to_journal"] is True
+    assert result_message.payload["presentation"] == INTERACTION_PRESENTATION_FEED
     assert quantities[FISHING_ROD_ITEM_ID] == 1
     assert quantities[FISH_ITEM_ID] == 1
     assert multiplayer_server.character_repository.item_quantity("Alice", FISH_ITEM_ID) == 1
@@ -1550,6 +1554,7 @@ async def _fishing_failure_smoke(tmp_path: Path) -> None:
     assert result_message.payload["target_id"] == first_id
     assert result_message.payload["text"] == "Рыба сорвалась"
     assert result_message.payload["add_to_journal"] is True
+    assert result_message.payload["presentation"] == INTERACTION_PRESENTATION_FEED
     assert multiplayer_server.character_repository.item_quantity("Alice", FISH_ITEM_ID) == 0
 
 
@@ -1690,6 +1695,7 @@ async def _fishing_stack_overflow_smoke(tmp_path: Path) -> None:
     assert result_message.payload["actor_id"] == first_id
     assert result_message.payload["target_id"] == first_id
     assert result_message.payload["text"] == "Инвентарь полон"
+    assert result_message.payload["presentation"] == INTERACTION_PRESENTATION_FEED
     assert multiplayer_server.character_repository.item_quantity("Alice", FISH_ITEM_ID) == 999
 
 
@@ -1792,6 +1798,7 @@ async def _lumberjacking_requires_axe_smoke(tmp_path: Path) -> None:
     assert message.payload["target_name"] == "Alice"
     assert message.payload["text"] == "Нужен топор в руке"
     assert message.payload["add_to_journal"] is False
+    assert message.payload["presentation"] == INTERACTION_PRESENTATION_FEED
     assert multiplayer_server.character_repository.load_inventory("Alice") == []
 
 
@@ -1832,14 +1839,15 @@ async def _lumberjacking_success_smoke(tmp_path: Path) -> None:
     assert result_message.payload["target_id"] == first_id
     assert result_message.payload["text"] == "Вы нарубили древесины"
     assert result_message.payload["add_to_journal"] is True
+    assert result_message.payload["presentation"] == INTERACTION_PRESENTATION_FEED
     assert quantities[LUMBER_AXE_ITEM_ID] == 1
     assert quantities[LOG_ITEM_ID] == 1
     assert multiplayer_server.character_repository.item_quantity("Alice", LOG_ITEM_ID) == 1
 
 
-async def _gathering_shared_cooldown_smoke(tmp_path: Path) -> None:
+async def _gathering_busy_state_blocks_controls_smoke(tmp_path: Path) -> None:
     """
-    Запускает сервер и проверяет общий cooldown между рыбалкой и рубкой.
+    Запускает сервер и проверяет блокировку команд на время добычи.
     """
     multiplayer_server = _server_for_test(
         tmp_path,
@@ -1855,6 +1863,7 @@ async def _gathering_shared_cooldown_smoke(tmp_path: Path) -> None:
         await _send_join(first_client, "Alice")
         first_id = await _recv_player_id(first_client)
         await _recv_message_type(first_client, ServerMessageType.INVENTORY_UPDATED)
+        await _recv_message_type(first_client, ServerMessageType.EQUIPMENT_UPDATED)
 
         await first_client.send(
             encode_message(
@@ -1864,13 +1873,20 @@ async def _gathering_shared_cooldown_smoke(tmp_path: Path) -> None:
                 )
             )
         )
-        await _recv_message_type(first_client, ServerMessageType.INVENTORY_UPDATED)
-        fishing_result = await _recv_message_type(
+        busy_player = await _recv_player_state_matching(
             first_client,
-            ServerMessageType.INTERACTION_RESULT,
+            first_id,
+            lambda player: player.busy and player.action == "gathering",
         )
-        multiplayer_server.character_repository.equip_item("Alice", LUMBER_AXE_ITEM_ID)
 
+        await first_client.send(
+            encode_message(
+                ProtocolMessage(
+                    type=ClientMessageType.EQUIP_ITEM_REQUESTED,
+                    payload=equip_item_requested_payload(LUMBER_AXE_ITEM_ID),
+                )
+            )
+        )
         await first_client.send(
             encode_message(
                 ProtocolMessage(
@@ -1879,10 +1895,26 @@ async def _gathering_shared_cooldown_smoke(tmp_path: Path) -> None:
                 )
             )
         )
+        await _assert_no_message_type(first_client, ServerMessageType.EQUIPMENT_UPDATED)
         await _assert_no_message_type(first_client, ServerMessageType.INTERACTION_RESULT)
+        inventory_message = await _recv_message_type(
+            first_client,
+            ServerMessageType.INVENTORY_UPDATED,
+        )
+        fishing_result = await _recv_message_type(
+            first_client,
+            ServerMessageType.INTERACTION_RESULT,
+        )
 
+    inventory = inventory_items_from_payload(inventory_message.payload)
+    quantities = {item.item_id: item.quantity for item in inventory}
+    equipment = multiplayer_server.character_repository.load_equipment("Alice")
+    assert busy_player.busy is True
     assert fishing_result.payload["actor_id"] == first_id
     assert fishing_result.payload["text"] == "Вы поймали рыбу"
+    assert fishing_result.payload["presentation"] == INTERACTION_PRESENTATION_FEED
+    assert quantities[FISH_ITEM_ID] == 1
+    assert equipment.main_hand == FISHING_ROD_ITEM_ID
     assert multiplayer_server.character_repository.item_quantity("Alice", FISH_ITEM_ID) == 1
     assert multiplayer_server.character_repository.item_quantity("Alice", LOG_ITEM_ID) == 0
 
@@ -2043,6 +2075,7 @@ async def _mining_requires_pickaxe_smoke(tmp_path: Path) -> None:
     assert message.payload["target_name"] == "Alice"
     assert message.payload["text"] == "Нужна кирка в руке"
     assert message.payload["add_to_journal"] is False
+    assert message.payload["presentation"] == INTERACTION_PRESENTATION_FEED
     assert multiplayer_server.character_repository.load_inventory("Alice") == []
 
 
@@ -2087,6 +2120,7 @@ async def _mining_success_smoke(tmp_path: Path) -> None:
     assert result_message.payload["target_id"] == first_id
     assert result_message.payload["text"] == "Вы добыли камень"
     assert result_message.payload["add_to_journal"] is True
+    assert result_message.payload["presentation"] == INTERACTION_PRESENTATION_FEED
     assert quantities[PICKAXE_ITEM_ID] == 1
     assert quantities[STONE_ITEM_ID] == 1
     assert multiplayer_server.character_repository.item_quantity("Alice", STONE_ITEM_ID) == 1
@@ -2128,6 +2162,7 @@ async def _mining_failure_smoke(tmp_path: Path) -> None:
     assert result_message.payload["target_id"] == first_id
     assert result_message.payload["text"] == "Не удалось добыть камень"
     assert result_message.payload["add_to_journal"] is True
+    assert result_message.payload["presentation"] == INTERACTION_PRESENTATION_FEED
     assert multiplayer_server.character_repository.item_quantity("Alice", STONE_ITEM_ID) == 0
 
 
@@ -2572,7 +2607,7 @@ async def _recv_snapshot(websocket: object, expected_players: int) -> list[Playe
     """
     Получает snapshot-ы мира, пока один из них не содержит ожидаемое число игроков.
     """
-    deadline = time.monotonic() + 2.0
+    deadline = time.monotonic() + 4.0
     while time.monotonic() < deadline:
         message = decode_message(await asyncio.wait_for(websocket.recv(), timeout=0.5))
         if message.type != ServerMessageType.WORLD_SNAPSHOT:
@@ -2651,7 +2686,7 @@ async def _recv_message_type(
     """
     Получает сообщения, пока не придет сообщение нужного серверного типа.
     """
-    deadline = time.monotonic() + 2.0
+    deadline = time.monotonic() + 4.0
     while time.monotonic() < deadline:
         message = decode_message(await asyncio.wait_for(websocket.recv(), timeout=0.5))
         if message.type == message_type:

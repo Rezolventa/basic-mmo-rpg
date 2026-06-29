@@ -123,6 +123,8 @@ class MultiplayerWorld:
             speed=state.speed,
             hit_points=state.hit_points,
             max_hit_points=state.max_hit_points,
+            busy=state.busy,
+            action=state.action,
         )
         self.players[player_id] = player
         self.names[player_id] = name
@@ -142,7 +144,7 @@ class MultiplayerWorld:
         Сохраняет последнее намерение движения для существующего игрока.
         """
         player = self.players.get(player_id)
-        if player is not None and player.is_alive:
+        if player is not None and player.can_act:
             self.intents[player_id] = intent
 
     def tick(self, delta_seconds: float) -> None:
@@ -151,7 +153,7 @@ class MultiplayerWorld:
         """
         blockers = self.movement_blocker_rects()
         for player_id, player in list(self.players.items()):
-            if not player.is_alive:
+            if not player.can_act:
                 self.intents[player_id] = MovementIntent()
                 continue
             intent = self.intents.get(player_id, MovementIntent())
@@ -200,14 +202,11 @@ class MultiplayerWorld:
 
         next_hit_points = max(0, player.hit_points - amount)
         killed = next_hit_points == 0
-        updated = PlayerState(
-            entity_id=player.entity_id,
-            position=player.position,
-            width=player.width,
-            height=player.height,
-            speed=player.speed,
+        updated = replace(
+            player,
             hit_points=next_hit_points,
-            max_hit_points=player.max_hit_points,
+            busy=False if killed else player.busy,
+            action=None if killed else player.action,
         )
         self.players[player_id] = updated
         if killed:
@@ -223,15 +222,37 @@ class MultiplayerWorld:
             return None
 
         hit_points = max(1, int(player.max_hit_points * PLAYER_RESPAWN_HEALTH_FRACTION))
-        updated = PlayerState(
-            entity_id=player.entity_id,
+        updated = replace(
+            player,
             position=self.player_respawn_position(),
-            width=player.width,
-            height=player.height,
-            speed=player.speed,
             hit_points=hit_points,
-            max_hit_points=player.max_hit_points,
+            busy=False,
+            action=None,
         )
+        self.players[player_id] = updated
+        self.intents[player_id] = MovementIntent()
+        return updated
+
+    def set_player_action(self, player_id: str, action: str) -> PlayerState | None:
+        """
+        Помечает персонажа занятым выполнением server-authoritative действия.
+        """
+        player = self.players.get(player_id)
+        if player is None or not player.is_alive:
+            return None
+        updated = replace(player, busy=True, action=action)
+        self.players[player_id] = updated
+        self.intents[player_id] = MovementIntent()
+        return updated
+
+    def clear_player_action(self, player_id: str) -> PlayerState | None:
+        """
+        Снимает занятость персонажа, если он все еще находится в мире.
+        """
+        player = self.players.get(player_id)
+        if player is None:
+            return None
+        updated = replace(player, busy=False, action=None)
         self.players[player_id] = updated
         self.intents[player_id] = MovementIntent()
         return updated

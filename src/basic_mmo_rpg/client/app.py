@@ -19,10 +19,12 @@ from basic_mmo_rpg.domain.geometry import Rect, Vec2
 from basic_mmo_rpg.domain.inventory import ItemStack
 from basic_mmo_rpg.domain.movement import MovementIntent, PlayerState, move_player
 from basic_mmo_rpg.shared.protocol import (
+    INTERACTION_PRESENTATION_FEED,
     ProtocolError,
     ServerMessageType,
     entities_from_snapshot_payload,
     equipment_from_payload,
+    interaction_presentation_from_payload,
     inventory_items_from_payload,
     player_snapshots_from_payload,
     tile_map_from_payload,
@@ -43,6 +45,8 @@ ENTITY_INTERPOLATION_RATE = 18.0
 ENTITY_INTERPOLATION_DEAD_ZONE = 0.25
 ENTITY_SNAP_DISTANCE = 128.0
 FLOATING_TEXT_SECONDS = 3.0
+EVENT_FEED_SECONDS = 12.0
+MAX_EVENT_FEED_MESSAGES = 8
 MAX_CHAT_LOG_MESSAGES = 50
 MAX_CHAT_INPUT_LENGTH = 160
 
@@ -164,6 +168,7 @@ class GameClient:
         self.selected_attack_target_id: str | None = None
         self.death_dialog_visible = False
         self.chat_lines: deque[ChatLine] = deque(maxlen=MAX_CHAT_LOG_MESSAGES)
+        self.event_feed: deque[TimedText] = deque(maxlen=MAX_EVENT_FEED_MESSAGES)
         self.system_message: str | None = None
         self.speech_bubbles: dict[str, TimedText] = {}
         self.entity_speech_bubbles: dict[str, TimedText] = {}
@@ -240,6 +245,7 @@ class GameClient:
             hovered_entity_id=self.hovered_entity_id,
             hovered_tile=self.hovered_tile,
             chat_lines=list(self.chat_lines),
+            event_feed=[entry.text for entry in self.event_feed],
             chat_input_active=self.chat_input_active,
             chat_input_text=self.chat_input_text,
             chat_journal_visible=self.chat_journal_visible,
@@ -280,6 +286,8 @@ class GameClient:
             self.chat_journal_visible = not self.chat_journal_visible
         elif event.key == pygame.K_b:
             self.inventory_visible = not self.inventory_visible
+        elif not self._local_player_can_act():
+            return
         elif event.key == pygame.K_TAB:
             self._toggle_combat_mode()
         elif event.key == pygame.K_f:
@@ -289,6 +297,8 @@ class GameClient:
         """
         Переключает боевой режим клиента и сбрасывает auto-attack при выключении.
         """
+        if not self._local_player_can_act():
+            return
         self.combat_mode_active = not self.combat_mode_active
         if self.combat_mode_active:
             return
@@ -333,6 +343,8 @@ class GameClient:
             if self.renderer.respawn_button_hit_at_position(self.screen, position):
                 self.network_client.send_respawn_request()
             return
+        if not self._local_player_can_act():
+            return
 
         if self.inventory_visible and self._handle_inventory_click(position):
             return
@@ -364,6 +376,8 @@ class GameClient:
         )
         if hit is None:
             return False
+        if not self._local_player_can_act():
+            return True
         if hit.item_id is not None:
             self.network_client.send_equip_item_request(hit.item_id)
             return True
@@ -376,7 +390,7 @@ class GameClient:
         """
         Отправляет запрос взаимодействия с объектом, который находится строго под курсором.
         """
-        if getattr(self, "death_dialog_visible", False):
+        if not self._local_player_can_act():
             return
 
         entity = self._entity_at_screen_position(pygame.mouse.get_pos())
@@ -392,9 +406,7 @@ class GameClient:
         """
         Читает состояние клавиатуры и преобразует его в намерение движения.
         """
-        if self.chat_input_active:
-            return MovementIntent()
-        if getattr(self, "death_dialog_visible", False):
+        if self.chat_input_active or not self._local_player_can_act():
             return MovementIntent()
 
         pressed = pygame.key.get_pressed()
@@ -552,6 +564,10 @@ class GameClient:
             return
         if not isinstance(created_at, int | float):
             created_at = time.time()
+        try:
+            presentation = interaction_presentation_from_payload(payload)
+        except ProtocolError:
+            return
 
         if isinstance(add_to_journal, bool) and add_to_journal:
             self.chat_lines.append(
@@ -562,6 +578,15 @@ class GameClient:
                     created_at=float(created_at),
                 )
             )
+        if presentation == INTERACTION_PRESENTATION_FEED:
+            self.event_feed.append(
+                TimedText(
+                    text=text,
+                    expires_at=time.monotonic() + EVENT_FEED_SECONDS,
+                )
+            )
+            return
+
         timed_text = TimedText(
             text=text,
             expires_at=time.monotonic() + FLOATING_TEXT_SECONDS,
@@ -667,7 +692,7 @@ class GameClient:
         """
         self.authoritative_player = player
         self.death_dialog_visible = not player.is_alive
-        if getattr(self, "death_dialog_visible", False):
+        if not player.can_act:
             self.combat_mode_active = False
             self.hovered_attackable_entity_id = None
             self.selected_attack_target_id = None
@@ -758,6 +783,16 @@ class GameClient:
         self.speech_bubbles = _active_timed_texts(self.speech_bubbles, now)
         self.entity_speech_bubbles = _active_timed_texts(self.entity_speech_bubbles, now)
         self.name_tags = _active_timed_texts(self.name_tags, now)
+        self.event_feed = deque(
+            (entry for entry in self.event_feed if entry.expires_at > now),
+            maxlen=MAX_EVENT_FEED_MESSAGES,
+        )
+
+    def _local_player_can_act(self) -> bool:
+        """
+        Проверяет, может ли локальный персонаж выполнять игровые команды.
+        """
+        return self.player.can_act and not getattr(self, "death_dialog_visible", False)
 
     def _player_screen_rect(self, player: PlayerState) -> pygame.Rect:
         """
@@ -770,7 +805,7 @@ class GameClient:
         """
         Обновляет объект или водный тайл под курсором мыши.
         """
-        if getattr(self, "death_dialog_visible", False):
+        if not self._local_player_can_act():
             self.hovered_entity_id = None
             self.hovered_attackable_entity_id = None
             self.hovered_tile = None
@@ -915,15 +950,7 @@ def _player_with_position(player: PlayerState, position: Vec2) -> PlayerState:
     """
     Создает копию состояния игрока с новой позицией.
     """
-    return PlayerState(
-        entity_id=player.entity_id,
-        position=position,
-        width=player.width,
-        height=player.height,
-        speed=player.speed,
-        hit_points=player.hit_points,
-        max_hit_points=player.max_hit_points,
-    )
+    return replace(player, position=position)
 
 
 def _entity_with_position(entity: WorldEntity, position: Vec2) -> WorldEntity:

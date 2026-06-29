@@ -25,6 +25,15 @@ from basic_mmo_rpg.domain.inventory import ItemStack
 from basic_mmo_rpg.domain.movement import MovementIntent, PlayerState
 from basic_mmo_rpg.domain.tiles import TileDefinition, TileMap
 
+INTERACTION_PRESENTATION_BUBBLE = "bubble"
+INTERACTION_PRESENTATION_FEED = "feed"
+INTERACTION_PRESENTATIONS = frozenset(
+    {
+        INTERACTION_PRESENTATION_BUBBLE,
+        INTERACTION_PRESENTATION_FEED,
+    }
+)
+
 
 class ClientMessageType(StrEnum):
     """
@@ -407,10 +416,14 @@ def interaction_result_payload(
     text: str,
     created_at: float,
     add_to_journal: bool = True,
+    presentation: str = INTERACTION_PRESENTATION_BUBBLE,
 ) -> dict[str, Any]:
     """
     Создает payload серверного результата взаимодействия.
     """
+    if presentation not in INTERACTION_PRESENTATIONS:
+        msg = f"unsupported interaction presentation: {presentation!r}"
+        raise ValueError(msg)
     return {
         "actor_id": actor_id,
         "target_id": target_id,
@@ -418,7 +431,19 @@ def interaction_result_payload(
         "text": text,
         "created_at": created_at,
         "add_to_journal": add_to_journal,
+        "presentation": presentation,
     }
+
+
+def interaction_presentation_from_payload(payload: Mapping[str, Any]) -> str:
+    """
+    Извлекает способ отображения результата взаимодействия.
+    """
+    presentation = payload.get("presentation", INTERACTION_PRESENTATION_BUBBLE)
+    if not isinstance(presentation, str) or presentation not in INTERACTION_PRESENTATIONS:
+        msg = "interaction presentation must be 'bubble' or 'feed'"
+        raise ProtocolError(msg)
+    return presentation
 
 
 def combat_event_payload(
@@ -575,6 +600,8 @@ def player_to_payload(player: PlayerState, name: str | None = None) -> dict[str,
         "speed": player.speed,
         "hit_points": player.hit_points,
         "max_hit_points": player.max_hit_points,
+        "busy": player.busy,
+        "action": player.action,
     }
 
 
@@ -602,6 +629,8 @@ def player_from_payload(payload: Mapping[str, Any]) -> PlayerState:
     if hit_points > max_hit_points:
         msg = "player hit_points must not exceed max_hit_points"
         raise ProtocolError(msg)
+    busy = _optional_bool_field(payload, "busy")
+    action = _optional_string_field(payload, "action")
 
     return PlayerState(
         entity_id=entity_id,
@@ -614,6 +643,8 @@ def player_from_payload(payload: Mapping[str, Any]) -> PlayerState:
         speed=_number_field(payload, "speed"),
         hit_points=hit_points,
         max_hit_points=max_hit_points,
+        busy=busy if busy is not None else False,
+        action=action,
     )
 
 

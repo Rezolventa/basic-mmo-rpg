@@ -50,6 +50,15 @@
         84
       ]
     },
+    "W": {
+      "name": "wooden floor",
+      "solid": false,
+      "color": [
+        138,
+        91,
+        52
+      ]
+    },
     "T": {
       "name": "tree",
       "solid": true,

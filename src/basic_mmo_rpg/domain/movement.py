@@ -40,6 +40,8 @@ class PlayerState:
     speed: float = 140.0
     hit_points: int = 30
     max_hit_points: int = 30
+    busy: bool = False
+    action: str | None = None
 
     @property
     def rect(self) -> Rect:
@@ -58,9 +60,16 @@ class PlayerState:
     @property
     def is_alive(self) -> bool:
         """
-        Возвращает, может ли персонаж двигаться и действовать в runtime-мире.
+        Возвращает, жив ли персонаж.
         """
         return self.hit_points > 0
+
+    @property
+    def can_act(self) -> bool:
+        """
+        Возвращает, может ли персонаж принимать новые игровые команды.
+        """
+        return self.is_alive and not self.busy
 
 
 def move_player(
@@ -73,6 +82,8 @@ def move_player(
     """
     Применяет намерение движения игрока с учетом скорости, времени и коллизий.
     """
+    if not player.can_act:
+        return player
     direction = intent.as_vector()
     if direction.length == 0 or delta_seconds <= 0:
         return player
@@ -88,6 +99,8 @@ def move_player(
         speed=player.speed,
         hit_points=player.hit_points,
         max_hit_points=player.max_hit_points,
+        busy=player.busy,
+        action=player.action,
     )
     position = _move_axis(moved_x, tile_map, Vec2(0, distance.y), blocker_rects)
 
@@ -99,6 +112,8 @@ def move_player(
         speed=player.speed,
         hit_points=player.hit_points,
         max_hit_points=player.max_hit_points,
+        busy=player.busy,
+        action=player.action,
     )
 
 

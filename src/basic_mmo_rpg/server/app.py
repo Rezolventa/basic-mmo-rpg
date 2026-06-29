@@ -35,6 +35,8 @@ from basic_mmo_rpg.domain.inventory import (
 from basic_mmo_rpg.domain.movement import PlayerState
 from basic_mmo_rpg.server.world import MultiplayerWorld
 from basic_mmo_rpg.shared.protocol import (
+    INTERACTION_PRESENTATION_BUBBLE,
+    INTERACTION_PRESENTATION_FEED,
     ClientMessageType,
     ProtocolError,
     ProtocolMessage,
@@ -69,7 +71,7 @@ DEFAULT_SNAPSHOT_RATE = 20.0
 DEFAULT_SAVE_INTERVAL = 5.0
 JOIN_TIMEOUT_SECONDS = 5.0
 TILE_GATHERING_DISTANCE = 64.0
-TILE_GATHERING_COOLDOWN_SECONDS = 1.0
+GATHERING_ACTION_SECONDS = 2.0
 FISHING_SUCCESS_CHANCE = 0.5
 FUNDAY_REQUIRED_FISH = 2
 FUNDAY_GOLD_REWARD = 1
@@ -121,6 +123,20 @@ class TileGatheringRule:
     missing_tool_text: str
     success_text: str
     failure_text: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class PendingGatheringAction:
+    """
+    Хранит запланированную server-authoritative добычу ресурса.
+    """
+
+    session_id: str
+    player_id: str
+    character_name: str
+    tile: tuple[int, int]
+    rule: TileGatheringRule
+    completes_at: float
 
 
 @dataclass(frozen=True, slots=True)
@@ -203,7 +219,7 @@ class MultiplayerServer:
         self.connections: dict[str, ServerConnection] = {}
         self.sessions: dict[str, PlayerSession] = {}
         self.active_character_sessions: dict[str, str] = {}
-        self.gathering_available_at: dict[str, float] = {}
+        self.pending_gathering_actions: dict[str, PendingGatheringAction] = {}
         self.combat_targets: dict[str, str] = {}
         self.next_combat_swing_at: dict[str, float] = {}
         self.enemy_damage_totals: dict[str, dict[str, int]] = {}
@@ -358,6 +374,7 @@ class MultiplayerServer:
         """
         Удаляет runtime-состояние активной сессии из сервера и мира.
         """
+        self.pending_gathering_actions.pop(session.player_id, None)
         self.world.remove_player(session.player_id)
         self.connections.pop(session.player_id, None)
         self.combat_targets.pop(session.player_id, None)
@@ -407,12 +424,15 @@ class MultiplayerServer:
         try:
             message = decode_message(raw_message)
             if message.type == ClientMessageType.MOVE_REQUESTED:
-                self.world.set_intent(
-                    session.player_id,
-                    movement_intent_from_payload(message.payload),
-                )
+                if not self._is_player_busy(session.player_id):
+                    self.world.set_intent(
+                        session.player_id,
+                        movement_intent_from_payload(message.payload),
+                    )
             elif message.type == ClientMessageType.CHAT_SENT:
                 await self._handle_chat_message(session, message.payload)
+            elif self._is_player_busy(session.player_id):
+                return
             elif message.type == ClientMessageType.INTERACT_REQUESTED:
                 await self._handle_interaction(session, message.payload)
             elif message.type == ClientMessageType.EQUIP_ITEM_REQUESTED:
@@ -437,7 +457,7 @@ class MultiplayerServer:
         """
         Проверяет и запоминает цель auto-attack для игрока.
         """
-        if not self._is_player_alive(session.player_id):
+        if not self._can_player_act(session.player_id):
             return
 
         target = attack_target_from_payload(payload)
@@ -476,6 +496,7 @@ class MultiplayerServer:
         respawned = self.world.respawn_player(session.player_id)
         if respawned is None:
             return
+        self.pending_gathering_actions.pop(session.player_id, None)
         self._stop_attack(session)
         await self._broadcast_snapshot()
 
@@ -487,6 +508,9 @@ class MultiplayerServer:
         """
         Проверяет и применяет запрос экипировки предмета.
         """
+        if not self._can_player_act(session.player_id):
+            return
+
         item_id = equip_item_id_from_payload(payload)
         try:
             equipment = self.character_repository.equip_item(session.character_name, item_id)
@@ -511,6 +535,9 @@ class MultiplayerServer:
         """
         Проверяет и применяет запрос снятия предмета из слота.
         """
+        if not self._can_player_act(session.player_id):
+            return
+
         slot = equipment_slot_from_payload(payload)
         try:
             equipment = self.character_repository.unequip_slot(session.character_name, slot)
@@ -552,7 +579,7 @@ class MultiplayerServer:
         """
         Проверяет запрос взаимодействия и отправляет результат только инициатору.
         """
-        if not self._is_player_alive(session.player_id):
+        if not self._can_player_act(session.player_id):
             return
 
         target = interaction_target_from_payload(payload)
@@ -1089,7 +1116,7 @@ class MultiplayerServer:
             return
 
         player = self.world.players.get(session.player_id)
-        if player is None:
+        if player is None or not player.can_act:
             return
 
         tile_center = self.world.tile_map.tile_rect(tile_x, tile_y).center
@@ -1106,14 +1133,92 @@ class MultiplayerServer:
                 target_name=session.character_name,
                 text=rule.missing_tool_text,
                 add_to_journal=False,
+                presentation=INTERACTION_PRESENTATION_FEED,
             )
             return
 
-        now = time.monotonic()
-        if now < self.gathering_available_at.get(session.character_name, 0.0):
-            return
-        self.gathering_available_at[session.character_name] = now + TILE_GATHERING_COOLDOWN_SECONDS
+        await self._start_gathering_action(session, tile, rule, time.monotonic())
 
+    async def _start_gathering_action(
+        self,
+        session: PlayerSession,
+        tile: tuple[int, int],
+        rule: TileGatheringRule,
+        now: float,
+    ) -> None:
+        """
+        Запускает подготовку добычи ресурса и блокирует новые команды персонажа.
+        """
+        if self.world.set_player_action(session.player_id, "gathering") is None:
+            return
+        self._stop_attack(session)
+        self.pending_gathering_actions[session.player_id] = PendingGatheringAction(
+            session_id=session.session_id,
+            player_id=session.player_id,
+            character_name=session.character_name,
+            tile=tile,
+            rule=rule,
+            completes_at=now + GATHERING_ACTION_SECONDS,
+        )
+        await self._broadcast_snapshot()
+
+    async def _tick_player_actions(self, now: float) -> None:
+        """
+        Завершает отложенные действия персонажей, срок которых наступил.
+        """
+        snapshot_needed = False
+        for player_id, action in list(self.pending_gathering_actions.items()):
+            if now < action.completes_at:
+                continue
+            self.pending_gathering_actions.pop(player_id, None)
+            snapshot_needed = True
+            session = self.sessions.get(action.session_id)
+            if (
+                session is not None
+                and session.player_id == action.player_id
+                and session.character_name == action.character_name
+            ):
+                await self._complete_gathering_action(session, action)
+            self.world.clear_player_action(player_id)
+        if snapshot_needed:
+            await self._broadcast_snapshot()
+
+    async def _complete_gathering_action(
+        self,
+        session: PlayerSession,
+        action: PendingGatheringAction,
+    ) -> None:
+        """
+        Повторно проверяет и применяет результат добычи после подготовки.
+        """
+        tile_x, tile_y = action.tile
+        if not self.world.tile_map.in_bounds(tile_x, tile_y):
+            return
+        if self.world.tile_map.tile_name_at(tile_x, tile_y) != action.rule.tile_name:
+            return
+
+        player = self.world.players.get(session.player_id)
+        if player is None or not player.is_alive:
+            return
+        tile_center = self.world.tile_map.tile_rect(tile_x, tile_y).center
+        if (player.center - tile_center).length > TILE_GATHERING_DISTANCE:
+            return
+        if not self.character_repository.is_item_equipped(
+            session.character_name,
+            MAIN_HAND_SLOT,
+            action.rule.tool_item_id,
+        ):
+            await self._send_interaction_result(
+                session=session,
+                target_id=session.player_id,
+                target_name=session.character_name,
+                text=action.rule.missing_tool_text,
+                add_to_journal=False,
+                presentation=INTERACTION_PRESENTATION_FEED,
+            )
+            return
+
+        rule = action.rule
         if rule.success_chance >= 1.0 or self.random.random() < rule.success_chance:
             try:
                 inventory = self.character_repository.add_item(
@@ -1126,6 +1231,7 @@ class MultiplayerServer:
                     session.player_id,
                     session.character_name,
                     exc,
+                    presentation=INTERACTION_PRESENTATION_FEED,
                 )
                 return
             await self._send_inventory_update(session, inventory)
@@ -1134,6 +1240,7 @@ class MultiplayerServer:
                 target_id=session.player_id,
                 target_name=session.character_name,
                 text=rule.success_text,
+                presentation=INTERACTION_PRESENTATION_FEED,
             )
             return
 
@@ -1143,6 +1250,7 @@ class MultiplayerServer:
                 target_id=session.player_id,
                 target_name=session.character_name,
                 text=rule.failure_text,
+                presentation=INTERACTION_PRESENTATION_FEED,
             )
 
     async def _tick_combat(self, now: float) -> None:
@@ -1150,7 +1258,7 @@ class MultiplayerServer:
         Выполняет server-authoritative auto-attack для активных целей игроков.
         """
         for session in list(self.sessions.values()):
-            if not self._is_player_alive(session.player_id):
+            if not self._can_player_act(session.player_id):
                 self._stop_attack(session)
                 continue
 
@@ -1277,6 +1385,7 @@ class MultiplayerServer:
                 floating_text=f"-{damage}",
             )
             if killed:
+                self._clear_player_action(target_session.player_id)
                 self._stop_attack(target_session)
                 self._clear_enemy_targeting_player(target_session.player_id)
                 await self._send_combat_event_to_session(
@@ -1308,10 +1417,31 @@ class MultiplayerServer:
 
     def _is_player_alive(self, player_id: str) -> bool:
         """
-        Проверяет, может ли персонаж выполнять gameplay-действия.
+        Проверяет, жив ли персонаж в runtime-мире.
         """
         player = self.world.players.get(player_id)
         return player is not None and player.is_alive
+
+    def _is_player_busy(self, player_id: str) -> bool:
+        """
+        Проверяет, выполняет ли персонаж блокирующее server-authoritative действие.
+        """
+        player = self.world.players.get(player_id)
+        return player is not None and player.busy
+
+    def _can_player_act(self, player_id: str) -> bool:
+        """
+        Проверяет, может ли персонаж принимать новые gameplay-команды.
+        """
+        player = self.world.players.get(player_id)
+        return player is not None and player.can_act
+
+    def _clear_player_action(self, player_id: str) -> None:
+        """
+        Сбрасывает блокирующее действие персонажа и связанные pending-операции.
+        """
+        self.pending_gathering_actions.pop(player_id, None)
+        self.world.clear_player_action(player_id)
 
     def _session_for_player_id(self, player_id: str) -> PlayerSession | None:
         """
@@ -1452,6 +1582,7 @@ class MultiplayerServer:
         target_name: str,
         text: str,
         add_to_journal: bool = True,
+        presentation: str = INTERACTION_PRESENTATION_BUBBLE,
     ) -> None:
         """
         Отправляет результат взаимодействия одному клиенту.
@@ -1467,6 +1598,7 @@ class MultiplayerServer:
                     text=text,
                     created_at=time.time(),
                     add_to_journal=add_to_journal,
+                    presentation=presentation,
                 ),
             ),
         )
@@ -1498,6 +1630,7 @@ class MultiplayerServer:
         target_id: str,
         target_name: str,
         error: InventoryLimitError,
+        presentation: str = INTERACTION_PRESENTATION_BUBBLE,
     ) -> None:
         """
         Логирует переполнение инвентаря и отправляет игровой отказ игроку.
@@ -1512,6 +1645,7 @@ class MultiplayerServer:
             target_id=target_id,
             target_name=target_name,
             text=INVENTORY_FULL_TEXT,
+            presentation=presentation,
         )
 
     async def _send_inventory_update(
@@ -1567,6 +1701,7 @@ class MultiplayerServer:
             previous_time = current_time
 
             self.world.tick(delta_seconds)
+            await self._tick_player_actions(current_time)
             await self._tick_combat(current_time)
             await self._tick_enemy_combat(current_time)
             snapshot_elapsed += delta_seconds

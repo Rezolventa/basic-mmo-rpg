@@ -92,6 +92,7 @@ class Renderer:
         hovered_entity_id: str | None = None,
         hovered_tile: tuple[int, int] | None = None,
         chat_lines: Sequence[ChatLine] = (),
+        event_feed: Sequence[str] = (),
         chat_input_active: bool = False,
         chat_input_text: str = "",
         chat_journal_visible: bool = False,
@@ -166,6 +167,8 @@ class Renderer:
             self._draw_chat_journal(screen, chat_lines)
         if inventory_visible:
             self._draw_inventory(screen, inventory_items, equipment)
+        if event_feed:
+            self._draw_event_feed(screen, event_feed, chat_input_active)
         if chat_input_active:
             self._draw_chat_input(screen, chat_input_text)
         if system_message:
@@ -681,6 +684,43 @@ class Renderer:
                 y += self.small_font.get_linesize()
                 if y > 20 + height - self.small_font.get_linesize():
                     return
+
+    def _draw_event_feed(
+        self,
+        screen: pygame.Surface,
+        messages: Sequence[str],
+        chat_input_active: bool,
+    ) -> None:
+        """
+        Рисует временные игровые сообщения в левом нижнем углу.
+        """
+        max_width = min(460, screen.get_width() - 36)
+        if max_width <= 80:
+            return
+
+        bottom_offset = 72 if chat_input_active else 18
+        y = screen.get_height() - bottom_offset
+        x = 18
+        line_height = self.small_font.get_linesize()
+        for message in reversed(messages[-8:]):
+            lines = self._wrap_text(message, max_width=max_width - 20, font=self.small_font)
+            height = 10 + len(lines) * line_height
+            top = y - height
+            if top < 12:
+                return
+
+            rect = pygame.Rect(x, top, max_width, height)
+            panel = pygame.Surface(rect.size, pygame.SRCALPHA)
+            panel.fill(INPUT_BACKGROUND)
+            screen.blit(panel, rect.topleft)
+            pygame.draw.rect(screen, SLOT_BORDER, rect, width=1, border_radius=5)
+
+            text_y = rect.top + 5
+            for line in lines:
+                surface = self.small_font.render(line, True, TEXT_COLOR)
+                screen.blit(surface, (rect.left + 10, text_y))
+                text_y += line_height
+            y = rect.top - 6
 
     def _draw_chat_input(self, screen: pygame.Surface, chat_input_text: str) -> None:
         """

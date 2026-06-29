@@ -201,6 +201,8 @@ def test_create_empty_map_from_template_writes_valid_map(tmp_path: Path) -> None
     source_document = load_editable_map(Path("assets/maps/starter_map.json"))
     document = load_editable_map(target_path)
 
+    assert raw_map["legend"]["W"]["name"] == "wooden floor"
+    assert raw_map["legend"]["W"]["solid"] is False
     assert raw_map["tiles"] == [
         ".....",
         ".....",

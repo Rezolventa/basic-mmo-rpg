@@ -24,10 +24,12 @@ from basic_mmo_rpg.domain.entities import (
 from basic_mmo_rpg.domain.equipment import MAIN_HAND_SLOT, Equipment
 from basic_mmo_rpg.domain.geometry import Vec2
 from basic_mmo_rpg.domain.inventory import FISHING_ROD_ITEM_ID, ItemStack
-from basic_mmo_rpg.domain.movement import PlayerState
+from basic_mmo_rpg.domain.movement import MovementIntent, PlayerState
 from basic_mmo_rpg.shared.protocol import (
+    INTERACTION_PRESENTATION_FEED,
     combat_event_payload,
     equipment_updated_payload,
+    interaction_result_payload,
     inventory_updated_payload,
 )
 from basic_mmo_rpg.storage.map_loader import tile_map_from_dict
@@ -210,6 +212,7 @@ def test_combat_hotkey_toggles_mode_and_stops_attack() -> None:
     client.selected_attack_target_id = "lootable-training-dummy"
     client.hovered_attackable_entity_id = "lootable-training-dummy"
     client.network_client = network
+    client.player = PlayerState(entity_id="p1", position=Vec2(0, 0))
 
     client._handle_key_down(SimpleNamespace(key=pygame.K_TAB, unicode=""))
     assert client.combat_mode_active is True
@@ -234,11 +237,49 @@ def test_combat_click_requests_attack_target() -> None:
     client.camera = SimpleNamespace(screen_to_world=lambda position: Vec2(*position))
     client.world_entities = {entity.entity_id: entity}
     client.network_client = network
+    client.player = PlayerState(entity_id="p1", position=Vec2(0, 0))
 
     client._handle_left_click((70, 40))
 
     assert client.selected_attack_target_id == entity.entity_id
     assert network.attack_targets == [entity.entity_id]
+
+
+def test_busy_authoritative_player_clears_attack_controls() -> None:
+    """
+    Проверяет, что snapshot занятости блокирует боевой UI без окна смерти.
+    """
+    client = _client_without_pygame(PlayerState(entity_id="p1", position=Vec2(0, 0)))
+    client.combat_mode_active = True
+    client.hovered_attackable_entity_id = "creature-boar"
+    client.selected_attack_target_id = "creature-boar"
+
+    client._receive_authoritative_local_player(
+        PlayerState(entity_id="p1", position=Vec2(0, 0), busy=True, action="gathering")
+    )
+
+    assert client.death_dialog_visible is False
+    assert client.combat_mode_active is False
+    assert client.hovered_attackable_entity_id is None
+    assert client.selected_attack_target_id is None
+    assert client.player.busy is True
+
+
+def test_busy_player_does_not_create_movement_intent() -> None:
+    """
+    Проверяет, что клиент не отправляет движение для занятого персонажа.
+    """
+    client = object.__new__(GameClient)
+    client.chat_input_active = False
+    client.death_dialog_visible = False
+    client.player = PlayerState(
+        entity_id="p1",
+        position=Vec2(0, 0),
+        busy=True,
+        action="gathering",
+    )
+
+    assert client._read_movement_intent() == MovementIntent()
 
 
 def test_dead_authoritative_player_opens_death_dialog_and_clears_attack() -> None:
@@ -310,6 +351,36 @@ def test_client_applies_interaction_result_to_log_and_entity_bubble() -> None:
     assert client.chat_lines[-1].name == "Funday"
     assert client.chat_lines[-1].text == "Hello, developer"
     assert client.entity_speech_bubbles["npc-funday"].text == "Hello, developer"
+
+
+def test_client_applies_feed_interaction_result_without_bubble() -> None:
+    """
+    Проверяет, что resource-сообщение попадает в нижний feed без bubble.
+    """
+    client = object.__new__(GameClient)
+    client.chat_lines = deque(maxlen=50)
+    client.event_feed = deque(maxlen=8)
+    client.entity_speech_bubbles = {}
+    client.speech_bubbles = {}
+    client.player_names = {}
+    client.world_entities = {}
+
+    client._apply_interaction_result(
+        interaction_result_payload(
+            actor_id="p1",
+            target_id="p1",
+            target_name="Alice",
+            text="Вы поймали рыбу",
+            created_at=123.0,
+            presentation=INTERACTION_PRESENTATION_FEED,
+        )
+    )
+
+    assert client.chat_lines[-1].name == "Alice"
+    assert client.chat_lines[-1].text == "Вы поймали рыбу"
+    assert client.event_feed[-1].text == "Вы поймали рыбу"
+    assert client.speech_bubbles == {}
+    assert client.entity_speech_bubbles == {}
 
 
 def test_client_applies_combat_event_to_log_and_entity_bubble() -> None:
@@ -462,6 +533,7 @@ def test_client_inventory_click_requests_equip() -> None:
     client.inventory_visible = True
     client.inventory_items = []
     client.equipment = Equipment()
+    client.player = PlayerState(entity_id="p1", position=Vec2(0, 0))
     client.renderer = SimpleNamespace(
         inventory_hit_at_position=lambda screen, position, items: InventoryPanelHit(
             item_id=FISHING_ROD_ITEM_ID
@@ -485,6 +557,7 @@ def test_client_main_hand_click_requests_unequip() -> None:
     client.inventory_visible = True
     client.inventory_items = []
     client.equipment = Equipment(main_hand=FISHING_ROD_ITEM_ID)
+    client.player = PlayerState(entity_id="p1", position=Vec2(0, 0))
     client.renderer = SimpleNamespace(
         inventory_hit_at_position=lambda screen, position, items: InventoryPanelHit(
             slot=MAIN_HAND_SLOT
@@ -507,8 +580,36 @@ def test_client_inventory_empty_area_click_is_consumed() -> None:
     client.screen = object()
     client.inventory_items = []
     client.equipment = Equipment()
+    client.player = PlayerState(entity_id="p1", position=Vec2(0, 0))
     client.renderer = SimpleNamespace(
         inventory_hit_at_position=lambda screen, position, items: InventoryPanelHit()
+    )
+    client.network_client = network
+
+    assert client._handle_inventory_click((10, 10)) is True
+    assert network.equipped_items == []
+    assert network.unequipped_slots == []
+
+
+def test_busy_inventory_click_does_not_request_equip() -> None:
+    """
+    Проверяет, что занятый персонаж не меняет предмет в руке через инвентарь.
+    """
+    client = object.__new__(GameClient)
+    network = _NetworkRecorder()
+    client.screen = object()
+    client.inventory_items = []
+    client.equipment = Equipment()
+    client.player = PlayerState(
+        entity_id="p1",
+        position=Vec2(0, 0),
+        busy=True,
+        action="gathering",
+    )
+    client.renderer = SimpleNamespace(
+        inventory_hit_at_position=lambda screen, position, items: InventoryPanelHit(
+            item_id=FISHING_ROD_ITEM_ID
+        )
     )
     client.network_client = network
 
