@@ -20,10 +20,12 @@ from basic_mmo_rpg.domain.inventory import ItemStack
 from basic_mmo_rpg.domain.movement import MovementIntent, PlayerState, move_player
 from basic_mmo_rpg.shared.protocol import (
     INTERACTION_PRESENTATION_FEED,
+    InteractionMenu,
     ProtocolError,
     ServerMessageType,
     entities_from_snapshot_payload,
     equipment_from_payload,
+    interaction_menu_from_payload,
     interaction_presentation_from_payload,
     inventory_items_from_payload,
     player_snapshots_from_payload,
@@ -163,6 +165,7 @@ class GameClient:
         self.inventory_visible = False
         self.inventory_items: list[ItemStack] = []
         self.equipment = Equipment()
+        self.interaction_menu: InteractionMenu | None = None
         self.combat_mode_active = False
         self.hovered_attackable_entity_id: str | None = None
         self.selected_attack_target_id: str | None = None
@@ -252,6 +255,7 @@ class GameClient:
             inventory_items=self.inventory_items,
             equipment=self.equipment,
             inventory_visible=self.inventory_visible,
+            interaction_menu=self.interaction_menu,
             combat_mode_active=self.combat_mode_active,
             hovered_attackable_entity_id=self.hovered_attackable_entity_id,
             selected_attack_target_id=self.selected_attack_target_id,
@@ -277,6 +281,10 @@ class GameClient:
             self._handle_chat_input_key(event)
             return
         if getattr(self, "death_dialog_visible", False):
+            return
+        if getattr(self, "interaction_menu", None) is not None:
+            if event.key == pygame.K_ESCAPE:
+                self.interaction_menu = None
             return
 
         if event.key == pygame.K_RETURN:
@@ -343,6 +351,9 @@ class GameClient:
             if self.renderer.respawn_button_hit_at_position(self.screen, position):
                 self.network_client.send_respawn_request()
             return
+        if getattr(self, "interaction_menu", None) is not None:
+            self._handle_interaction_menu_click(position)
+            return
         if not self._local_player_can_act():
             return
 
@@ -386,6 +397,18 @@ class GameClient:
             return True
         return True
 
+    def _handle_interaction_menu_click(self, position: tuple[int, int]) -> None:
+        """
+        Отправляет выбор активной опции NPC-окна.
+        """
+        menu = self.interaction_menu
+        if menu is None:
+            return
+        option = self.renderer.interaction_menu_hit_at_position(self.screen, position, menu)
+        if option is None or not option.enabled:
+            return
+        self.network_client.send_interaction_option_selected(menu.entity_id, option.option_id)
+
     def _send_interaction_under_cursor(self) -> None:
         """
         Отправляет запрос взаимодействия с объектом, который находится строго под курсором.
@@ -406,7 +429,11 @@ class GameClient:
         """
         Читает состояние клавиатуры и преобразует его в намерение движения.
         """
-        if self.chat_input_active or not self._local_player_can_act():
+        if (
+            self.chat_input_active
+            or getattr(self, "interaction_menu", None) is not None
+            or not self._local_player_can_act()
+        ):
             return MovementIntent()
 
         pressed = pygame.key.get_pressed()
@@ -438,6 +465,8 @@ class GameClient:
                 self._apply_chat_message(message.payload)
             elif message.type == ServerMessageType.INTERACTION_RESULT:
                 self._apply_interaction_result(message.payload)
+            elif message.type == ServerMessageType.INTERACTION_MENU_OPENED:
+                self._apply_interaction_menu_opened(message.payload)
             elif message.type == ServerMessageType.COMBAT_EVENT:
                 self._apply_combat_event(message.payload)
             elif message.type == ServerMessageType.INVENTORY_UPDATED:
@@ -597,6 +626,15 @@ class GameClient:
             self.player_names[target_id] = target_name
             self.speech_bubbles[target_id] = timed_text
 
+    def _apply_interaction_menu_opened(self, payload: dict[str, object]) -> None:
+        """
+        Открывает или обновляет server-authoritative NPC-окно.
+        """
+        try:
+            self.interaction_menu = interaction_menu_from_payload(payload)
+        except ProtocolError:
+            return
+
     def _apply_combat_event(self, payload: dict[str, object]) -> None:
         """
         Добавляет событие боя в журнал и показывает floating text над целью.
@@ -693,6 +731,7 @@ class GameClient:
         self.authoritative_player = player
         self.death_dialog_visible = not player.is_alive
         if not player.can_act:
+            self.interaction_menu = None
             self.combat_mode_active = False
             self.hovered_attackable_entity_id = None
             self.selected_attack_target_id = None

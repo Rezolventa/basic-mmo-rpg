@@ -12,6 +12,7 @@ from basic_mmo_rpg.domain.geometry import Rect, Vec2
 from basic_mmo_rpg.domain.inventory import ItemStack, is_equippable_item, item_definition_for
 from basic_mmo_rpg.domain.movement import PlayerState
 from basic_mmo_rpg.domain.tiles import TileMap
+from basic_mmo_rpg.shared.protocol import InteractionMenu, InteractionMenuOption
 
 BACKGROUND = (18, 20, 23)
 GRID_LINE = (24, 26, 29)
@@ -59,6 +60,7 @@ INPUT_BACKGROUND = (12, 14, 18, 230)
 SLOT_BACKGROUND = (29, 32, 38, 230)
 SLOT_BORDER = (92, 104, 118)
 EQUIPPED_BORDER = (225, 198, 104)
+DISABLED_SLOT_BACKGROUND = (31, 34, 39)
 
 
 class Renderer:
@@ -99,6 +101,7 @@ class Renderer:
         inventory_items: Sequence[ItemStack] = (),
         equipment: Equipment | None = None,
         inventory_visible: bool = False,
+        interaction_menu: InteractionMenu | None = None,
         combat_mode_active: bool = False,
         hovered_attackable_entity_id: str | None = None,
         selected_attack_target_id: str | None = None,
@@ -167,6 +170,8 @@ class Renderer:
             self._draw_chat_journal(screen, chat_lines)
         if inventory_visible:
             self._draw_inventory(screen, inventory_items, equipment)
+        if interaction_menu is not None:
+            self._draw_interaction_menu(screen, interaction_menu)
         if event_feed:
             self._draw_event_feed(screen, event_feed, chat_input_active)
         if chat_input_active:
@@ -204,6 +209,20 @@ class Renderer:
         Возвращает, попал ли клик по кнопке возрождения.
         """
         return self._respawn_button_rect(screen).collidepoint(position)
+
+    def interaction_menu_hit_at_position(
+        self,
+        screen: pygame.Surface,
+        position: tuple[int, int],
+        menu: InteractionMenu,
+    ) -> InteractionMenuOption | None:
+        """
+        Возвращает опцию NPC-окна под курсором.
+        """
+        for option, rect in self._interaction_menu_option_rects(screen, menu):
+            if rect.collidepoint(position):
+                return option
+        return None
 
     def _draw_map(self, screen: pygame.Surface, camera: Camera) -> None:
         """
@@ -745,6 +764,87 @@ class Renderer:
         text = f"{prefix}{visible_text}"
         surface = self.font.render(text, True, TEXT_COLOR)
         screen.blit(surface, (rect.left + 10, rect.centery - surface.get_height() // 2))
+
+    def _draw_interaction_menu(self, screen: pygame.Surface, menu: InteractionMenu) -> None:
+        """
+        Рисует серверное окно взаимодействия с NPC.
+        """
+        panel_rect = self._interaction_menu_rect(screen, menu)
+        panel = pygame.Surface(panel_rect.size, pygame.SRCALPHA)
+        panel.fill(PANEL_BACKGROUND)
+        screen.blit(panel, panel_rect.topleft)
+        pygame.draw.rect(screen, BUBBLE_BORDER, panel_rect, width=1, border_radius=6)
+
+        title = self.font.render(
+            self._tail_to_width(menu.title, panel_rect.width - 28, self.font),
+            True,
+            TEXT_COLOR,
+        )
+        screen.blit(title, (panel_rect.left + 14, panel_rect.top + 12))
+
+        y = panel_rect.top + 42
+        if menu.body:
+            for line in self._wrap_text(menu.body, panel_rect.width - 28, self.small_font):
+                surface = self.small_font.render(line, True, MUTED_TEXT_COLOR)
+                screen.blit(surface, (panel_rect.left + 14, y))
+                y += self.small_font.get_linesize()
+            y += 8
+
+        for option, row_rect in self._interaction_menu_option_rects(screen, menu):
+            background = SLOT_BACKGROUND if option.enabled else DISABLED_SLOT_BACKGROUND
+            border = EQUIPPED_BORDER if option.enabled else SLOT_BORDER
+            text_color = TEXT_COLOR if option.enabled else MUTED_TEXT_COLOR
+            pygame.draw.rect(screen, background, row_rect, border_radius=4)
+            pygame.draw.rect(screen, border, row_rect, width=1, border_radius=4)
+            label = self._tail_to_width(option.label, row_rect.width - 16, self.small_font)
+            surface = self.small_font.render(label, True, text_color)
+            screen.blit(surface, (row_rect.left + 8, row_rect.centery - surface.get_height() // 2))
+
+    def _interaction_menu_rect(
+        self,
+        screen: pygame.Surface,
+        menu: InteractionMenu,
+    ) -> pygame.Rect:
+        """
+        Возвращает прямоугольник NPC-окна.
+        """
+        width = min(460, max(320, screen.get_width() - 40))
+        body_lines = self._wrap_text(menu.body, width - 28, self.small_font) if menu.body else []
+        height = 62 + len(body_lines) * self.small_font.get_linesize()
+        height += len(menu.options) * 38 + 18
+        height = min(height, screen.get_height() - 40)
+        return pygame.Rect(
+            screen.get_width() // 2 - width // 2,
+            screen.get_height() // 2 - height // 2,
+            width,
+            height,
+        )
+
+    def _interaction_menu_option_rects(
+        self,
+        screen: pygame.Surface,
+        menu: InteractionMenu,
+    ) -> list[tuple[InteractionMenuOption, pygame.Rect]]:
+        """
+        Возвращает прямоугольники строк опций NPC-окна.
+        """
+        panel_rect = self._interaction_menu_rect(screen, menu)
+        body_lines = (
+            self._wrap_text(menu.body, panel_rect.width - 28, self.small_font)
+            if menu.body
+            else []
+        )
+        y = panel_rect.top + 42 + len(body_lines) * self.small_font.get_linesize()
+        if body_lines:
+            y += 8
+        result: list[tuple[InteractionMenuOption, pygame.Rect]] = []
+        for option in menu.options:
+            row_rect = pygame.Rect(panel_rect.left + 14, y, panel_rect.width - 28, 32)
+            if row_rect.bottom > panel_rect.bottom - 10:
+                break
+            result.append((option, row_rect))
+            y += 38
+        return result
 
     def _draw_death_dialog(self, screen: pygame.Surface) -> None:
         """

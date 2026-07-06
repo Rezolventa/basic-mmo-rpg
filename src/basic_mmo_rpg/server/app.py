@@ -31,6 +31,7 @@ from basic_mmo_rpg.domain.inventory import (
     WOOL_ITEM_ID,
     InventoryLimitError,
     ItemStack,
+    item_definition_for,
 )
 from basic_mmo_rpg.domain.movement import PlayerState
 from basic_mmo_rpg.server.world import MultiplayerWorld
@@ -38,6 +39,7 @@ from basic_mmo_rpg.shared.protocol import (
     INTERACTION_PRESENTATION_BUBBLE,
     INTERACTION_PRESENTATION_FEED,
     ClientMessageType,
+    InteractionMenuOption,
     ProtocolError,
     ProtocolMessage,
     ServerMessageType,
@@ -51,6 +53,8 @@ from basic_mmo_rpg.shared.protocol import (
     equip_item_id_from_payload,
     equipment_slot_from_payload,
     equipment_updated_payload,
+    interaction_menu_opened_payload,
+    interaction_option_selection_from_payload,
     interaction_result_payload,
     interaction_target_from_payload,
     inventory_updated_payload,
@@ -148,6 +152,98 @@ class WeaponCombatRule:
     min_damage: int
     max_damage: int
     swing_cooldown_seconds: float
+
+
+@dataclass(frozen=True, slots=True)
+class ToolGrantOption:
+    """
+    Описывает NPC-опцию одноразовой tutorial-выдачи инструмента.
+    """
+
+    option_id: str
+    item_id: str
+    label: str
+
+
+@dataclass(frozen=True, slots=True)
+class RepeatableQuestDefinition:
+    """
+    Описывает простой repeatable-квест обмена предметов у NPC.
+    """
+
+    quest_id: str
+    option_id: str
+    cost_item_id: str
+    cost_quantity: int
+    reward_item_id: str
+    reward_quantity: int
+    success_text: str
+
+
+OPTION_KIND_ACTION = "action"
+QUEST_KIND_REPEATABLE = "repeatable"
+
+NPC_TOOL_GRANTS: dict[str, ToolGrantOption] = {
+    "npc-funday": ToolGrantOption(
+        option_id="action:grant_fishing_rod",
+        item_id=FISHING_ROD_ITEM_ID,
+        label="Получить удочку",
+    ),
+    "npc-jack-lumber": ToolGrantOption(
+        option_id="action:grant_lumber_axe",
+        item_id=LUMBER_AXE_ITEM_ID,
+        label="Получить топор",
+    ),
+    "npc-kopai": ToolGrantOption(
+        option_id="action:grant_pickaxe",
+        item_id=PICKAXE_ITEM_ID,
+        label="Получить кирку",
+    ),
+    "npc-fogu": ToolGrantOption(
+        option_id="action:grant_shears",
+        item_id=SHEARS_ITEM_ID,
+        label="Получить ножницы",
+    ),
+}
+
+NPC_REPEATABLE_QUESTS: dict[str, RepeatableQuestDefinition] = {
+    "npc-funday": RepeatableQuestDefinition(
+        quest_id="funday_fish",
+        option_id="quest:funday_fish",
+        cost_item_id=FISH_ITEM_ID,
+        cost_quantity=FUNDAY_REQUIRED_FISH,
+        reward_item_id=GOLD_ITEM_ID,
+        reward_quantity=FUNDAY_GOLD_REWARD,
+        success_text="Отличная рыба. Держи Gold.",
+    ),
+    "npc-jack-lumber": RepeatableQuestDefinition(
+        quest_id="jack_lumber_logs",
+        option_id="quest:jack_lumber_logs",
+        cost_item_id=LOG_ITEM_ID,
+        cost_quantity=JACK_REQUIRED_LOGS,
+        reward_item_id=GOLD_ITEM_ID,
+        reward_quantity=JACK_GOLD_REWARD,
+        success_text="Отличная древесина. Держи Gold.",
+    ),
+    "npc-kopai": RepeatableQuestDefinition(
+        quest_id="kopai_stones",
+        option_id="quest:kopai_stones",
+        cost_item_id=STONE_ITEM_ID,
+        cost_quantity=KOPAI_REQUIRED_STONES,
+        reward_item_id=GOLD_ITEM_ID,
+        reward_quantity=KOPAI_GOLD_REWARD,
+        success_text="Отличный камень. Держи Gold.",
+    ),
+    "npc-fogu": RepeatableQuestDefinition(
+        quest_id="fogu_wool",
+        option_id="quest:fogu_wool",
+        cost_item_id=WOOL_ITEM_ID,
+        cost_quantity=FOGU_REQUIRED_WOOL,
+        reward_item_id=GOLD_ITEM_ID,
+        reward_quantity=FOGU_GOLD_REWARD,
+        success_text="Спасибо. Вот, держи.",
+    ),
+}
 
 
 TILE_GATHERING_RULES: dict[str, TileGatheringRule] = {
@@ -435,6 +531,8 @@ class MultiplayerServer:
                 return
             elif message.type == ClientMessageType.INTERACT_REQUESTED:
                 await self._handle_interaction(session, message.payload)
+            elif message.type == ClientMessageType.INTERACTION_OPTION_SELECTED:
+                await self._handle_interaction_option_selection(session, message.payload)
             elif message.type == ClientMessageType.EQUIP_ITEM_REQUESTED:
                 await self._handle_equip_item(session, message.payload)
             elif message.type == ClientMessageType.UNEQUIP_ITEM_REQUESTED:
@@ -592,32 +690,8 @@ class MultiplayerServer:
         """
         Проверяет взаимодействие с объектом мира.
         """
-        player = self.world.players.get(session.player_id)
-        entity = self.world.get_entity(target_id)
-        if player is None or entity is None:
-            logger.info(
-                "Interaction ignored: name=%s target_id=%s reason=missing_target",
-                session.character_name,
-                target_id,
-            )
-            return
-        if entity.interaction is None:
-            logger.info(
-                "Interaction ignored: name=%s target_id=%s reason=not_interactable",
-                session.character_name,
-                target_id,
-            )
-            return
-
-        distance = (player.center - entity.center).length
-        if distance > entity.interaction_radius:
-            logger.info(
-                "Interaction ignored: name=%s target_id=%s distance=%.2f radius=%.2f",
-                session.character_name,
-                target_id,
-                distance,
-                entity.interaction_radius,
-            )
+        entity = self._resolve_interaction_entity(session, target_id)
+        if entity is None:
             return
 
         logger.info(
@@ -634,38 +708,8 @@ class MultiplayerServer:
         if entity.kind == EntityKind.CREATURE:
             await self._handle_creature_interaction(session, entity)
             return
-
-        if entity.entity_id == "npc-funday":
-            await self._handle_funday_interaction(
-                session,
-                entity.entity_id,
-                entity.name,
-                entity.dialogue,
-            )
-            return
-        if entity.entity_id == "npc-jack-lumber":
-            await self._handle_jack_lumber_interaction(
-                session,
-                entity.entity_id,
-                entity.name,
-                entity.dialogue,
-            )
-            return
-        if entity.entity_id == "npc-kopai":
-            await self._handle_kopai_interaction(
-                session,
-                entity.entity_id,
-                entity.name,
-                entity.dialogue,
-            )
-            return
-        if entity.entity_id == "npc-fogu":
-            await self._handle_fogu_interaction(
-                session,
-                entity.entity_id,
-                entity.name,
-                entity.dialogue,
-            )
+        if entity.kind == EntityKind.NPC:
+            await self._send_npc_interaction_menu(session, entity)
             return
 
         if not entity.dialogue:
@@ -685,227 +729,200 @@ class MultiplayerServer:
             ),
         )
 
-    async def _handle_funday_interaction(
+    async def _handle_interaction_option_selection(
         self,
         session: PlayerSession,
-        target_id: str,
-        target_name: str,
-        default_dialogue: str,
+        payload: dict[str, object],
     ) -> None:
         """
-        Обрабатывает туториальную логику NPC Funday.
+        Проверяет и применяет выбранную опцию окна взаимодействия с NPC.
         """
-        if not self.character_repository.has_item(session.character_name, FISHING_ROD_ITEM_ID):
-            await self._send_interaction_result(
-                session=session,
-                target_id=target_id,
-                target_name=target_name,
-                text=default_dialogue,
-            )
-            await self._grant_fishing_rod_if_needed(session)
+        if not self._can_player_act(session.player_id):
             return
 
-        fish_quantity = self.character_repository.item_quantity(
-            session.character_name,
-            FISH_ITEM_ID,
+        selection = interaction_option_selection_from_payload(payload)
+        entity = self._resolve_interaction_entity(session, selection.entity_id)
+        if entity is None or entity.kind != EntityKind.NPC:
+            return
+
+        option = self._npc_option_by_id(session, entity, selection.option_id)
+        if option is None:
+            logger.info(
+                "Interaction option ignored: name=%s target_id=%s option_id=%s reason=missing",
+                session.character_name,
+                entity.entity_id,
+                selection.option_id,
+            )
+            return
+        if not option.enabled:
+            await self._send_npc_interaction_menu(session, entity)
+            return
+
+        if self._is_tool_grant_option(entity.entity_id, selection.option_id):
+            await self._handle_tool_grant_option(session, entity, selection.option_id)
+        elif self._is_repeatable_quest_option(entity.entity_id, selection.option_id):
+            await self._handle_repeatable_quest_option(session, entity, selection.option_id)
+
+        await self._send_npc_interaction_menu(session, entity)
+
+    async def _send_npc_interaction_menu(
+        self,
+        session: PlayerSession,
+        entity: WorldEntity,
+    ) -> None:
+        """
+        Отправляет клиенту актуальное server-authoritative окно взаимодействия с NPC.
+        """
+        await self._send(
+            session.websocket,
+            ProtocolMessage(
+                type=ServerMessageType.INTERACTION_MENU_OPENED,
+                payload=interaction_menu_opened_payload(
+                    entity_id=entity.entity_id,
+                    title=entity.name,
+                    body=entity.dialogue,
+                    options=tuple(self._npc_interaction_options(session, entity)),
+                ),
+            ),
         )
-        if fish_quantity >= FUNDAY_REQUIRED_FISH:
-            try:
-                inventory, exchanged = self.character_repository.exchange_items(
-                    name=session.character_name,
-                    cost_item_id=FISH_ITEM_ID,
-                    cost_quantity=FUNDAY_REQUIRED_FISH,
-                    reward_item_id=GOLD_ITEM_ID,
-                    reward_quantity=FUNDAY_GOLD_REWARD,
+
+    def _npc_option_by_id(
+        self,
+        session: PlayerSession,
+        entity: WorldEntity,
+        option_id: str,
+    ) -> InteractionMenuOption | None:
+        """
+        Находит опцию в актуальном серверном списке NPC.
+        """
+        for option in self._npc_interaction_options(session, entity):
+            if option.option_id == option_id:
+                return option
+        return None
+
+    def _npc_interaction_options(
+        self,
+        session: PlayerSession,
+        entity: WorldEntity,
+    ) -> list[InteractionMenuOption]:
+        """
+        Собирает доступные игроку опции NPC на текущий момент.
+        """
+        options: list[InteractionMenuOption] = []
+        tool_option = NPC_TOOL_GRANTS.get(entity.entity_id)
+        if tool_option is not None and not self.character_repository.has_item(
+            session.character_name,
+            tool_option.item_id,
+        ):
+            options.append(
+                InteractionMenuOption(
+                    option_id=tool_option.option_id,
+                    label=tool_option.label,
+                    kind=OPTION_KIND_ACTION,
                 )
-            except InventoryLimitError as exc:
-                logger.info(
-                    "Inventory limit reached: name=%s error=%s",
-                    session.character_name,
-                    exc,
-                )
-                await self._send_interaction_result(
-                    session=session,
-                    target_id=target_id,
-                    target_name=target_name,
-                    text=INVENTORY_FULL_TEXT,
-                )
-                return
-            if exchanged:
-                await self._send_interaction_result(
-                    session=session,
-                    target_id=target_id,
-                    target_name=target_name,
-                    text="Отличная рыба. Держи Gold.",
-                )
-                await self._send_inventory_update(session, inventory)
+            )
+
+        quest = NPC_REPEATABLE_QUESTS.get(entity.entity_id)
+        if quest is not None:
+            options.append(self._repeatable_quest_menu_option(session, quest))
+        return options
+
+    def _repeatable_quest_menu_option(
+        self,
+        session: PlayerSession,
+        quest: RepeatableQuestDefinition,
+    ) -> InteractionMenuOption:
+        """
+        Создает UI-опцию repeatable-квеста обмена с прогрессом по предметам.
+        """
+        current_quantity = self.character_repository.item_quantity(
+            session.character_name,
+            quest.cost_item_id,
+        )
+        cost_name = item_definition_for(quest.cost_item_id).display_name
+        reward_name = item_definition_for(quest.reward_item_id).display_name
+        progress = f"{cost_name} {current_quantity}/{quest.cost_quantity}"
+        enabled = current_quantity >= quest.cost_quantity
+        return InteractionMenuOption(
+            option_id=quest.option_id,
+            label=(
+                f"Обменять {cost_name} x{quest.cost_quantity} "
+                f"на {reward_name} x{quest.reward_quantity} "
+                f"({current_quantity}/{quest.cost_quantity})"
+            ),
+            kind=QUEST_KIND_REPEATABLE,
+            enabled=enabled,
+            progress=progress,
+            disabled_reason=None if enabled else f"Нужно: {progress}",
+        )
+
+    def _is_tool_grant_option(self, entity_id: str, option_id: str) -> bool:
+        """
+        Проверяет, относится ли option_id к выдаче tutorial-инструмента NPC.
+        """
+        option = NPC_TOOL_GRANTS.get(entity_id)
+        return option is not None and option.option_id == option_id
+
+    def _is_repeatable_quest_option(self, entity_id: str, option_id: str) -> bool:
+        """
+        Проверяет, относится ли option_id к repeatable-квесту NPC.
+        """
+        quest = NPC_REPEATABLE_QUESTS.get(entity_id)
+        return quest is not None and quest.option_id == option_id
+
+    async def _handle_tool_grant_option(
+        self,
+        session: PlayerSession,
+        entity: WorldEntity,
+        option_id: str,
+    ) -> None:
+        """
+        Выполняет выбранную опцию выдачи tutorial-инструмента.
+        """
+        option = NPC_TOOL_GRANTS.get(entity.entity_id)
+        if option is None or option.option_id != option_id:
+            return
+        await self._grant_item_if_needed(session, option.item_id)
+
+    async def _handle_repeatable_quest_option(
+        self,
+        session: PlayerSession,
+        entity: WorldEntity,
+        option_id: str,
+    ) -> None:
+        """
+        Выполняет выбранный repeatable-квест обмена.
+        """
+        quest = NPC_REPEATABLE_QUESTS.get(entity.entity_id)
+        if quest is None or quest.option_id != option_id:
+            return
+        try:
+            inventory, exchanged = self.character_repository.complete_repeatable_quest_exchange(
+                name=session.character_name,
+                quest_id=quest.quest_id,
+                cost_item_id=quest.cost_item_id,
+                cost_quantity=quest.cost_quantity,
+                reward_item_id=quest.reward_item_id,
+                reward_quantity=quest.reward_quantity,
+            )
+        except InventoryLimitError as exc:
+            await self._send_inventory_limit_result(
+                session=session,
+                target_id=entity.entity_id,
+                target_name=entity.name,
+                error=exc,
+            )
+            return
+        if not exchanged:
             return
 
         await self._send_interaction_result(
             session=session,
-            target_id=target_id,
-            target_name=target_name,
-            text=default_dialogue,
+            target_id=entity.entity_id,
+            target_name=entity.name,
+            text=quest.success_text,
         )
-
-    async def _handle_jack_lumber_interaction(
-        self,
-        session: PlayerSession,
-        target_id: str,
-        target_name: str,
-        default_dialogue: str,
-    ) -> None:
-        """
-        Обрабатывает туториальную логику NPC Jack Lumber.
-        """
-        if not self.character_repository.has_item(session.character_name, LUMBER_AXE_ITEM_ID):
-            await self._send_interaction_result(
-                session=session,
-                target_id=target_id,
-                target_name=target_name,
-                text=default_dialogue,
-            )
-            await self._grant_item_if_needed(session, LUMBER_AXE_ITEM_ID)
-            return
-
-        log_quantity = self.character_repository.item_quantity(
-            session.character_name,
-            LOG_ITEM_ID,
-        )
-        if log_quantity >= JACK_REQUIRED_LOGS:
-            try:
-                inventory, exchanged = self.character_repository.exchange_items(
-                    name=session.character_name,
-                    cost_item_id=LOG_ITEM_ID,
-                    cost_quantity=JACK_REQUIRED_LOGS,
-                    reward_item_id=GOLD_ITEM_ID,
-                    reward_quantity=JACK_GOLD_REWARD,
-                )
-            except InventoryLimitError as exc:
-                await self._send_inventory_limit_result(session, target_id, target_name, exc)
-                return
-            if exchanged:
-                await self._send_interaction_result(
-                    session=session,
-                    target_id=target_id,
-                    target_name=target_name,
-                    text="Отличная древесина. Держи Gold.",
-                )
-                await self._send_inventory_update(session, inventory)
-            return
-
-        await self._send_interaction_result(
-            session=session,
-            target_id=target_id,
-            target_name=target_name,
-            text=default_dialogue,
-        )
-
-    async def _handle_kopai_interaction(
-        self,
-        session: PlayerSession,
-        target_id: str,
-        target_name: str,
-        default_dialogue: str,
-    ) -> None:
-        """
-        Обрабатывает туториальную логику NPC Kopai.
-        """
-        if not self.character_repository.has_item(session.character_name, PICKAXE_ITEM_ID):
-            await self._send_interaction_result(
-                session=session,
-                target_id=target_id,
-                target_name=target_name,
-                text=default_dialogue,
-            )
-            await self._grant_item_if_needed(session, PICKAXE_ITEM_ID)
-            return
-
-        stone_quantity = self.character_repository.item_quantity(
-            session.character_name,
-            STONE_ITEM_ID,
-        )
-        if stone_quantity >= KOPAI_REQUIRED_STONES:
-            try:
-                inventory, exchanged = self.character_repository.exchange_items(
-                    name=session.character_name,
-                    cost_item_id=STONE_ITEM_ID,
-                    cost_quantity=KOPAI_REQUIRED_STONES,
-                    reward_item_id=GOLD_ITEM_ID,
-                    reward_quantity=KOPAI_GOLD_REWARD,
-                )
-            except InventoryLimitError as exc:
-                await self._send_inventory_limit_result(session, target_id, target_name, exc)
-                return
-            if exchanged:
-                await self._send_interaction_result(
-                    session=session,
-                    target_id=target_id,
-                    target_name=target_name,
-                    text="Отличный камень. Держи Gold.",
-                )
-                await self._send_inventory_update(session, inventory)
-            return
-
-        await self._send_interaction_result(
-            session=session,
-            target_id=target_id,
-            target_name=target_name,
-            text=default_dialogue,
-        )
-
-    async def _handle_fogu_interaction(
-        self,
-        session: PlayerSession,
-        target_id: str,
-        target_name: str,
-        default_dialogue: str,
-    ) -> None:
-        """
-        Обрабатывает туториальную логику NPC Fogu.
-        """
-        if not self.character_repository.has_item(session.character_name, SHEARS_ITEM_ID):
-            await self._send_interaction_result(
-                session=session,
-                target_id=target_id,
-                target_name=target_name,
-                text=default_dialogue,
-            )
-            await self._grant_item_if_needed(session, SHEARS_ITEM_ID)
-            return
-
-        wool_quantity = self.character_repository.item_quantity(
-            session.character_name,
-            WOOL_ITEM_ID,
-        )
-        if wool_quantity >= FOGU_REQUIRED_WOOL:
-            try:
-                inventory, exchanged = self.character_repository.exchange_items(
-                    name=session.character_name,
-                    cost_item_id=WOOL_ITEM_ID,
-                    cost_quantity=FOGU_REQUIRED_WOOL,
-                    reward_item_id=GOLD_ITEM_ID,
-                    reward_quantity=FOGU_GOLD_REWARD,
-                )
-            except InventoryLimitError as exc:
-                await self._send_inventory_limit_result(session, target_id, target_name, exc)
-                return
-            if exchanged:
-                await self._send_interaction_result(
-                    session=session,
-                    target_id=target_id,
-                    target_name=target_name,
-                    text="Спасибо. Вот, держи.",
-                )
-                await self._send_inventory_update(session, inventory)
-            return
-
-        await self._send_interaction_result(
-            session=session,
-            target_id=target_id,
-            target_name=target_name,
-            text=default_dialogue,
-        )
+        await self._send_inventory_update(session, inventory)
 
     async def _handle_gate_interaction(
         self,
@@ -1603,11 +1620,42 @@ class MultiplayerServer:
             ),
         )
 
-    async def _grant_fishing_rod_if_needed(self, session: PlayerSession) -> None:
+    def _resolve_interaction_entity(
+        self,
+        session: PlayerSession,
+        target_id: str,
+    ) -> WorldEntity | None:
         """
-        Выдает персонажу удочку, если ее еще нет в инвентаре.
+        Проверяет, что interactable-объект существует и находится в радиусе игрока.
         """
-        await self._grant_item_if_needed(session, FISHING_ROD_ITEM_ID)
+        player = self.world.players.get(session.player_id)
+        entity = self.world.get_entity(target_id)
+        if player is None or entity is None:
+            logger.info(
+                "Interaction ignored: name=%s target_id=%s reason=missing_target",
+                session.character_name,
+                target_id,
+            )
+            return None
+        if entity.interaction is None:
+            logger.info(
+                "Interaction ignored: name=%s target_id=%s reason=not_interactable",
+                session.character_name,
+                target_id,
+            )
+            return None
+
+        distance = (player.center - entity.center).length
+        if distance > entity.interaction_radius:
+            logger.info(
+                "Interaction ignored: name=%s target_id=%s distance=%.2f radius=%.2f",
+                session.character_name,
+                target_id,
+                distance,
+                entity.interaction_radius,
+            )
+            return None
+        return entity
 
     async def _grant_item_if_needed(self, session: PlayerSession, item_id: str) -> None:
         """

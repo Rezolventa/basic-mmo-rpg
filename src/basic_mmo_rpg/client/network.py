@@ -20,6 +20,7 @@ from basic_mmo_rpg.shared.protocol import (
     equip_item_requested_payload,
     interact_requested_payload,
     interact_tile_requested_payload,
+    interaction_option_selected_payload,
     join_request_payload,
     movement_intent_to_payload,
     respawn_requested_payload,
@@ -119,6 +120,17 @@ class NetworkClient:
             ProtocolMessage(
                 type=ClientMessageType.INTERACT_REQUESTED,
                 payload=interact_tile_requested_payload(tile_x, tile_y),
+            )
+        )
+
+    def send_interaction_option_selected(self, entity_id: str, option_id: str) -> None:
+        """
+        Ставит выбор опции окна взаимодействия в очередь отправки на сервер.
+        """
+        self._outgoing.put(
+            ProtocolMessage(
+                type=ClientMessageType.INTERACTION_OPTION_SELECTED,
+                payload=interaction_option_selected_payload(entity_id, option_id),
             )
         )
 

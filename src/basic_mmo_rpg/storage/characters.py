@@ -90,6 +90,18 @@ class CharacterRepository:
                 )
                 """
             )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS character_repeatable_quest_completions (
+                    character_name TEXT NOT NULL,
+                    quest_id TEXT NOT NULL,
+                    completed_count INTEGER NOT NULL DEFAULT 0,
+                    last_completed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (character_name, quest_id),
+                    FOREIGN KEY (character_name) REFERENCES characters(name)
+                )
+                """
+            )
 
     def load_or_create(self, name: str, default_position: Vec2) -> CharacterRecord:
         """
@@ -334,6 +346,76 @@ class CharacterRepository:
             )
             self._set_item_quantity(connection, name, reward_item_id, next_reward_quantity)
             return self._load_inventory(connection, name), True
+
+    def complete_repeatable_quest_exchange(
+        self,
+        name: str,
+        quest_id: str,
+        cost_item_id: str,
+        cost_quantity: int,
+        reward_item_id: str,
+        reward_quantity: int = 1,
+    ) -> tuple[list[ItemStack], bool]:
+        """
+        Атомарно выполняет repeatable-квест обмена и записывает факт успешной сдачи.
+        """
+        if not quest_id:
+            msg = "quest_id must be non-empty"
+            raise ValueError(msg)
+        if cost_quantity <= 0 or reward_quantity <= 0:
+            msg = "exchange quantities must be positive"
+            raise ValueError(msg)
+
+        reward_definition = item_definition_for(reward_item_id)
+        with self._connect() as connection:
+            current_cost_quantity = self._item_quantity(connection, name, cost_item_id)
+            if current_cost_quantity < cost_quantity:
+                return self._load_inventory(connection, name), False
+
+            current_reward_quantity = self._item_quantity(connection, name, reward_item_id)
+            next_reward_quantity = current_reward_quantity + reward_quantity
+            if next_reward_quantity > reward_definition.stack_limit:
+                msg = f"item {reward_item_id!r} stack limit exceeded"
+                raise InventoryLimitError(msg)
+
+            self._set_item_quantity(
+                connection,
+                name,
+                cost_item_id,
+                current_cost_quantity - cost_quantity,
+            )
+            self._set_item_quantity(connection, name, reward_item_id, next_reward_quantity)
+            connection.execute(
+                """
+                INSERT INTO character_repeatable_quest_completions (
+                    character_name,
+                    quest_id,
+                    completed_count,
+                    last_completed_at
+                )
+                VALUES (?, ?, 1, CURRENT_TIMESTAMP)
+                ON CONFLICT(character_name, quest_id) DO UPDATE SET
+                    completed_count = completed_count + 1,
+                    last_completed_at = CURRENT_TIMESTAMP
+                """,
+                (name, quest_id),
+            )
+            return self._load_inventory(connection, name), True
+
+    def repeatable_quest_completion_count(self, name: str, quest_id: str) -> int:
+        """
+        Возвращает число успешных сдач repeatable-квеста персонажем.
+        """
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT completed_count
+                FROM character_repeatable_quest_completions
+                WHERE character_name = ? AND quest_id = ?
+                """,
+                (name, quest_id),
+            ).fetchone()
+        return int(row["completed_count"]) if row is not None else 0
 
     def _connect(self) -> sqlite3.Connection:
         """

@@ -27,8 +27,11 @@ from basic_mmo_rpg.domain.inventory import FISHING_ROD_ITEM_ID, ItemStack
 from basic_mmo_rpg.domain.movement import MovementIntent, PlayerState
 from basic_mmo_rpg.shared.protocol import (
     INTERACTION_PRESENTATION_FEED,
+    InteractionMenu,
+    InteractionMenuOption,
     combat_event_payload,
     equipment_updated_payload,
+    interaction_menu_opened_payload,
     interaction_result_payload,
     inventory_updated_payload,
 )
@@ -318,6 +321,111 @@ def test_death_dialog_click_requests_respawn() -> None:
     client._handle_left_click((10, 10))
 
     assert network.respawn_requests == 1
+
+
+def test_client_applies_interaction_menu() -> None:
+    """
+    Проверяет, что клиент принимает server-authoritative NPC-окно.
+    """
+    client = object.__new__(GameClient)
+    option = InteractionMenuOption(
+        option_id="quest:funday_fish",
+        label="Обменять Рыба x2 на Gold x1 (1/2)",
+        kind="repeatable",
+        enabled=False,
+    )
+
+    client._apply_interaction_menu_opened(
+        interaction_menu_opened_payload(
+            entity_id="npc-funday",
+            title="Funday",
+            body="Иди и поймай мне рыбу",
+            options=(option,),
+        )
+    )
+
+    assert client.interaction_menu == InteractionMenu(
+        entity_id="npc-funday",
+        title="Funday",
+        body="Иди и поймай мне рыбу",
+        options=(option,),
+    )
+
+
+def test_interaction_menu_click_requests_enabled_option() -> None:
+    """
+    Проверяет, что клик по активной строке NPC-окна отправляет option_id.
+    """
+    client = object.__new__(GameClient)
+    network = _NetworkRecorder()
+    option = InteractionMenuOption(
+        option_id="quest:funday_fish",
+        label="Обменять Рыба x2 на Gold x1 (2/2)",
+        kind="repeatable",
+    )
+    client.interaction_menu = InteractionMenu(
+        entity_id="npc-funday",
+        title="Funday",
+        body="Иди и поймай мне рыбу",
+        options=(option,),
+    )
+    client.screen = object()
+    client.renderer = SimpleNamespace(
+        interaction_menu_hit_at_position=lambda screen, position, menu: option
+    )
+    client.network_client = network
+
+    client._handle_interaction_menu_click((10, 10))
+
+    assert network.interaction_options == [("npc-funday", "quest:funday_fish")]
+
+
+def test_interaction_menu_click_ignores_disabled_option() -> None:
+    """
+    Проверяет, что disabled-строка NPC-окна не отправляет запрос на сервер.
+    """
+    client = object.__new__(GameClient)
+    network = _NetworkRecorder()
+    option = InteractionMenuOption(
+        option_id="quest:funday_fish",
+        label="Обменять Рыба x2 на Gold x1 (1/2)",
+        kind="repeatable",
+        enabled=False,
+    )
+    client.interaction_menu = InteractionMenu(
+        entity_id="npc-funday",
+        title="Funday",
+        body="Иди и поймай мне рыбу",
+        options=(option,),
+    )
+    client.screen = object()
+    client.renderer = SimpleNamespace(
+        interaction_menu_hit_at_position=lambda screen, position, menu: option
+    )
+    client.network_client = network
+
+    client._handle_interaction_menu_click((10, 10))
+
+    assert network.interaction_options == []
+
+
+def test_interaction_menu_escape_closes_dialog() -> None:
+    """
+    Проверяет, что Esc закрывает NPC-окно.
+    """
+    client = object.__new__(GameClient)
+    client.chat_input_active = False
+    client.death_dialog_visible = False
+    client.interaction_menu = InteractionMenu(
+        entity_id="npc-funday",
+        title="Funday",
+        body="Иди и поймай мне рыбу",
+        options=(),
+    )
+
+    client._handle_key_down(SimpleNamespace(key=pygame.K_ESCAPE, unicode=""))
+
+    assert client.interaction_menu is None
 
 
 def test_client_applies_interaction_result_to_log_and_entity_bubble() -> None:
@@ -688,6 +796,7 @@ class _NetworkRecorder:
         self.equipped_items: list[str] = []
         self.unequipped_slots: list[str] = []
         self.attack_targets: list[str] = []
+        self.interaction_options: list[tuple[str, str]] = []
         self.stop_attack_requests = 0
         self.respawn_requests = 0
 
@@ -708,6 +817,12 @@ class _NetworkRecorder:
         Запоминает запрос выбора цели атаки.
         """
         self.attack_targets.append(target_id)
+
+    def send_interaction_option_selected(self, entity_id: str, option_id: str) -> None:
+        """
+        Запоминает выбор опции NPC-окна.
+        """
+        self.interaction_options.append((entity_id, option_id))
 
     def send_stop_attack_request(self) -> None:
         """

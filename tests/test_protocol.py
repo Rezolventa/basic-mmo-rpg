@@ -24,6 +24,8 @@ from basic_mmo_rpg.shared.protocol import (
     INTERACTION_PRESENTATION_FEED,
     ClientMessageType,
     EntitySnapshot,
+    InteractionMenuOption,
+    InteractionOptionSelection,
     InteractionTarget,
     PlayerSnapshot,
     ProtocolError,
@@ -44,6 +46,10 @@ from basic_mmo_rpg.shared.protocol import (
     equipment_updated_payload,
     interact_requested_payload,
     interact_tile_requested_payload,
+    interaction_menu_from_payload,
+    interaction_menu_opened_payload,
+    interaction_option_selected_payload,
+    interaction_option_selection_from_payload,
     interaction_presentation_from_payload,
     interaction_result_payload,
     interaction_target_from_payload,
@@ -245,6 +251,42 @@ def test_interaction_target_payload_is_validated() -> None:
         interaction_target_from_payload({"target_tile": [True, 4]})
     with pytest.raises(ProtocolError):
         interaction_target_from_payload({"target_tile": [-1, 4]})
+
+
+def test_interaction_menu_payloads_are_validated() -> None:
+    """
+    Проверяет payload-ы серверного NPC-окна и выбора его опции.
+    """
+    option = InteractionMenuOption(
+        option_id="quest:funday_fish",
+        label="Обменять Рыба x2 на Gold x1 (1/2)",
+        kind="repeatable",
+        enabled=False,
+        progress="Рыба 1/2",
+        disabled_reason="Нужно: Рыба 1/2",
+    )
+    payload = interaction_menu_opened_payload(
+        entity_id="npc-funday",
+        title="Funday",
+        body="Иди и поймай мне рыбу",
+        options=(option,),
+    )
+
+    menu = interaction_menu_from_payload(payload)
+    selection = interaction_option_selection_from_payload(
+        interaction_option_selected_payload("npc-funday", "quest:funday_fish")
+    )
+
+    assert menu.entity_id == "npc-funday"
+    assert menu.options == (option,)
+    assert selection == InteractionOptionSelection(
+        entity_id="npc-funday",
+        option_id="quest:funday_fish",
+    )
+    with pytest.raises(ProtocolError):
+        interaction_menu_from_payload({"entity_id": "npc-funday", "title": "Funday"})
+    with pytest.raises(ProtocolError):
+        interaction_option_selection_from_payload({"entity_id": "npc-funday", "option_id": ""})
 
 
 def test_combat_payloads_are_validated() -> None:

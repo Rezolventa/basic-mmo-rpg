@@ -44,6 +44,7 @@ class ClientMessageType(StrEnum):
     MOVE_REQUESTED = "move_requested"
     CHAT_SENT = "chat_sent"
     INTERACT_REQUESTED = "interact_requested"
+    INTERACTION_OPTION_SELECTED = "interaction_option_selected"
     EQUIP_ITEM_REQUESTED = "equip_item_requested"
     UNEQUIP_ITEM_REQUESTED = "unequip_item_requested"
     ATTACK_REQUESTED = "attack_requested"
@@ -61,6 +62,7 @@ class ServerMessageType(StrEnum):
     PLAYER_MOVED = "player_moved"
     CHAT_MESSAGE = "chat_message"
     INTERACTION_RESULT = "interaction_result"
+    INTERACTION_MENU_OPENED = "interaction_menu_opened"
     ENTITY_SPAWNED = "entity_spawned"
     ENTITY_REMOVED = "entity_removed"
     INVENTORY_UPDATED = "inventory_updated"
@@ -118,6 +120,43 @@ class InteractionTarget:
 
     entity_id: str | None = None
     tile: tuple[int, int] | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class InteractionOptionSelection:
+    """
+    Хранит выбранную клиентом опцию серверного окна взаимодействия.
+    """
+
+    entity_id: str
+    option_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class InteractionMenuOption:
+    """
+    Хранит одну серверную опцию окна взаимодействия с NPC.
+    """
+
+    option_id: str
+    label: str
+    kind: str
+    enabled: bool = True
+    details: str | None = None
+    progress: str | None = None
+    disabled_reason: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class InteractionMenu:
+    """
+    Хранит серверное содержимое окна взаимодействия с NPC.
+    """
+
+    entity_id: str
+    title: str
+    body: str
+    options: tuple[InteractionMenuOption, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -375,6 +414,109 @@ def interaction_target_from_payload(payload: Mapping[str, Any]) -> InteractionTa
 
     msg = "interaction target is required"
     raise ProtocolError(msg)
+
+
+def interaction_option_selected_payload(entity_id: str, option_id: str) -> dict[str, Any]:
+    """
+    Создает payload выбора опции в серверном окне взаимодействия.
+    """
+    return {"entity_id": entity_id, "option_id": option_id}
+
+
+def interaction_option_selection_from_payload(
+    payload: Mapping[str, Any],
+) -> InteractionOptionSelection:
+    """
+    Извлекает выбор опции окна взаимодействия из payload-а клиента.
+    """
+    return InteractionOptionSelection(
+        entity_id=_string_field(payload, "entity_id"),
+        option_id=_string_field(payload, "option_id"),
+    )
+
+
+def interaction_menu_option_to_payload(option: InteractionMenuOption) -> dict[str, Any]:
+    """
+    Преобразует опцию окна взаимодействия в JSON-готовый payload.
+    """
+    payload: dict[str, Any] = {
+        "id": option.option_id,
+        "label": option.label,
+        "kind": option.kind,
+        "enabled": option.enabled,
+    }
+    if option.details is not None:
+        payload["details"] = option.details
+    if option.progress is not None:
+        payload["progress"] = option.progress
+    if option.disabled_reason is not None:
+        payload["disabled_reason"] = option.disabled_reason
+    return payload
+
+
+def interaction_menu_option_from_payload(
+    payload: Mapping[str, Any],
+) -> InteractionMenuOption:
+    """
+    Создает опцию окна взаимодействия из server-authoritative payload-а.
+    """
+    option_id = payload.get("id")
+    if not isinstance(option_id, str) or not option_id:
+        msg = "interaction menu option id must be a non-empty string"
+        raise ProtocolError(msg)
+    return InteractionMenuOption(
+        option_id=option_id,
+        label=_string_field(payload, "label"),
+        kind=_string_field(payload, "kind"),
+        enabled=_bool_field(payload, "enabled"),
+        details=_optional_string_field(payload, "details"),
+        progress=_optional_string_field(payload, "progress"),
+        disabled_reason=_optional_string_field(payload, "disabled_reason"),
+    )
+
+
+def interaction_menu_opened_payload(
+    entity_id: str,
+    title: str,
+    body: str,
+    options: tuple[InteractionMenuOption, ...],
+) -> dict[str, Any]:
+    """
+    Создает payload серверного окна взаимодействия с NPC.
+    """
+    return {
+        "entity_id": entity_id,
+        "title": title,
+        "body": body,
+        "options": [interaction_menu_option_to_payload(option) for option in options],
+    }
+
+
+def interaction_menu_from_payload(payload: Mapping[str, Any]) -> InteractionMenu:
+    """
+    Создает окно взаимодействия из server-authoritative payload-а.
+    """
+    body = payload.get("body", "")
+    if not isinstance(body, str):
+        msg = "interaction menu body must be a string"
+        raise ProtocolError(msg)
+
+    raw_options = payload.get("options")
+    if not isinstance(raw_options, list):
+        msg = "interaction menu options must be a list"
+        raise ProtocolError(msg)
+
+    options: list[InteractionMenuOption] = []
+    for raw_option in raw_options:
+        option_payload = _map_payload(raw_option, "interaction menu option")
+        options.append(interaction_menu_option_from_payload(option_payload))
+
+    return InteractionMenu(
+        entity_id=_string_field(payload, "entity_id"),
+        title=_string_field(payload, "title"),
+        body=body,
+        options=tuple(options),
+    )
 
 
 def attack_requested_payload(target_id: str) -> dict[str, Any]:

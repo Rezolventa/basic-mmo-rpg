@@ -45,6 +45,8 @@ from basic_mmo_rpg.shared.protocol import (
     equipment_from_payload,
     interact_requested_payload,
     interact_tile_requested_payload,
+    interaction_menu_from_payload,
+    interaction_option_selected_payload,
     inventory_items_from_payload,
     join_request_payload,
     movement_intent_to_payload,
@@ -1024,28 +1026,25 @@ async def _interaction_result_only_to_actor_smoke(tmp_path: Path) -> None:
         async with connect(uri) as first_client, connect(uri) as second_client:
             await _send_join(first_client, "Alice")
             await _send_join(second_client, "Bob")
-            first_id = await _recv_player_id(first_client)
+            await _recv_player_id(first_client)
             await _recv_player_id(second_client)
 
-            await first_client.send(
-                encode_message(
-                    ProtocolMessage(
-                        type=ClientMessageType.INTERACT_REQUESTED,
-                        payload=interact_requested_payload("npc-funday"),
-                    )
-                )
+            menu = await _open_npc_menu(first_client, "npc-funday")
+            assert menu.entity_id == "npc-funday"
+            assert menu.options[0].option_id == "action:grant_fishing_rod"
+            assert menu.options[1].option_id == "quest:funday_fish"
+            assert menu.options[1].enabled is False
+            await _select_interaction_option(
+                first_client,
+                "npc-funday",
+                "action:grant_fishing_rod",
             )
-            message = await _recv_message_type(first_client, ServerMessageType.INTERACTION_RESULT)
             inventory_message = await _recv_message_type(
                 first_client,
                 ServerMessageType.INVENTORY_UPDATED,
             )
-            await _assert_no_message_type(second_client, ServerMessageType.INTERACTION_RESULT)
+            await _assert_no_message_type(second_client, ServerMessageType.INTERACTION_MENU_OPENED)
 
-        assert message.payload["actor_id"] == first_id
-        assert message.payload["target_id"] == "npc-funday"
-        assert message.payload["target_name"] == "Funday"
-        assert message.payload["text"] == "Иди и поймай мне рыбу"
         inventory = inventory_items_from_payload(inventory_message.payload)
         persisted_inventory = multiplayer_server.character_repository.load_inventory("Alice")
         assert len(inventory) == 1
@@ -1092,6 +1091,7 @@ async def _training_dummy_grants_rusty_sword_once_smoke(tmp_path: Path) -> None:
             )
         )
         await _assert_no_message_type(first_client, ServerMessageType.INTERACTION_RESULT)
+        await _assert_no_message_type(first_client, ServerMessageType.INTERACTION_MENU_OPENED)
         await _assert_no_message_type(first_client, ServerMessageType.INVENTORY_UPDATED)
 
         await first_client.send(
@@ -1575,14 +1575,10 @@ async def _funday_exchange_smoke(tmp_path: Path) -> None:
         first_id = await _recv_player_id(first_client)
         await _recv_message_type(first_client, ServerMessageType.INVENTORY_UPDATED)
 
-        await first_client.send(
-            encode_message(
-                ProtocolMessage(
-                    type=ClientMessageType.INTERACT_REQUESTED,
-                    payload=interact_requested_payload("npc-funday"),
-                )
-            )
-        )
+        menu = await _open_npc_menu(first_client, "npc-funday")
+        assert menu.options[0].option_id == "quest:funday_fish"
+        assert menu.options[0].enabled is True
+        await _select_interaction_option(first_client, "npc-funday", "quest:funday_fish")
         result_message = await _recv_message_type(
             first_client,
             ServerMessageType.INTERACTION_RESULT,
@@ -1603,6 +1599,10 @@ async def _funday_exchange_smoke(tmp_path: Path) -> None:
     assert FISH_ITEM_ID not in quantities
     assert multiplayer_server.character_repository.item_quantity("Alice", FISH_ITEM_ID) == 0
     assert multiplayer_server.character_repository.item_quantity("Alice", GOLD_ITEM_ID) == 1
+    assert multiplayer_server.character_repository.repeatable_quest_completion_count(
+        "Alice",
+        "funday_fish",
+    ) == 1
 
 
 async def _funday_grants_rod_before_exchange_smoke(tmp_path: Path) -> None:
@@ -1618,28 +1618,24 @@ async def _funday_grants_rod_before_exchange_smoke(tmp_path: Path) -> None:
 
     async with _running_test_server(multiplayer_server) as uri, connect(uri) as first_client:
         await _send_join(first_client, "Alice")
-        first_id = await _recv_player_id(first_client)
+        await _recv_player_id(first_client)
         initial_inventory_message = await _recv_message_type(
             first_client,
             ServerMessageType.INVENTORY_UPDATED,
         )
 
-        await first_client.send(
-            encode_message(
-                ProtocolMessage(
-                    type=ClientMessageType.INTERACT_REQUESTED,
-                    payload=interact_requested_payload("npc-funday"),
-                )
-            )
-        )
-        result_message = await _recv_message_type(
-            first_client,
-            ServerMessageType.INTERACTION_RESULT,
-        )
+        menu = await _open_npc_menu(first_client, "npc-funday")
+        assert [option.option_id for option in menu.options] == [
+            "action:grant_fishing_rod",
+            "quest:funday_fish",
+        ]
+        assert menu.options[1].enabled is True
+        await _select_interaction_option(first_client, "npc-funday", "action:grant_fishing_rod")
         inventory_message = await _recv_message_type(
             first_client,
             ServerMessageType.INVENTORY_UPDATED,
         )
+        await _assert_no_message_type(first_client, ServerMessageType.INTERACTION_RESULT)
 
     initial_quantities = {
         item.item_id: item.quantity
@@ -1648,9 +1644,6 @@ async def _funday_grants_rod_before_exchange_smoke(tmp_path: Path) -> None:
     quantities = {item.item_id: item.quantity for item in inventory_items_from_payload(
         inventory_message.payload
     )}
-    assert result_message.payload["actor_id"] == first_id
-    assert result_message.payload["target_id"] == "npc-funday"
-    assert result_message.payload["text"] == "Иди и поймай мне рыбу"
     assert initial_quantities[FISH_ITEM_ID] == 2
     assert quantities[FISH_ITEM_ID] == 2
     assert quantities[FISHING_ROD_ITEM_ID] == 1
@@ -1717,14 +1710,10 @@ async def _exchange_stack_overflow_smoke(tmp_path: Path) -> None:
         first_id = await _recv_player_id(first_client)
         await _recv_message_type(first_client, ServerMessageType.INVENTORY_UPDATED)
 
-        await first_client.send(
-            encode_message(
-                ProtocolMessage(
-                    type=ClientMessageType.INTERACT_REQUESTED,
-                    payload=interact_requested_payload("npc-funday"),
-                )
-            )
-        )
+        menu = await _open_npc_menu(first_client, "npc-funday")
+        assert menu.options[0].option_id == "quest:funday_fish"
+        assert menu.options[0].enabled is True
+        await _select_interaction_option(first_client, "npc-funday", "quest:funday_fish")
         result_message = await _recv_message_type(
             first_client,
             ServerMessageType.INTERACTION_RESULT,
@@ -1746,27 +1735,21 @@ async def _jack_lumber_grants_axe_smoke(tmp_path: Path) -> None:
 
     async with _running_test_server(multiplayer_server) as uri, connect(uri) as first_client:
         await _send_join(first_client, "Alice")
-        first_id = await _recv_player_id(first_client)
+        await _recv_player_id(first_client)
 
-        await first_client.send(
-            encode_message(
-                ProtocolMessage(
-                    type=ClientMessageType.INTERACT_REQUESTED,
-                    payload=interact_requested_payload("npc-jack-lumber"),
-                )
-            )
+        menu = await _open_npc_menu(first_client, "npc-jack-lumber")
+        assert menu.options[0].option_id == "action:grant_lumber_axe"
+        await _select_interaction_option(
+            first_client,
+            "npc-jack-lumber",
+            "action:grant_lumber_axe",
         )
-        message = await _recv_message_type(first_client, ServerMessageType.INTERACTION_RESULT)
         inventory_message = await _recv_message_type(
             first_client,
             ServerMessageType.INVENTORY_UPDATED,
         )
 
     inventory = inventory_items_from_payload(inventory_message.payload)
-    assert message.payload["actor_id"] == first_id
-    assert message.payload["target_id"] == "npc-jack-lumber"
-    assert message.payload["target_name"] == "Jack Lumber"
-    assert message.payload["text"] == "Наруби немного древесины"
     assert len(inventory) == 1
     assert inventory[0].item_id == LUMBER_AXE_ITEM_ID
     assert inventory[0].quantity == 1
@@ -1933,13 +1916,13 @@ async def _jack_lumber_exchange_smoke(tmp_path: Path) -> None:
         first_id = await _recv_player_id(first_client)
         await _recv_message_type(first_client, ServerMessageType.INVENTORY_UPDATED)
 
-        await first_client.send(
-            encode_message(
-                ProtocolMessage(
-                    type=ClientMessageType.INTERACT_REQUESTED,
-                    payload=interact_requested_payload("npc-jack-lumber"),
-                )
-            )
+        menu = await _open_npc_menu(first_client, "npc-jack-lumber")
+        assert menu.options[0].option_id == "quest:jack_lumber_logs"
+        assert menu.options[0].enabled is True
+        await _select_interaction_option(
+            first_client,
+            "npc-jack-lumber",
+            "quest:jack_lumber_logs",
         )
         result_message = await _recv_message_type(
             first_client,
@@ -1961,6 +1944,10 @@ async def _jack_lumber_exchange_smoke(tmp_path: Path) -> None:
     assert LOG_ITEM_ID not in quantities
     assert multiplayer_server.character_repository.item_quantity("Alice", LOG_ITEM_ID) == 0
     assert multiplayer_server.character_repository.item_quantity("Alice", GOLD_ITEM_ID) == 1
+    assert multiplayer_server.character_repository.repeatable_quest_completion_count(
+        "Alice",
+        "jack_lumber_logs",
+    ) == 1
 
 
 async def _jack_lumber_grants_axe_before_exchange_smoke(tmp_path: Path) -> None:
@@ -1973,28 +1960,28 @@ async def _jack_lumber_grants_axe_before_exchange_smoke(tmp_path: Path) -> None:
 
     async with _running_test_server(multiplayer_server) as uri, connect(uri) as first_client:
         await _send_join(first_client, "Alice")
-        first_id = await _recv_player_id(first_client)
+        await _recv_player_id(first_client)
         initial_inventory_message = await _recv_message_type(
             first_client,
             ServerMessageType.INVENTORY_UPDATED,
         )
 
-        await first_client.send(
-            encode_message(
-                ProtocolMessage(
-                    type=ClientMessageType.INTERACT_REQUESTED,
-                    payload=interact_requested_payload("npc-jack-lumber"),
-                )
-            )
-        )
-        result_message = await _recv_message_type(
+        menu = await _open_npc_menu(first_client, "npc-jack-lumber")
+        assert [option.option_id for option in menu.options] == [
+            "action:grant_lumber_axe",
+            "quest:jack_lumber_logs",
+        ]
+        assert menu.options[1].enabled is True
+        await _select_interaction_option(
             first_client,
-            ServerMessageType.INTERACTION_RESULT,
+            "npc-jack-lumber",
+            "action:grant_lumber_axe",
         )
         inventory_message = await _recv_message_type(
             first_client,
             ServerMessageType.INVENTORY_UPDATED,
         )
+        await _assert_no_message_type(first_client, ServerMessageType.INTERACTION_RESULT)
 
     initial_quantities = {
         item.item_id: item.quantity
@@ -2004,9 +1991,6 @@ async def _jack_lumber_grants_axe_before_exchange_smoke(tmp_path: Path) -> None:
         item.item_id: item.quantity
         for item in inventory_items_from_payload(inventory_message.payload)
     }
-    assert result_message.payload["actor_id"] == first_id
-    assert result_message.payload["target_id"] == "npc-jack-lumber"
-    assert result_message.payload["text"] == "Наруби немного древесины"
     assert initial_quantities[LOG_ITEM_ID] == 5
     assert quantities[LOG_ITEM_ID] == 5
     assert quantities[LUMBER_AXE_ITEM_ID] == 1
@@ -2023,27 +2007,17 @@ async def _kopai_grants_pickaxe_smoke(tmp_path: Path) -> None:
 
     async with _running_test_server(multiplayer_server) as uri, connect(uri) as first_client:
         await _send_join(first_client, "Alice")
-        first_id = await _recv_player_id(first_client)
+        await _recv_player_id(first_client)
 
-        await first_client.send(
-            encode_message(
-                ProtocolMessage(
-                    type=ClientMessageType.INTERACT_REQUESTED,
-                    payload=interact_requested_payload("npc-kopai"),
-                )
-            )
-        )
-        message = await _recv_message_type(first_client, ServerMessageType.INTERACTION_RESULT)
+        menu = await _open_npc_menu(first_client, "npc-kopai")
+        assert menu.options[0].option_id == "action:grant_pickaxe"
+        await _select_interaction_option(first_client, "npc-kopai", "action:grant_pickaxe")
         inventory_message = await _recv_message_type(
             first_client,
             ServerMessageType.INVENTORY_UPDATED,
         )
 
     inventory = inventory_items_from_payload(inventory_message.payload)
-    assert message.payload["actor_id"] == first_id
-    assert message.payload["target_id"] == "npc-kopai"
-    assert message.payload["target_name"] == "Kopai"
-    assert message.payload["text"] == "Накопай мне чего-нибудь"
     assert len(inventory) == 1
     assert inventory[0].item_id == PICKAXE_ITEM_ID
     assert inventory[0].quantity == 1
@@ -2180,14 +2154,10 @@ async def _kopai_exchange_smoke(tmp_path: Path) -> None:
         first_id = await _recv_player_id(first_client)
         await _recv_message_type(first_client, ServerMessageType.INVENTORY_UPDATED)
 
-        await first_client.send(
-            encode_message(
-                ProtocolMessage(
-                    type=ClientMessageType.INTERACT_REQUESTED,
-                    payload=interact_requested_payload("npc-kopai"),
-                )
-            )
-        )
+        menu = await _open_npc_menu(first_client, "npc-kopai")
+        assert menu.options[0].option_id == "quest:kopai_stones"
+        assert menu.options[0].enabled is True
+        await _select_interaction_option(first_client, "npc-kopai", "quest:kopai_stones")
         result_message = await _recv_message_type(
             first_client,
             ServerMessageType.INTERACTION_RESULT,
@@ -2208,6 +2178,10 @@ async def _kopai_exchange_smoke(tmp_path: Path) -> None:
     assert STONE_ITEM_ID not in quantities
     assert multiplayer_server.character_repository.item_quantity("Alice", STONE_ITEM_ID) == 0
     assert multiplayer_server.character_repository.item_quantity("Alice", GOLD_ITEM_ID) == 1
+    assert multiplayer_server.character_repository.repeatable_quest_completion_count(
+        "Alice",
+        "kopai_stones",
+    ) == 1
 
 
 async def _kopai_grants_pickaxe_before_exchange_smoke(tmp_path: Path) -> None:
@@ -2220,28 +2194,24 @@ async def _kopai_grants_pickaxe_before_exchange_smoke(tmp_path: Path) -> None:
 
     async with _running_test_server(multiplayer_server) as uri, connect(uri) as first_client:
         await _send_join(first_client, "Alice")
-        first_id = await _recv_player_id(first_client)
+        await _recv_player_id(first_client)
         initial_inventory_message = await _recv_message_type(
             first_client,
             ServerMessageType.INVENTORY_UPDATED,
         )
 
-        await first_client.send(
-            encode_message(
-                ProtocolMessage(
-                    type=ClientMessageType.INTERACT_REQUESTED,
-                    payload=interact_requested_payload("npc-kopai"),
-                )
-            )
-        )
-        result_message = await _recv_message_type(
-            first_client,
-            ServerMessageType.INTERACTION_RESULT,
-        )
+        menu = await _open_npc_menu(first_client, "npc-kopai")
+        assert [option.option_id for option in menu.options] == [
+            "action:grant_pickaxe",
+            "quest:kopai_stones",
+        ]
+        assert menu.options[1].enabled is True
+        await _select_interaction_option(first_client, "npc-kopai", "action:grant_pickaxe")
         inventory_message = await _recv_message_type(
             first_client,
             ServerMessageType.INVENTORY_UPDATED,
         )
+        await _assert_no_message_type(first_client, ServerMessageType.INTERACTION_RESULT)
 
     initial_quantities = {
         item.item_id: item.quantity
@@ -2251,9 +2221,6 @@ async def _kopai_grants_pickaxe_before_exchange_smoke(tmp_path: Path) -> None:
         item.item_id: item.quantity
         for item in inventory_items_from_payload(inventory_message.payload)
     }
-    assert result_message.payload["actor_id"] == first_id
-    assert result_message.payload["target_id"] == "npc-kopai"
-    assert result_message.payload["text"] == "Накопай мне чего-нибудь"
     assert initial_quantities[STONE_ITEM_ID] == 3
     assert quantities[STONE_ITEM_ID] == 3
     assert quantities[PICKAXE_ITEM_ID] == 1
@@ -2270,29 +2237,17 @@ async def _fogu_grants_shears_smoke(tmp_path: Path) -> None:
 
     async with _running_test_server(multiplayer_server) as uri, connect(uri) as first_client:
         await _send_join(first_client, "Alice")
-        first_id = await _recv_player_id(first_client)
+        await _recv_player_id(first_client)
 
-        await first_client.send(
-            encode_message(
-                ProtocolMessage(
-                    type=ClientMessageType.INTERACT_REQUESTED,
-                    payload=interact_requested_payload("npc-fogu"),
-                )
-            )
-        )
-        result_message = await _recv_message_type(
-            first_client,
-            ServerMessageType.INTERACTION_RESULT,
-        )
+        menu = await _open_npc_menu(first_client, "npc-fogu")
+        assert menu.options[0].option_id == "action:grant_shears"
+        await _select_interaction_option(first_client, "npc-fogu", "action:grant_shears")
         inventory_message = await _recv_message_type(
             first_client,
             ServerMessageType.INVENTORY_UPDATED,
         )
 
     inventory = inventory_items_from_payload(inventory_message.payload)
-    assert result_message.payload["actor_id"] == first_id
-    assert result_message.payload["target_id"] == "npc-fogu"
-    assert result_message.payload["text"] == "Постриги мою Барбару"
     assert len(inventory) == 1
     assert inventory[0].item_id == SHEARS_ITEM_ID
     assert multiplayer_server.character_repository.load_inventory("Alice") == inventory
@@ -2394,14 +2349,10 @@ async def _fogu_exchange_smoke(tmp_path: Path) -> None:
         first_id = await _recv_player_id(first_client)
         await _recv_message_type(first_client, ServerMessageType.INVENTORY_UPDATED)
 
-        await first_client.send(
-            encode_message(
-                ProtocolMessage(
-                    type=ClientMessageType.INTERACT_REQUESTED,
-                    payload=interact_requested_payload("npc-fogu"),
-                )
-            )
-        )
+        menu = await _open_npc_menu(first_client, "npc-fogu")
+        assert menu.options[0].option_id == "quest:fogu_wool"
+        assert menu.options[0].enabled is True
+        await _select_interaction_option(first_client, "npc-fogu", "quest:fogu_wool")
         result_message = await _recv_message_type(
             first_client,
             ServerMessageType.INTERACTION_RESULT,
@@ -2420,6 +2371,10 @@ async def _fogu_exchange_smoke(tmp_path: Path) -> None:
     assert quantities[GOLD_ITEM_ID] == 1
     assert multiplayer_server.character_repository.item_quantity("Alice", WOOL_ITEM_ID) == 0
     assert multiplayer_server.character_repository.item_quantity("Alice", GOLD_ITEM_ID) == 1
+    assert multiplayer_server.character_repository.repeatable_quest_completion_count(
+        "Alice",
+        "fogu_wool",
+    ) == 1
 
 
 async def _gate_toggle_smoke(tmp_path: Path) -> None:
@@ -2677,6 +2632,40 @@ async def _recv_combat_event_matching(
 
     msg = "server did not send expected combat_event in time"
     raise AssertionError(msg)
+
+
+async def _open_npc_menu(websocket: object, entity_id: str) -> object:
+    """
+    Открывает NPC-меню через interact_requested и возвращает его protocol-модель.
+    """
+    await websocket.send(
+        encode_message(
+            ProtocolMessage(
+                type=ClientMessageType.INTERACT_REQUESTED,
+                payload=interact_requested_payload(entity_id),
+            )
+        )
+    )
+    message = await _recv_message_type(websocket, ServerMessageType.INTERACTION_MENU_OPENED)
+    return interaction_menu_from_payload(message.payload)
+
+
+async def _select_interaction_option(
+    websocket: object,
+    entity_id: str,
+    option_id: str,
+) -> None:
+    """
+    Отправляет выбор опции NPC-меню.
+    """
+    await websocket.send(
+        encode_message(
+            ProtocolMessage(
+                type=ClientMessageType.INTERACTION_OPTION_SELECTED,
+                payload=interaction_option_selected_payload(entity_id, option_id),
+            )
+        )
+    )
 
 
 async def _recv_message_type(
