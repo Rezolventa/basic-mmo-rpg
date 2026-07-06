@@ -313,6 +313,21 @@ def test_world_removes_player_and_ignores_missing_intent() -> None:
     assert world.players == {}
 
 
+def test_world_updates_player_runtime_speed() -> None:
+    """
+    Проверяет ручное runtime-изменение скорости персонажа.
+    """
+    world = MultiplayerWorld(tile_map=tile_map_from_dict(_open_map()))
+    world.add_player("p1", "Alice")
+
+    updated = world.set_player_speed("p1", 220.0)
+
+    assert updated is not None
+    assert updated.speed == 220.0
+    assert world.players["p1"].speed == 220.0
+    assert world.set_player_speed("missing", 220.0) is None
+
+
 def test_world_reuses_only_unoccupied_spawn_positions() -> None:
     """
     Проверяет, что новый игрок не появляется поверх оставшегося игрока после disconnect-а.

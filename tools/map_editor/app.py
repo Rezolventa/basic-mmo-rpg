@@ -13,6 +13,7 @@ from tools.map_editor.map_io import (
     save_editable_map,
 )
 from tools.map_editor.rendering import MapEditorRenderer
+from tools.map_editor.state import CREATURE_ENTITY_KIND
 from tools.map_editor.viewport import Viewport
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -127,6 +128,9 @@ class MapEditorApp:
             return
         if key == pygame.K_s and modifiers & pygame.KMOD_CTRL:
             self._save_map()
+            return
+        if key == pygame.K_d and modifiers & pygame.KMOD_CTRL:
+            self._duplicate_selected_creature()
             return
         tile_index = NUMBER_KEY_TO_INDEX.get(key)
         if tile_index is None:
@@ -256,6 +260,24 @@ class MapEditorApp:
             view_height=self.renderer.map_view_height(self.screen),
         )
         self.status_message = f"Zoom: {next_zoom:g}x"
+
+    def _duplicate_selected_creature(self) -> None:
+        selected_entity = self.state.selected_entity()
+        if selected_entity is None:
+            self.status_message = "Select a creature entity first"
+            return
+        if selected_entity.kind != CREATURE_ENTITY_KIND:
+            self.status_message = "Only creature entities can be duplicated"
+            return
+
+        duplicate = self.state.duplicate_selected_creature()
+        if duplicate is None:
+            self.status_message = "Only creature entities can be duplicated"
+            return
+
+        self.dragging_entity_id = None
+        self.painting = False
+        self.status_message = f"Duplicated {duplicate.entity_id}"
 
     def _save_map(self) -> None:
         if not self.state.dirty:

@@ -4,6 +4,7 @@ import argparse
 import asyncio
 import contextlib
 import logging
+import math
 import random
 import time
 import uuid
@@ -98,6 +99,13 @@ RUSTY_SWORD_MIN_DAMAGE = 3
 RUSTY_SWORD_MAX_DAMAGE = 6
 RUSTY_SWORD_SWING_COOLDOWN_SECONDS = 1.2
 PLAYER_DEATH_TEXT = "Вы погибли"
+CHAT_COMMAND_PREFIX = "/"
+SET_SPEED_COMMAND = "/setspeed"
+MIN_MANUAL_PLAYER_SPEED = 0.0
+MAX_MANUAL_PLAYER_SPEED = 600.0
+UNKNOWN_COMMAND_TEXT = "Неизвестная команда"
+SET_SPEED_USAGE_TEXT = "Использование: /setspeed <0-600>"
+SET_SPEED_INVALID_TEXT = "Скорость должна быть числом от 0 до 600"
 
 logger = logging.getLogger(__name__)
 
@@ -653,9 +661,13 @@ class MultiplayerServer:
         payload: dict[str, object],
     ) -> None:
         """
-        Проверяет сообщение чата и рассылает его всем клиентам.
+        Проверяет сообщение чата, обрабатывает команды или рассылает текст всем клиентам.
         """
         text = chat_text_from_payload(payload)
+        if text.startswith(CHAT_COMMAND_PREFIX):
+            await self._handle_chat_command(session, text)
+            return
+
         logger.info("Chat: %s: %s", session.character_name, text)
         await self._broadcast(
             ProtocolMessage(
@@ -667,6 +679,73 @@ class MultiplayerServer:
                     created_at=time.time(),
                 ),
             )
+        )
+
+    async def _handle_chat_command(self, session: PlayerSession, text: str) -> None:
+        """
+        Разбирает ручные chat-команды текущего персонажа.
+        """
+        parts = text.split()
+        command = parts[0].lower()
+        if command == SET_SPEED_COMMAND:
+            await self._handle_set_speed_command(session, parts)
+            return
+
+        await self._send_chat_command_feedback(session, UNKNOWN_COMMAND_TEXT)
+
+    async def _handle_set_speed_command(
+        self,
+        session: PlayerSession,
+        parts: list[str],
+    ) -> None:
+        """
+        Меняет runtime-скорость текущего персонажа через ручную команду.
+        """
+        if len(parts) != 2:
+            await self._send_chat_command_feedback(session, SET_SPEED_USAGE_TEXT)
+            return
+
+        try:
+            speed = float(parts[1])
+        except ValueError:
+            await self._send_chat_command_feedback(session, SET_SPEED_INVALID_TEXT)
+            return
+
+        if (
+            not math.isfinite(speed)
+            or speed < MIN_MANUAL_PLAYER_SPEED
+            or speed > MAX_MANUAL_PLAYER_SPEED
+        ):
+            await self._send_chat_command_feedback(session, SET_SPEED_INVALID_TEXT)
+            return
+
+        updated = self.world.set_player_speed(session.player_id, speed)
+        if updated is None:
+            return
+
+        logger.info(
+            "Manual command: name=%s command=setspeed speed=%s",
+            session.character_name,
+            updated.speed,
+        )
+        await self._send_chat_command_feedback(session, f"Скорость персонажа: {updated.speed:g}")
+        await self._broadcast_snapshot()
+
+    async def _send_chat_command_feedback(
+        self,
+        session: PlayerSession,
+        text: str,
+    ) -> None:
+        """
+        Отправляет приватный результат ручной команды без записи в журнал.
+        """
+        await self._send_interaction_result(
+            session=session,
+            target_id=session.player_id,
+            target_name=session.character_name,
+            text=text,
+            add_to_journal=False,
+            presentation=INTERACTION_PRESENTATION_FEED,
         )
 
     async def _handle_interaction(

@@ -322,7 +322,7 @@
         "body": {
           "position": [
             420,
-            259
+            261
           ],
           "size": [
             24,
@@ -384,6 +384,181 @@
         },
         "respawn": {
           "seconds": 10
+        }
+      }
+    },
+    {
+      "id": "creature-boar-copy",
+      "components": {
+        "identity": {
+          "kind": "creature",
+          "name": "Кабан",
+          "visual": "boar"
+        },
+        "body": {
+          "position": [
+            196,
+            389
+          ],
+          "size": [
+            24,
+            22
+          ],
+          "solid": true
+        },
+        "combat": {
+          "hit_points": 18,
+          "max_hit_points": 18,
+          "attackable": true,
+          "destroyed": false,
+          "min_damage": 2,
+          "max_damage": 4,
+          "hit_chance": 0.75,
+          "attack_distance": 64,
+          "swing_cooldown_seconds": 1.6
+        },
+        "respawn": {
+          "seconds": 60
+        }
+      }
+    },
+    {
+      "id": "creature-boar-copy-copy",
+      "components": {
+        "identity": {
+          "kind": "creature",
+          "name": "Кабан",
+          "visual": "boar"
+        },
+        "body": {
+          "position": [
+            2308,
+            1701
+          ],
+          "size": [
+            24,
+            22
+          ],
+          "solid": true
+        },
+        "combat": {
+          "hit_points": 18,
+          "max_hit_points": 18,
+          "attackable": true,
+          "destroyed": false,
+          "min_damage": 2,
+          "max_damage": 4,
+          "hit_chance": 0.75,
+          "attack_distance": 64,
+          "swing_cooldown_seconds": 1.6
+        },
+        "respawn": {
+          "seconds": 60
+        }
+      }
+    },
+    {
+      "id": "creature-boar-copy-copy-copy",
+      "components": {
+        "identity": {
+          "kind": "creature",
+          "name": "Кабан",
+          "visual": "boar"
+        },
+        "body": {
+          "position": [
+            2340,
+            485
+          ],
+          "size": [
+            24,
+            22
+          ],
+          "solid": true
+        },
+        "combat": {
+          "hit_points": 18,
+          "max_hit_points": 18,
+          "attackable": true,
+          "destroyed": false,
+          "min_damage": 2,
+          "max_damage": 4,
+          "hit_chance": 0.75,
+          "attack_distance": 64,
+          "swing_cooldown_seconds": 1.6
+        },
+        "respawn": {
+          "seconds": 60
+        }
+      }
+    },
+    {
+      "id": "creature-boar-copy-copy-copy-copy",
+      "components": {
+        "identity": {
+          "kind": "creature",
+          "name": "Кабан",
+          "visual": "boar"
+        },
+        "body": {
+          "position": [
+            516,
+            37
+          ],
+          "size": [
+            24,
+            22
+          ],
+          "solid": true
+        },
+        "combat": {
+          "hit_points": 18,
+          "max_hit_points": 18,
+          "attackable": true,
+          "destroyed": false,
+          "min_damage": 2,
+          "max_damage": 4,
+          "hit_chance": 0.75,
+          "attack_distance": 64,
+          "swing_cooldown_seconds": 1.6
+        },
+        "respawn": {
+          "seconds": 60
+        }
+      }
+    },
+    {
+      "id": "creature-boar-copy-copy-copy-copy-copy",
+      "components": {
+        "identity": {
+          "kind": "creature",
+          "name": "Кабан",
+          "visual": "boar"
+        },
+        "body": {
+          "position": [
+            132,
+            101
+          ],
+          "size": [
+            24,
+            22
+          ],
+          "solid": true
+        },
+        "combat": {
+          "hit_points": 18,
+          "max_hit_points": 18,
+          "attackable": true,
+          "destroyed": false,
+          "min_damage": 2,
+          "max_damage": 4,
+          "hit_chance": 0.75,
+          "attack_distance": 64,
+          "swing_cooldown_seconds": 1.6
+        },
+        "respawn": {
+          "seconds": 60
         }
       }
     }

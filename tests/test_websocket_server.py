@@ -490,6 +490,13 @@ def test_websocket_server_broadcasts_chat_messages(tmp_path: Path) -> None:
     asyncio.run(_chat_broadcast_smoke(tmp_path))
 
 
+def test_websocket_server_handles_set_speed_command(tmp_path: Path) -> None:
+    """
+    Проверяет ручную chat-команду изменения runtime-скорости текущего персонажа.
+    """
+    asyncio.run(_set_speed_command_smoke(tmp_path))
+
+
 def test_websocket_server_equips_and_unequips_main_hand(tmp_path: Path) -> None:
     """
     Проверяет server-authoritative экипировку и снятие предмета в руке.
@@ -957,6 +964,62 @@ async def _chat_broadcast_smoke(tmp_path: Path) -> None:
         assert message.payload["name"] == "Alice"
         assert message.payload["text"] == "Привет"
         assert isinstance(message.payload["created_at"], int | float)
+
+
+async def _set_speed_command_smoke(tmp_path: Path) -> None:
+    """
+    Запускает сервер и проверяет ручную команду изменения скорости персонажа.
+    """
+    multiplayer_server = _server_for_test(tmp_path)
+
+    async with (
+        _running_test_server(multiplayer_server) as uri,
+        connect(uri) as first_client,
+        connect(uri) as second_client,
+    ):
+        await _send_join(first_client, "Alice")
+        await _send_join(second_client, "Bob")
+        first_id = await _recv_player_id(first_client)
+        await _recv_player_id(second_client)
+
+        await first_client.send(
+            encode_message(
+                ProtocolMessage(
+                    type=ClientMessageType.CHAT_SENT,
+                    payload=chat_sent_payload("/setspeed 220"),
+                )
+            )
+        )
+        result = await _recv_message_type(first_client, ServerMessageType.INTERACTION_RESULT)
+        await _assert_no_message_type(second_client, ServerMessageType.CHAT_MESSAGE)
+        updated_player = await _recv_player_state_matching(
+            first_client,
+            first_id,
+            lambda player: player.speed == 220.0,
+        )
+
+        await first_client.send(
+            encode_message(
+                ProtocolMessage(
+                    type=ClientMessageType.CHAT_SENT,
+                    payload=chat_sent_payload("/setspeed nope"),
+                )
+            )
+        )
+        invalid_result = await _recv_message_type(
+            first_client,
+            ServerMessageType.INTERACTION_RESULT,
+        )
+        await _assert_no_message_type(second_client, ServerMessageType.CHAT_MESSAGE)
+        final_speed = multiplayer_server.world.players[first_id].speed
+
+    assert result.payload["target_id"] == first_id
+    assert result.payload["text"] == "Скорость персонажа: 220"
+    assert result.payload["add_to_journal"] is False
+    assert result.payload["presentation"] == INTERACTION_PRESENTATION_FEED
+    assert updated_player.speed == 220.0
+    assert invalid_result.payload["text"] == "Скорость должна быть числом от 0 до 600"
+    assert final_speed == 220.0
 
 
 async def _equipment_smoke(tmp_path: Path) -> None:

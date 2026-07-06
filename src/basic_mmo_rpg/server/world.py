@@ -257,6 +257,17 @@ class MultiplayerWorld:
         self.intents[player_id] = MovementIntent()
         return updated
 
+    def set_player_speed(self, player_id: str, speed: float) -> PlayerState | None:
+        """
+        Меняет runtime-скорость текущего персонажа для ручного тестирования.
+        """
+        player = self.players.get(player_id)
+        if player is None:
+            return None
+        updated = replace(player, speed=speed)
+        self.players[player_id] = updated
+        return updated
+
     def player_respawn_position(self) -> Vec2:
         """
         Возвращает позицию креста возрождения или базовый spawn карты.

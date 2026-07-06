@@ -81,6 +81,58 @@ def test_editable_map_state_snaps_entity_center_to_tile() -> None:
     assert document.state.dirty
 
 
+def test_editable_map_state_duplicates_selected_creature() -> None:
+    """
+    Проверяет копирование выбранной creature-entity с новым уникальным id.
+    """
+    document = load_editable_map(Path("assets/maps/starter_map.json"))
+    state = document.state
+    original_count = len(state.entities)
+    original = state.entity_by_id("creature-boar")
+
+    assert original is not None
+    original_position = original.position
+    state.select_entity("creature-boar")
+    first_duplicate = state.duplicate_selected_creature()
+    state.select_entity("creature-boar")
+    second_duplicate = state.duplicate_selected_creature()
+    exported = editable_map_to_dict(document.raw_map, state)
+    exported_ids = [entity["id"] for entity in exported["entities"]]
+
+    assert first_duplicate is not None
+    assert first_duplicate.entity_id == "creature-boar-copy"
+    assert first_duplicate.kind == "creature"
+    assert first_duplicate.position != original_position
+    assert second_duplicate is not None
+    assert second_duplicate.entity_id == "creature-boar-copy-2"
+    assert state.selected_entity_id == "creature-boar-copy-2"
+    assert state.dirty
+    assert len(state.entities) == original_count + 2
+    assert len(document.raw_map["entities"]) == original_count
+    assert "creature-boar-copy" not in [
+        entity["id"]
+        for entity in document.raw_map["entities"]
+    ]
+    assert exported_ids[-2:] == ["creature-boar-copy", "creature-boar-copy-2"]
+
+
+def test_editable_map_state_does_not_duplicate_npc() -> None:
+    """
+    Проверяет, что копирование доступно только creature-entity, а не NPC.
+    """
+    document = load_editable_map(Path("assets/maps/starter_map.json"))
+    state = document.state
+    original_count = len(state.entities)
+
+    state.select_entity("npc-funday")
+    duplicate = state.duplicate_selected_creature()
+
+    assert duplicate is None
+    assert state.selected_entity_id == "npc-funday"
+    assert len(state.entities) == original_count
+    assert not state.dirty
+
+
 def test_editable_map_state_rejects_unknown_tile_selection() -> None:
     """
     Проверяет, что редактор не выбирает тайл вне legend.

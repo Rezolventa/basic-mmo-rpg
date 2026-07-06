@@ -7,6 +7,8 @@ from typing import Any
 from basic_mmo_rpg.domain.tiles import TileDefinition, TileMap
 from tools.map_editor.entities import EditableEntity
 
+CREATURE_ENTITY_KIND = "creature"
+
 
 @dataclass(slots=True)
 class EditableMapState:
@@ -170,6 +172,24 @@ class EditableMapState:
             raise ValueError(msg)
         self.selected_entity_id = entity_id
 
+    def duplicate_selected_creature(self) -> EditableEntity | None:
+        """
+        Дублирует выбранную creature-entity и сразу выбирает созданную копию.
+        """
+        entity = self.selected_entity()
+        if entity is None or entity.kind != CREATURE_ENTITY_KIND:
+            return None
+
+        duplicate = EditableEntity.from_raw(entity.to_raw())
+        duplicate.set_entity_id(self._next_copy_entity_id(entity.entity_id))
+        duplicate_x, duplicate_y = self._duplicate_position_for(entity)
+        duplicate.set_position(duplicate_x, duplicate_y)
+
+        self.entities.append(duplicate)
+        self.selected_entity_id = duplicate.entity_id
+        self.dirty = True
+        return duplicate
+
     def move_entity(self, entity_id: str, x: float, y: float) -> bool:
         """
         Перемещает entity и возвращает флаг изменения.
@@ -205,3 +225,27 @@ class EditableMapState:
             center_x - width / 2,
             center_y - height / 2,
         )
+
+    def _next_copy_entity_id(self, entity_id: str) -> str:
+        existing_ids = {entity.entity_id for entity in self.entities}
+        base_id = f"{entity_id}-copy"
+        if base_id not in existing_ids:
+            return base_id
+
+        index = 2
+        while f"{base_id}-{index}" in existing_ids:
+            index += 1
+        return f"{base_id}-{index}"
+
+    def _duplicate_position_for(self, entity: EditableEntity) -> tuple[float, float]:
+        left, top = entity.position
+        width, height = entity.size
+        max_x = max(0.0, float(self.pixel_width - width))
+        max_y = max(0.0, float(self.pixel_height - height))
+
+        duplicate_x = min(left + self.tile_size, max_x)
+        duplicate_y = min(top + self.tile_size, max_y)
+        if (duplicate_x, duplicate_y) != (left, top):
+            return duplicate_x, duplicate_y
+
+        return max(0.0, left - self.tile_size), max(0.0, top - self.tile_size)

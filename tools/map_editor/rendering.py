@@ -40,6 +40,7 @@ HELP_LINES = (
     "LMB - paint / drag entity",
     "RMB - pick tile",
     "Ctrl + drag entity - snap to tile center",
+    "Ctrl+D - duplicate selected creature",
     "Mouse wheel - vertical scroll",
     "Shift + wheel - horizontal scroll",
     "Arrows / WASD - scroll map",

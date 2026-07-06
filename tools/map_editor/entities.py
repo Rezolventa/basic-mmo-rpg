@@ -126,6 +126,12 @@ class EditableEntity:
             return
         self.raw["position"] = position
 
+    def set_entity_id(self, entity_id: str) -> None:
+        """
+        Записывает новый id entity в raw JSON.
+        """
+        self.raw["id"] = entity_id
+
     def to_raw(self) -> dict[str, Any]:
         """
         Возвращает JSON-ready копию entity.
