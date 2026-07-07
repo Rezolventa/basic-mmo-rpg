@@ -258,6 +258,30 @@
       }
     },
     {
+      "id": "npc-bjorn",
+      "components": {
+        "identity": {
+          "kind": "npc",
+          "name": "Bjorn"
+        },
+        "body": {
+          "position": [
+            1412,
+            865
+          ],
+          "size": [
+            24,
+            30
+          ],
+          "solid": true
+        },
+        "interaction": {
+          "radius": 64,
+          "dialogue": ""
+        }
+      }
+    },
+    {
       "id": "creature-barbara",
       "components": {
         "identity": {

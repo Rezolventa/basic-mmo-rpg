@@ -27,7 +27,7 @@ def test_starter_map_loads() -> None:
     assert not wooden_floor.solid
     assert wooden_floor.color == (138, 91, 52)
     entities = {entity.entity_id: entity for entity in tile_map.entities}
-    assert len(entities) == 9
+    assert len(entities) == 10
     assert entities["npc-funday"].kind == EntityKind.NPC
     assert entities["npc-funday"].name == "Funday"
     assert entities["npc-funday"].dialogue == "Иди и поймай мне рыбу"
@@ -44,6 +44,9 @@ def test_starter_map_loads() -> None:
     assert entities["npc-fogu"].name == "Fogu"
     assert entities["npc-fogu"].dialogue == "Постриги мою Барбару"
     assert entities["npc-fogu"].solid
+    assert entities["npc-bjorn"].kind == EntityKind.NPC
+    assert entities["npc-bjorn"].name == "Bjorn"
+    assert entities["npc-bjorn"].solid
     assert entities["gate-sheep-pen"].kind == EntityKind.GATE
     assert entities["gate-sheep-pen"].name == "Калитка"
     assert entities["gate-sheep-pen"].solid

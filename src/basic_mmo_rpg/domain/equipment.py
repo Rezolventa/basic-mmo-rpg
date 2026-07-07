@@ -3,7 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 MAIN_HAND_SLOT = "main_hand"
-EQUIPMENT_SLOTS = frozenset({MAIN_HAND_SLOT})
+CHEST_SLOT = "chest"
+EQUIPMENT_SLOTS = frozenset({MAIN_HAND_SLOT, CHEST_SLOT})
 
 
 class EquipmentError(ValueError):
@@ -19,6 +20,7 @@ class Equipment:
     """
 
     main_hand: str | None = None
+    chest: str | None = None
 
 
 def validate_equipment_slot(slot: str) -> str:

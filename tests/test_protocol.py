@@ -15,7 +15,7 @@ from basic_mmo_rpg.domain.entities import (
     RespawnComponent,
     WorldEntity,
 )
-from basic_mmo_rpg.domain.equipment import MAIN_HAND_SLOT, Equipment
+from basic_mmo_rpg.domain.equipment import CHEST_SLOT, MAIN_HAND_SLOT, Equipment
 from basic_mmo_rpg.domain.geometry import Vec2
 from basic_mmo_rpg.domain.inventory import FISHING_ROD_ITEM_ID, ItemStack
 from basic_mmo_rpg.domain.movement import MovementIntent, PlayerState
@@ -30,6 +30,9 @@ from basic_mmo_rpg.shared.protocol import (
     PlayerSnapshot,
     ProtocolError,
     ProtocolMessage,
+    VendorOffer,
+    VendorPurchaseRequest,
+    VendorWindow,
     attack_requested_payload,
     attack_target_from_payload,
     character_name_from_payload,
@@ -65,6 +68,10 @@ from basic_mmo_rpg.shared.protocol import (
     tile_map_from_payload,
     tile_map_to_payload,
     unequip_item_requested_payload,
+    vendor_buy_requested_payload,
+    vendor_opened_payload,
+    vendor_purchase_request_from_payload,
+    vendor_window_from_payload,
     world_snapshot_payload,
 )
 from basic_mmo_rpg.storage.map_loader import load_tile_map
@@ -289,6 +296,45 @@ def test_interaction_menu_payloads_are_validated() -> None:
         interaction_option_selection_from_payload({"entity_id": "npc-funday", "option_id": ""})
 
 
+def test_vendor_payloads_are_validated() -> None:
+    """
+    Проверяет payload-ы окна торговца и запроса покупки.
+    """
+    offer = VendorOffer(
+        offer_id="iron_chest_armor",
+        item_id="iron_chest_armor",
+        display_name="Железная кираса",
+        price_item_id="gold",
+        price_display_name="Gold",
+        price_quantity=25,
+        details="Броня +2",
+    )
+    payload = vendor_opened_payload(
+        vendor_id="npc-bjorn",
+        title="Bjorn",
+        offers=(offer,),
+    )
+
+    vendor_window = vendor_window_from_payload(payload)
+    request = vendor_purchase_request_from_payload(
+        vendor_buy_requested_payload("npc-bjorn", "iron_chest_armor")
+    )
+
+    assert vendor_window == VendorWindow(
+        vendor_id="npc-bjorn",
+        title="Bjorn",
+        offers=(offer,),
+    )
+    assert request == VendorPurchaseRequest(
+        vendor_id="npc-bjorn",
+        offer_id="iron_chest_armor",
+    )
+    with pytest.raises(ProtocolError):
+        vendor_window_from_payload({"vendor_id": "npc-bjorn", "title": "Bjorn"})
+    with pytest.raises(ProtocolError):
+        vendor_purchase_request_from_payload({"vendor_id": "npc-bjorn", "offer_id": ""})
+
+
 def test_combat_payloads_are_validated() -> None:
     """
     Проверяет payload-ы выбора цели атаки и серверного события боя.
@@ -332,14 +378,16 @@ def test_equipment_payloads_round_trip() -> None:
     """
     Проверяет payload-ы экипировки предмета, снятия слота и server update-а.
     """
-    equipment = Equipment(main_hand=FISHING_ROD_ITEM_ID)
+    equipment = Equipment(main_hand=FISHING_ROD_ITEM_ID, chest="iron_chest_armor")
 
     assert equip_item_id_from_payload(
         equip_item_requested_payload(FISHING_ROD_ITEM_ID)
     ) == FISHING_ROD_ITEM_ID
     assert equipment_slot_from_payload(unequip_item_requested_payload()) == MAIN_HAND_SLOT
+    assert equipment_slot_from_payload(unequip_item_requested_payload(CHEST_SLOT)) == CHEST_SLOT
     assert equipment_from_payload(equipment_updated_payload(equipment)) == equipment
     assert equipment_from_payload({"main_hand": None}) == Equipment()
+    assert equipment_from_payload({"main_hand": None, "chest": None}) == Equipment()
 
     with pytest.raises(ProtocolError):
         equip_item_id_from_payload({"item_id": ""})
@@ -347,6 +395,8 @@ def test_equipment_payloads_round_trip() -> None:
         equipment_slot_from_payload({"slot": "head"})
     with pytest.raises(ProtocolError):
         equipment_from_payload({"main_hand": ""})
+    with pytest.raises(ProtocolError):
+        equipment_from_payload({"chest": ""})
 
 
 def test_character_name_payload_is_trimmed_and_limited() -> None:

@@ -26,6 +26,7 @@ from basic_mmo_rpg.shared.protocol import (
     respawn_requested_payload,
     stop_attack_requested_payload,
     unequip_item_requested_payload,
+    vendor_buy_requested_payload,
 )
 
 
@@ -153,6 +154,17 @@ class NetworkClient:
             ProtocolMessage(
                 type=ClientMessageType.UNEQUIP_ITEM_REQUESTED,
                 payload=unequip_item_requested_payload(slot),
+            )
+        )
+
+    def send_vendor_buy_request(self, vendor_id: str, offer_id: str) -> None:
+        """
+        Ставит запрос покупки позиции у торговца в очередь отправки на сервер.
+        """
+        self._outgoing.put(
+            ProtocolMessage(
+                type=ClientMessageType.VENDOR_BUY_REQUESTED,
+                payload=vendor_buy_requested_payload(vendor_id, offer_id),
             )
         )
 

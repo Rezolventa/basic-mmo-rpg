@@ -21,19 +21,22 @@ from basic_mmo_rpg.domain.entities import (
     IdentityComponent,
     WorldEntity,
 )
-from basic_mmo_rpg.domain.equipment import MAIN_HAND_SLOT, Equipment
+from basic_mmo_rpg.domain.equipment import CHEST_SLOT, MAIN_HAND_SLOT, Equipment
 from basic_mmo_rpg.domain.geometry import Vec2
-from basic_mmo_rpg.domain.inventory import FISHING_ROD_ITEM_ID, ItemStack
+from basic_mmo_rpg.domain.inventory import FISHING_ROD_ITEM_ID, IRON_CHEST_ARMOR_ITEM_ID, ItemStack
 from basic_mmo_rpg.domain.movement import MovementIntent, PlayerState
 from basic_mmo_rpg.shared.protocol import (
     INTERACTION_PRESENTATION_FEED,
     InteractionMenu,
     InteractionMenuOption,
+    VendorOffer,
+    VendorWindow,
     combat_event_payload,
     equipment_updated_payload,
     interaction_menu_opened_payload,
     interaction_result_payload,
     inventory_updated_payload,
+    vendor_opened_payload,
 )
 from basic_mmo_rpg.storage.map_loader import tile_map_from_dict
 
@@ -409,6 +412,74 @@ def test_interaction_menu_click_ignores_disabled_option() -> None:
     assert network.interaction_options == []
 
 
+def test_client_applies_vendor_window() -> None:
+    """
+    Проверяет, что клиент принимает server-authoritative окно торговца.
+    """
+    client = object.__new__(GameClient)
+    client.vendor_window = None
+    client.interaction_menu = InteractionMenu(
+        entity_id="npc-bjorn",
+        title="Bjorn",
+        body="Примеришь?",
+        options=(),
+    )
+    offer = VendorOffer(
+        offer_id="iron_chest_armor",
+        item_id=IRON_CHEST_ARMOR_ITEM_ID,
+        display_name="Железная кираса",
+        price_item_id="gold",
+        price_display_name="Gold",
+        price_quantity=25,
+        details="Броня +2",
+    )
+
+    client._apply_vendor_opened(
+        vendor_opened_payload(
+            vendor_id="npc-bjorn",
+            title="Bjorn",
+            offers=(offer,),
+        )
+    )
+
+    assert client.vendor_window == VendorWindow(
+        vendor_id="npc-bjorn",
+        title="Bjorn",
+        offers=(offer,),
+    )
+    assert client.interaction_menu is None
+
+
+def test_vendor_click_requests_enabled_offer() -> None:
+    """
+    Проверяет, что клик по активной позиции торговца отправляет запрос покупки.
+    """
+    client = object.__new__(GameClient)
+    network = _NetworkRecorder()
+    offer = VendorOffer(
+        offer_id="iron_chest_armor",
+        item_id=IRON_CHEST_ARMOR_ITEM_ID,
+        display_name="Железная кираса",
+        price_item_id="gold",
+        price_display_name="Gold",
+        price_quantity=25,
+    )
+    client.vendor_window = VendorWindow(
+        vendor_id="npc-bjorn",
+        title="Bjorn",
+        offers=(offer,),
+    )
+    client.screen = object()
+    client.renderer = SimpleNamespace(
+        vendor_hit_at_position=lambda screen, position, vendor_window: offer
+    )
+    client.network_client = network
+
+    client._handle_vendor_click((10, 10))
+
+    assert network.vendor_purchases == [("npc-bjorn", "iron_chest_armor")]
+
+
 def test_interaction_menu_escape_closes_dialog() -> None:
     """
     Проверяет, что Esc закрывает NPC-окно.
@@ -426,6 +497,25 @@ def test_interaction_menu_escape_closes_dialog() -> None:
     client._handle_key_down(SimpleNamespace(key=pygame.K_ESCAPE, unicode=""))
 
     assert client.interaction_menu is None
+
+
+def test_vendor_escape_closes_window() -> None:
+    """
+    Проверяет, что Esc закрывает окно торговца.
+    """
+    client = object.__new__(GameClient)
+    client.chat_input_active = False
+    client.death_dialog_visible = False
+    client.interaction_menu = None
+    client.vendor_window = VendorWindow(
+        vendor_id="npc-bjorn",
+        title="Bjorn",
+        offers=(),
+    )
+
+    client._handle_key_down(SimpleNamespace(key=pygame.K_ESCAPE, unicode=""))
+
+    assert client.vendor_window is None
 
 
 def test_client_applies_interaction_result_to_log_and_entity_bubble() -> None:
@@ -625,10 +715,16 @@ def test_client_applies_equipment_update() -> None:
     client.equipment = Equipment()
 
     client._apply_equipment_updated(
-        equipment_updated_payload(Equipment(main_hand=FISHING_ROD_ITEM_ID))
+        equipment_updated_payload(
+            Equipment(
+                main_hand=FISHING_ROD_ITEM_ID,
+                chest=IRON_CHEST_ARMOR_ITEM_ID,
+            )
+        )
     )
 
     assert client.equipment.main_hand == FISHING_ROD_ITEM_ID
+    assert client.equipment.chest == IRON_CHEST_ARMOR_ITEM_ID
 
 
 def test_client_inventory_click_requests_equip() -> None:
@@ -677,6 +773,30 @@ def test_client_main_hand_click_requests_unequip() -> None:
 
     assert network.equipped_items == []
     assert network.unequipped_slots == [MAIN_HAND_SLOT]
+
+
+def test_client_chest_click_requests_unequip() -> None:
+    """
+    Проверяет, что клик по занятому chest-слоту отправляет запрос снятия брони.
+    """
+    client = object.__new__(GameClient)
+    network = _NetworkRecorder()
+    client.screen = object()
+    client.inventory_visible = True
+    client.inventory_items = []
+    client.equipment = Equipment(chest=IRON_CHEST_ARMOR_ITEM_ID)
+    client.player = PlayerState(entity_id="p1", position=Vec2(0, 0))
+    client.renderer = SimpleNamespace(
+        inventory_hit_at_position=lambda screen, position, items: InventoryPanelHit(
+            slot=CHEST_SLOT
+        )
+    )
+    client.network_client = network
+
+    client._handle_left_click((10, 10))
+
+    assert network.equipped_items == []
+    assert network.unequipped_slots == [CHEST_SLOT]
 
 
 def test_client_inventory_empty_area_click_is_consumed() -> None:
@@ -797,6 +917,7 @@ class _NetworkRecorder:
         self.unequipped_slots: list[str] = []
         self.attack_targets: list[str] = []
         self.interaction_options: list[tuple[str, str]] = []
+        self.vendor_purchases: list[tuple[str, str]] = []
         self.stop_attack_requests = 0
         self.respawn_requests = 0
 
@@ -823,6 +944,12 @@ class _NetworkRecorder:
         Запоминает выбор опции NPC-окна.
         """
         self.interaction_options.append((entity_id, option_id))
+
+    def send_vendor_buy_request(self, vendor_id: str, offer_id: str) -> None:
+        """
+        Запоминает запрос покупки у торговца.
+        """
+        self.vendor_purchases.append((vendor_id, offer_id))
 
     def send_stop_attack_request(self) -> None:
         """

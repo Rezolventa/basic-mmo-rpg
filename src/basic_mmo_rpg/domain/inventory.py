@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from basic_mmo_rpg.domain.equipment import MAIN_HAND_SLOT
+from basic_mmo_rpg.domain.equipment import CHEST_SLOT, MAIN_HAND_SLOT
 
 FISHING_ROD_ITEM_ID = "fishing_rod"
 FISH_ITEM_ID = "fish"
@@ -15,6 +15,7 @@ SHEARS_ITEM_ID = "shears"
 WOOL_ITEM_ID = "wool"
 RUSTY_SWORD_ITEM_ID = "rusty_sword"
 LEATHER_ITEM_ID = "leather"
+IRON_CHEST_ARMOR_ITEM_ID = "iron_chest_armor"
 
 
 class InventoryError(ValueError):
@@ -39,6 +40,7 @@ class ItemDefinition:
     display_name: str
     stack_limit: int = 1
     equipment_slot: str | None = None
+    armor: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -113,6 +115,13 @@ ITEM_DEFINITIONS: dict[str, ItemDefinition] = {
         display_name="Кожа",
         stack_limit=999,
     ),
+    IRON_CHEST_ARMOR_ITEM_ID: ItemDefinition(
+        item_id=IRON_CHEST_ARMOR_ITEM_ID,
+        display_name="Железная кираса",
+        stack_limit=999,
+        equipment_slot=CHEST_SLOT,
+        armor=2,
+    ),
 }
 
 
@@ -150,3 +159,10 @@ def is_equippable_item(item_id: str) -> bool:
     Проверяет, можно ли экипировать предмет в текущей модели paperdoll.
     """
     return equipment_slot_for_item(item_id) is not None
+
+
+def armor_points_for_item(item_id: str) -> int:
+    """
+    Возвращает величину брони предмета.
+    """
+    return item_definition_for(item_id).armor

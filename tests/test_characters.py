@@ -1,15 +1,17 @@
 from __future__ import annotations
 
+import sqlite3
 from pathlib import Path
 
 import pytest
 
-from basic_mmo_rpg.domain.equipment import MAIN_HAND_SLOT, EquipmentError
+from basic_mmo_rpg.domain.equipment import CHEST_SLOT, MAIN_HAND_SLOT, EquipmentError
 from basic_mmo_rpg.domain.geometry import Vec2
 from basic_mmo_rpg.domain.inventory import (
     FISH_ITEM_ID,
     FISHING_ROD_ITEM_ID,
     GOLD_ITEM_ID,
+    IRON_CHEST_ARMOR_ITEM_ID,
     RUSTY_SWORD_ITEM_ID,
     InventoryLimitError,
 )
@@ -228,19 +230,23 @@ def test_character_repository_exchange_rejects_reward_stack_overflow(tmp_path: P
 
 def test_character_repository_persists_equipment(tmp_path: Path) -> None:
     """
-    Проверяет сохранение и загрузку предмета в руке.
+    Проверяет сохранение и загрузку предметов в paperdoll.
     """
     repository = CharacterRepository(tmp_path / "characters.sqlite3")
     repository.initialize()
     repository.load_or_create("Alice", Vec2(32, 48))
     repository.add_item("Alice", FISHING_ROD_ITEM_ID)
+    repository.add_item("Alice", IRON_CHEST_ARMOR_ITEM_ID)
 
-    equipment = repository.equip_item("Alice", FISHING_ROD_ITEM_ID)
+    repository.equip_item("Alice", FISHING_ROD_ITEM_ID)
+    equipment = repository.equip_item("Alice", IRON_CHEST_ARMOR_ITEM_ID)
     loaded_equipment = repository.load_equipment("Alice")
 
     assert equipment.main_hand == FISHING_ROD_ITEM_ID
+    assert equipment.chest == IRON_CHEST_ARMOR_ITEM_ID
     assert loaded_equipment == equipment
     assert repository.is_item_equipped("Alice", MAIN_HAND_SLOT, FISHING_ROD_ITEM_ID)
+    assert repository.is_item_equipped("Alice", CHEST_SLOT, IRON_CHEST_ARMOR_ITEM_ID)
 
 
 def test_character_repository_rejects_missing_or_non_equippable_item(tmp_path: Path) -> None:
@@ -274,3 +280,40 @@ def test_character_repository_unequips_slot(tmp_path: Path) -> None:
 
     assert equipment.main_hand is None
     assert repository.load_equipment("Alice").main_hand is None
+
+
+def test_character_repository_migrates_existing_equipment_table(tmp_path: Path) -> None:
+    """
+    Проверяет добавление chest-колонки в уже существующую SQLite-таблицу экипировки.
+    """
+    database_path = tmp_path / "characters.sqlite3"
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(
+            """
+            CREATE TABLE characters (
+                name TEXT PRIMARY KEY,
+                x REAL NOT NULL,
+                y REAL NOT NULL,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+        connection.execute(
+            """
+            CREATE TABLE character_equipment (
+                character_name TEXT PRIMARY KEY,
+                main_hand_item_id TEXT,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+
+    repository = CharacterRepository(database_path)
+    repository.initialize()
+    repository.load_or_create("Alice", Vec2(32, 48))
+    repository.add_item("Alice", IRON_CHEST_ARMOR_ITEM_ID)
+
+    equipment = repository.equip_item("Alice", IRON_CHEST_ARMOR_ITEM_ID)
+
+    assert equipment.chest == IRON_CHEST_ARMOR_ITEM_ID
+    assert repository.load_equipment("Alice").chest == IRON_CHEST_ARMOR_ITEM_ID

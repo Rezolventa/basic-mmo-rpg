@@ -7,12 +7,22 @@ import pygame
 from basic_mmo_rpg.client.camera import Camera
 from basic_mmo_rpg.client.ui import ChatLine, InventoryPanelHit
 from basic_mmo_rpg.domain.entities import EntityKind, WorldEntity
-from basic_mmo_rpg.domain.equipment import MAIN_HAND_SLOT, Equipment
+from basic_mmo_rpg.domain.equipment import CHEST_SLOT, MAIN_HAND_SLOT, Equipment
 from basic_mmo_rpg.domain.geometry import Rect, Vec2
-from basic_mmo_rpg.domain.inventory import ItemStack, is_equippable_item, item_definition_for
+from basic_mmo_rpg.domain.inventory import (
+    ItemStack,
+    armor_points_for_item,
+    is_equippable_item,
+    item_definition_for,
+)
 from basic_mmo_rpg.domain.movement import PlayerState
 from basic_mmo_rpg.domain.tiles import TileMap
-from basic_mmo_rpg.shared.protocol import InteractionMenu, InteractionMenuOption
+from basic_mmo_rpg.shared.protocol import (
+    InteractionMenu,
+    InteractionMenuOption,
+    VendorOffer,
+    VendorWindow,
+)
 
 BACKGROUND = (18, 20, 23)
 GRID_LINE = (24, 26, 29)
@@ -102,6 +112,7 @@ class Renderer:
         equipment: Equipment | None = None,
         inventory_visible: bool = False,
         interaction_menu: InteractionMenu | None = None,
+        vendor_window: VendorWindow | None = None,
         combat_mode_active: bool = False,
         hovered_attackable_entity_id: str | None = None,
         selected_attack_target_id: str | None = None,
@@ -172,6 +183,8 @@ class Renderer:
             self._draw_inventory(screen, inventory_items, equipment)
         if interaction_menu is not None:
             self._draw_interaction_menu(screen, interaction_menu)
+        if vendor_window is not None:
+            self._draw_vendor_window(screen, vendor_window)
         if event_feed:
             self._draw_event_feed(screen, event_feed, chat_input_active)
         if chat_input_active:
@@ -194,6 +207,8 @@ class Renderer:
             return None
         if self._main_hand_slot_rect(screen).collidepoint(position):
             return InventoryPanelHit(slot=MAIN_HAND_SLOT)
+        if self._chest_slot_rect(screen).collidepoint(position):
+            return InventoryPanelHit(slot=CHEST_SLOT)
 
         for item, row_rect in self._inventory_item_rects(screen, items):
             if row_rect.collidepoint(position) and is_equippable_item(item.item_id):
@@ -222,6 +237,20 @@ class Renderer:
         for option, rect in self._interaction_menu_option_rects(screen, menu):
             if rect.collidepoint(position):
                 return option
+        return None
+
+    def vendor_hit_at_position(
+        self,
+        screen: pygame.Surface,
+        position: tuple[int, int],
+        vendor_window: VendorWindow,
+    ) -> VendorOffer | None:
+        """
+        Возвращает позицию торговца под курсором.
+        """
+        for offer, rect in self._vendor_offer_rects(screen, vendor_window):
+            if rect.collidepoint(position):
+                return offer
         return None
 
     def _draw_map(self, screen: pygame.Surface, camera: Camera) -> None:
@@ -846,6 +875,82 @@ class Renderer:
             y += 38
         return result
 
+    def _draw_vendor_window(self, screen: pygame.Surface, vendor_window: VendorWindow) -> None:
+        """
+        Рисует серверное окно торговца.
+        """
+        panel_rect = self._vendor_window_rect(screen, vendor_window)
+        panel = pygame.Surface(panel_rect.size, pygame.SRCALPHA)
+        panel.fill(PANEL_BACKGROUND)
+        screen.blit(panel, panel_rect.topleft)
+        pygame.draw.rect(screen, BUBBLE_BORDER, panel_rect, width=1, border_radius=6)
+
+        title = self.font.render(
+            self._tail_to_width(
+                f"{vendor_window.title}: торговля",
+                panel_rect.width - 28,
+                self.font,
+            ),
+            True,
+            TEXT_COLOR,
+        )
+        screen.blit(title, (panel_rect.left + 14, panel_rect.top + 12))
+
+        for offer, row_rect in self._vendor_offer_rects(screen, vendor_window):
+            background = SLOT_BACKGROUND if offer.enabled else DISABLED_SLOT_BACKGROUND
+            border = EQUIPPED_BORDER if offer.enabled else SLOT_BORDER
+            text_color = TEXT_COLOR if offer.enabled else MUTED_TEXT_COLOR
+            pygame.draw.rect(screen, background, row_rect, border_radius=4)
+            pygame.draw.rect(screen, border, row_rect, width=1, border_radius=4)
+
+            price_text = (
+                f"{offer.display_name} - {offer.price_quantity} {offer.price_display_name}"
+            )
+            if offer.details is not None:
+                price_text = f"{price_text} ({offer.details})"
+            if offer.disabled_reason is not None:
+                price_text = f"{price_text} - {offer.disabled_reason}"
+            visible_text = self._tail_to_width(price_text, row_rect.width - 16, self.small_font)
+            surface = self.small_font.render(visible_text, True, text_color)
+            screen.blit(surface, (row_rect.left + 8, row_rect.centery - surface.get_height() // 2))
+
+    def _vendor_window_rect(
+        self,
+        screen: pygame.Surface,
+        vendor_window: VendorWindow,
+    ) -> pygame.Rect:
+        """
+        Возвращает прямоугольник окна торговца.
+        """
+        width = min(500, max(340, screen.get_width() - 40))
+        height = 74 + len(vendor_window.offers) * 42
+        height = min(height, screen.get_height() - 40)
+        return pygame.Rect(
+            screen.get_width() // 2 - width // 2,
+            screen.get_height() // 2 - height // 2,
+            width,
+            height,
+        )
+
+    def _vendor_offer_rects(
+        self,
+        screen: pygame.Surface,
+        vendor_window: VendorWindow,
+    ) -> list[tuple[VendorOffer, pygame.Rect]]:
+        """
+        Возвращает прямоугольники строк торговца.
+        """
+        panel_rect = self._vendor_window_rect(screen, vendor_window)
+        y = panel_rect.top + 48
+        result: list[tuple[VendorOffer, pygame.Rect]] = []
+        for offer in vendor_window.offers:
+            row_rect = pygame.Rect(panel_rect.left + 14, y, panel_rect.width - 28, 34)
+            if row_rect.bottom > panel_rect.bottom - 10:
+                break
+            result.append((offer, row_rect))
+            y += 42
+        return result
+
     def _draw_death_dialog(self, screen: pygame.Surface) -> None:
         """
         Рисует окно смерти персонажа.
@@ -920,7 +1025,7 @@ class Renderer:
         title = self.font.render("Инвентарь", True, TEXT_COLOR)
         screen.blit(title, (inventory_title_position[0], panel_rect.top + 10))
 
-        self._draw_main_hand_slot(screen, equipment)
+        self._draw_equipment_slots(screen, equipment)
 
         if not items:
             empty = self.small_font.render("Пусто", True, MUTED_TEXT_COLOR)
@@ -932,6 +1037,8 @@ class Renderer:
             text = f"{item.display_name}{quantity_suffix}"
             if equipment.main_hand == item.item_id:
                 text = f"{text} (в руке)"
+            elif equipment.chest == item.item_id:
+                text = f"{text} (на себе)"
             color = EQUIPPABLE_TEXT_COLOR if is_equippable_item(item.item_id) else MUTED_TEXT_COLOR
             surface = self.small_font.render(
                 self._tail_to_width(text, row_rect.width - 10, self.small_font),
@@ -939,6 +1046,19 @@ class Renderer:
                 color,
             )
             screen.blit(surface, (row_rect.left + 5, row_rect.top + 3))
+
+    def _draw_equipment_slots(self, screen: pygame.Surface, equipment: Equipment) -> None:
+        """
+        Рисует слоты paperdoll и суммарную броню.
+        """
+        self._draw_main_hand_slot(screen, equipment)
+        self._draw_chest_slot(screen, equipment)
+        armor = 0
+        if equipment.chest is not None:
+            armor = armor_points_for_item(equipment.chest)
+        armor_text = self.small_font.render(f"Броня: +{armor}", True, TEXT_COLOR)
+        chest_rect = self._chest_slot_rect(screen)
+        screen.blit(armor_text, (chest_rect.left, chest_rect.bottom + 10))
 
     def _draw_main_hand_slot(self, screen: pygame.Surface, equipment: Equipment) -> None:
         """
@@ -961,6 +1081,27 @@ class Renderer:
         surface = self.small_font.render(visible_text, True, text_color)
         screen.blit(surface, (slot_rect.left + 6, slot_rect.centery - surface.get_height() // 2))
 
+    def _draw_chest_slot(self, screen: pygame.Surface, equipment: Equipment) -> None:
+        """
+        Рисует слот нагрудной брони.
+        """
+        slot_rect = self._chest_slot_rect(screen)
+        label = self.small_font.render("Грудь", True, MUTED_TEXT_COLOR)
+        screen.blit(label, (slot_rect.left, slot_rect.top - self.small_font.get_linesize() - 2))
+
+        border_color = EQUIPPED_BORDER if equipment.chest is not None else SLOT_BORDER
+        pygame.draw.rect(screen, SLOT_BACKGROUND, slot_rect, border_radius=4)
+        pygame.draw.rect(screen, border_color, slot_rect, width=1, border_radius=4)
+
+        item_text = "Пусто"
+        text_color = MUTED_TEXT_COLOR
+        if equipment.chest is not None:
+            item_text = item_definition_for(equipment.chest).display_name
+            text_color = TEXT_COLOR
+        visible_text = self._tail_to_width(item_text, slot_rect.width - 12, self.small_font)
+        surface = self.small_font.render(visible_text, True, text_color)
+        screen.blit(surface, (slot_rect.left + 6, slot_rect.centery - surface.get_height() // 2))
+
     def _inventory_panel_rect(self, screen: pygame.Surface) -> pygame.Rect:
         """
         Возвращает прямоугольник панели инвентаря и paperdoll.
@@ -977,6 +1118,18 @@ class Renderer:
         panel_rect = self._inventory_panel_rect(screen)
         slot_width = min(138, max(104, panel_rect.width // 3))
         return pygame.Rect(panel_rect.left + 12, panel_rect.top + 66, slot_width, 34)
+
+    def _chest_slot_rect(self, screen: pygame.Surface) -> pygame.Rect:
+        """
+        Возвращает прямоугольник слота нагрудной брони.
+        """
+        main_hand_rect = self._main_hand_slot_rect(screen)
+        return pygame.Rect(
+            main_hand_rect.left,
+            main_hand_rect.bottom + 34,
+            main_hand_rect.width,
+            main_hand_rect.height,
+        )
 
     def _inventory_list_origin(self, screen: pygame.Surface) -> tuple[int, int]:
         """

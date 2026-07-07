@@ -15,6 +15,7 @@ from websockets.asyncio.server import ServerConnection, serve
 
 from basic_mmo_rpg.domain.entities import EntityKind, LootClaimPolicy, WorldEntity
 from basic_mmo_rpg.domain.equipment import (
+    CHEST_SLOT,
     MAIN_HAND_SLOT,
     Equipment,
     EquipmentError,
@@ -23,6 +24,7 @@ from basic_mmo_rpg.domain.inventory import (
     FISH_ITEM_ID,
     FISHING_ROD_ITEM_ID,
     GOLD_ITEM_ID,
+    IRON_CHEST_ARMOR_ITEM_ID,
     LOG_ITEM_ID,
     LUMBER_AXE_ITEM_ID,
     PICKAXE_ITEM_ID,
@@ -32,6 +34,7 @@ from basic_mmo_rpg.domain.inventory import (
     WOOL_ITEM_ID,
     InventoryLimitError,
     ItemStack,
+    armor_points_for_item,
     item_definition_for,
 )
 from basic_mmo_rpg.domain.movement import PlayerState
@@ -44,6 +47,7 @@ from basic_mmo_rpg.shared.protocol import (
     ProtocolError,
     ProtocolMessage,
     ServerMessageType,
+    VendorOffer,
     attack_target_from_payload,
     character_name_from_payload,
     chat_message_payload,
@@ -62,6 +66,8 @@ from basic_mmo_rpg.shared.protocol import (
     map_fingerprint_from_payload,
     movement_intent_from_payload,
     tile_map_to_payload,
+    vendor_opened_payload,
+    vendor_purchase_request_from_payload,
 )
 from basic_mmo_rpg.storage.characters import CharacterRepository
 from basic_mmo_rpg.storage.map_loader import load_tile_map
@@ -99,6 +105,8 @@ RUSTY_SWORD_MIN_DAMAGE = 3
 RUSTY_SWORD_MAX_DAMAGE = 6
 RUSTY_SWORD_SWING_COOLDOWN_SECONDS = 1.2
 PLAYER_DEATH_TEXT = "Вы погибли"
+BJORN_VENDOR_ID = "npc-bjorn"
+IRON_CHEST_ARMOR_PRICE = 25
 CHAT_COMMAND_PREFIX = "/"
 SET_SPEED_COMMAND = "/setspeed"
 MIN_MANUAL_PLAYER_SPEED = 0.0
@@ -163,6 +171,19 @@ class WeaponCombatRule:
 
 
 @dataclass(frozen=True, slots=True)
+class VendorOfferDefinition:
+    """
+    Описывает server-authoritative позицию покупки у NPC-торговца.
+    """
+
+    offer_id: str
+    item_id: str
+    price_item_id: str
+    price_quantity: int
+    details: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class ToolGrantOption:
     """
     Описывает NPC-опцию одноразовой tutorial-выдачи инструмента.
@@ -190,6 +211,24 @@ class RepeatableQuestDefinition:
 
 OPTION_KIND_ACTION = "action"
 QUEST_KIND_REPEATABLE = "repeatable"
+OPTION_KIND_VENDOR = "vendor"
+VENDOR_OPTION_ID = "vendor:open"
+
+NPC_DIALOGUE_LINES: dict[str, tuple[str, ...]] = {
+    BJORN_VENDOR_ID: ("Примеришь?", "Тебе это пригодится."),
+}
+
+NPC_VENDOR_OFFERS: dict[str, tuple[VendorOfferDefinition, ...]] = {
+    BJORN_VENDOR_ID: (
+        VendorOfferDefinition(
+            offer_id="iron_chest_armor",
+            item_id=IRON_CHEST_ARMOR_ITEM_ID,
+            price_item_id=GOLD_ITEM_ID,
+            price_quantity=IRON_CHEST_ARMOR_PRICE,
+            details="Броня +2",
+        ),
+    ),
+}
 
 NPC_TOOL_GRANTS: dict[str, ToolGrantOption] = {
     "npc-funday": ToolGrantOption(
@@ -545,6 +584,8 @@ class MultiplayerServer:
                 await self._handle_equip_item(session, message.payload)
             elif message.type == ClientMessageType.UNEQUIP_ITEM_REQUESTED:
                 await self._handle_unequip_item(session, message.payload)
+            elif message.type == ClientMessageType.VENDOR_BUY_REQUESTED:
+                await self._handle_vendor_buy_request(session, message.payload)
             elif message.type == ClientMessageType.ATTACK_REQUESTED:
                 await self._handle_attack_request(session, message.payload)
             elif message.type == ClientMessageType.STOP_ATTACK_REQUESTED:
@@ -628,7 +669,7 @@ class MultiplayerServer:
         logger.info(
             "Equipment updated: name=%s slot=%s item_id=%s",
             session.character_name,
-            MAIN_HAND_SLOT,
+            item_definition_for(item_id).equipment_slot,
             item_id,
         )
         await self._send_equipment_update(session, equipment)
@@ -841,6 +882,9 @@ class MultiplayerServer:
             await self._handle_tool_grant_option(session, entity, selection.option_id)
         elif self._is_repeatable_quest_option(entity.entity_id, selection.option_id):
             await self._handle_repeatable_quest_option(session, entity, selection.option_id)
+        elif self._is_vendor_option(entity.entity_id, selection.option_id):
+            await self._send_vendor_window(session, entity)
+            return
 
         await self._send_npc_interaction_menu(session, entity)
 
@@ -859,7 +903,7 @@ class MultiplayerServer:
                 payload=interaction_menu_opened_payload(
                     entity_id=entity.entity_id,
                     title=entity.name,
-                    body=entity.dialogue,
+                    body=self._npc_dialogue_for(entity),
                     options=tuple(self._npc_interaction_options(session, entity)),
                 ),
             ),
@@ -904,7 +948,24 @@ class MultiplayerServer:
         quest = NPC_REPEATABLE_QUESTS.get(entity.entity_id)
         if quest is not None:
             options.append(self._repeatable_quest_menu_option(session, quest))
+        if entity.entity_id in NPC_VENDOR_OFFERS:
+            options.append(
+                InteractionMenuOption(
+                    option_id=VENDOR_OPTION_ID,
+                    label="Торговля",
+                    kind=OPTION_KIND_VENDOR,
+                )
+            )
         return options
+
+    def _npc_dialogue_for(self, entity: WorldEntity) -> str:
+        """
+        Возвращает актуальную реплику NPC, включая случайные фразы торговцев.
+        """
+        lines = NPC_DIALOGUE_LINES.get(entity.entity_id)
+        if lines is None:
+            return entity.dialogue
+        return self.random.choice(lines)
 
     def _repeatable_quest_menu_option(
         self,
@@ -948,6 +1009,12 @@ class MultiplayerServer:
         """
         quest = NPC_REPEATABLE_QUESTS.get(entity_id)
         return quest is not None and quest.option_id == option_id
+
+    def _is_vendor_option(self, entity_id: str, option_id: str) -> bool:
+        """
+        Проверяет, открывает ли option_id окно торговца.
+        """
+        return option_id == VENDOR_OPTION_ID and entity_id in NPC_VENDOR_OFFERS
 
     async def _handle_tool_grant_option(
         self,
@@ -1002,6 +1069,149 @@ class MultiplayerServer:
             text=quest.success_text,
         )
         await self._send_inventory_update(session, inventory)
+
+    async def _handle_vendor_buy_request(
+        self,
+        session: PlayerSession,
+        payload: dict[str, object],
+    ) -> None:
+        """
+        Проверяет и применяет покупку у NPC-торговца.
+        """
+        if not self._can_player_act(session.player_id):
+            return
+
+        request = vendor_purchase_request_from_payload(payload)
+        entity = self._resolve_interaction_entity(session, request.vendor_id)
+        if entity is None or entity.kind != EntityKind.NPC:
+            return
+
+        offer = self._vendor_offer_definition(entity.entity_id, request.offer_id)
+        if offer is None:
+            logger.info(
+                "Vendor purchase ignored: name=%s vendor_id=%s offer_id=%s reason=missing",
+                session.character_name,
+                entity.entity_id,
+                request.offer_id,
+            )
+            return
+
+        try:
+            inventory, purchased = self.character_repository.exchange_items(
+                name=session.character_name,
+                cost_item_id=offer.price_item_id,
+                cost_quantity=offer.price_quantity,
+                reward_item_id=offer.item_id,
+            )
+        except InventoryLimitError as exc:
+            await self._send_inventory_limit_result(
+                session=session,
+                target_id=entity.entity_id,
+                target_name=entity.name,
+                error=exc,
+                presentation=INTERACTION_PRESENTATION_FEED,
+            )
+            await self._send_vendor_window(session, entity)
+            return
+
+        if not purchased:
+            await self._send_interaction_result(
+                session=session,
+                target_id=entity.entity_id,
+                target_name=entity.name,
+                text="Недостаточно Gold",
+                add_to_journal=False,
+                presentation=INTERACTION_PRESENTATION_FEED,
+            )
+            await self._send_vendor_window(session, entity)
+            return
+
+        item_name = item_definition_for(offer.item_id).display_name
+        logger.info(
+            "Vendor purchase: name=%s vendor_id=%s offer_id=%s item_id=%s",
+            session.character_name,
+            entity.entity_id,
+            offer.offer_id,
+            offer.item_id,
+        )
+        await self._send_inventory_update(session, inventory)
+        await self._send_interaction_result(
+            session=session,
+            target_id=session.player_id,
+            target_name=session.character_name,
+            text=f"Вы купили {item_name}",
+            presentation=INTERACTION_PRESENTATION_FEED,
+        )
+        await self._send_vendor_window(session, entity)
+
+    async def _send_vendor_window(
+        self,
+        session: PlayerSession,
+        entity: WorldEntity,
+    ) -> None:
+        """
+        Отправляет клиенту актуальное server-authoritative окно торговца.
+        """
+        await self._send(
+            session.websocket,
+            ProtocolMessage(
+                type=ServerMessageType.VENDOR_OPENED,
+                payload=vendor_opened_payload(
+                    vendor_id=entity.entity_id,
+                    title=entity.name,
+                    offers=tuple(self._vendor_offers(session, entity.entity_id)),
+                ),
+            ),
+        )
+
+    def _vendor_offers(
+        self,
+        session: PlayerSession,
+        vendor_id: str,
+    ) -> list[VendorOffer]:
+        """
+        Собирает видимые игроку позиции торговца с актуальной доступностью.
+        """
+        offers: list[VendorOffer] = []
+        for offer in NPC_VENDOR_OFFERS.get(vendor_id, ()):
+            current_quantity = self.character_repository.item_quantity(
+                session.character_name,
+                offer.price_item_id,
+            )
+            price_definition = item_definition_for(offer.price_item_id)
+            item_definition = item_definition_for(offer.item_id)
+            enabled = current_quantity >= offer.price_quantity
+            offers.append(
+                VendorOffer(
+                    offer_id=offer.offer_id,
+                    item_id=offer.item_id,
+                    display_name=item_definition.display_name,
+                    price_item_id=offer.price_item_id,
+                    price_display_name=price_definition.display_name,
+                    price_quantity=offer.price_quantity,
+                    enabled=enabled,
+                    details=offer.details,
+                    disabled_reason=(
+                        None
+                        if enabled
+                        else f"Нужно: {price_definition.display_name} {offer.price_quantity}"
+                    ),
+                )
+            )
+        return offers
+
+    def _vendor_offer_definition(
+        self,
+        vendor_id: str,
+        offer_id: str,
+    ) -> VendorOfferDefinition | None:
+        """
+        Возвращает server-side определение позиции торговца.
+        """
+        for offer in NPC_VENDOR_OFFERS.get(vendor_id, ()):
+            if offer.offer_id == offer_id:
+                return offer
+        return None
 
     async def _handle_gate_interaction(
         self,
@@ -1466,18 +1676,26 @@ class MultiplayerServer:
                 )
                 continue
 
-            damage = self.random.randint(entity.combat.min_damage, entity.combat.max_damage)
+            raw_damage = self.random.randint(entity.combat.min_damage, entity.combat.max_damage)
+            armor_points = self._armor_points_for_character(target_session.character_name)
+            damage = max(1, raw_damage - armor_points)
+            absorbed = raw_damage - damage
             damage_result = self.world.damage_player(target_player_id, damage)
             if damage_result is None:
                 continue
             _, killed = damage_result
+            combat_text = f"{entity.base_name} атаковал вас: -{damage}"
+            if armor_points > 0:
+                combat_text = (
+                    f"{combat_text} ({absorbed}/{armor_points} поглощено броней)"
+                )
             await self._send_combat_event_to_session(
                 session=target_session,
                 actor_id=entity.entity_id,
                 actor_name=entity.base_name,
                 target_id=target_session.player_id,
                 target_name=target_session.character_name,
-                text=f"{entity.base_name} атаковал вас: -{damage}",
+                text=combat_text,
                 floating_text=f"-{damage}",
             )
             if killed:
@@ -1510,6 +1728,21 @@ class MultiplayerServer:
         ):
             return UNARMED_COMBAT_RULE
         return WEAPON_COMBAT_RULES.get(equipment.main_hand, UNARMED_COMBAT_RULE)
+
+    def _armor_points_for_character(self, character_name: str) -> int:
+        """
+        Возвращает суммарную броню экипировки персонажа.
+        """
+        equipment = self.character_repository.load_equipment(character_name)
+        if equipment.chest is None:
+            return 0
+        if not self.character_repository.is_item_equipped(
+            character_name,
+            CHEST_SLOT,
+            equipment.chest,
+        ):
+            return 0
+        return armor_points_for_item(equipment.chest)
 
     def _is_player_alive(self, player_id: str) -> bool:
         """

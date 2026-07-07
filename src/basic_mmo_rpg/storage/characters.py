@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from basic_mmo_rpg.domain.equipment import (
+    CHEST_SLOT,
     MAIN_HAND_SLOT,
     Equipment,
     EquipmentError,
@@ -74,11 +75,13 @@ class CharacterRepository:
                 CREATE TABLE IF NOT EXISTS character_equipment (
                     character_name TEXT PRIMARY KEY,
                     main_hand_item_id TEXT,
+                    chest_item_id TEXT,
                     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                     FOREIGN KEY (character_name) REFERENCES characters(name)
                 )
                 """
             )
+            self._ensure_equipment_columns(connection)
             connection.execute(
                 """
                 CREATE TABLE IF NOT EXISTS character_loot_claims (
@@ -306,10 +309,13 @@ class CharacterRepository:
         validate_equipment_slot(slot)
         with self._connect() as connection:
             equipment = self._load_equipment(connection, name)
-            return (
-                equipment.main_hand == item_id
-                and self._item_quantity(connection, name, item_id) > 0
-            )
+            if self._item_quantity(connection, name, item_id) <= 0:
+                return False
+            if slot == MAIN_HAND_SLOT:
+                return equipment.main_hand == item_id
+            if slot == CHEST_SLOT:
+                return equipment.chest == item_id
+            return False
 
     def exchange_items(
         self,
@@ -446,15 +452,20 @@ class CharacterRepository:
         """
         row = connection.execute(
             """
-            SELECT main_hand_item_id
+            SELECT main_hand_item_id, chest_item_id
             FROM character_equipment
             WHERE character_name = ?
             """,
             (name,),
         ).fetchone()
-        if row is None or row["main_hand_item_id"] is None:
+        if row is None:
             return Equipment()
-        return Equipment(main_hand=str(row["main_hand_item_id"]))
+        main_hand = row["main_hand_item_id"]
+        chest = row["chest_item_id"]
+        return Equipment(
+            main_hand=str(main_hand) if main_hand is not None else None,
+            chest=str(chest) if chest is not None else None,
+        )
 
     def _item_quantity(
         self,
@@ -536,17 +547,37 @@ class CharacterRepository:
         Записывает предмет в слот экипировки через существующее SQLite-соединение.
         """
         validate_equipment_slot(slot)
-        if slot != MAIN_HAND_SLOT:
-            msg = f"unsupported equipment slot: {slot!r}"
-            raise EquipmentError(msg)
-
+        column = _equipment_column_for_slot(slot)
         connection.execute(
-            """
-            INSERT INTO character_equipment (character_name, main_hand_item_id, updated_at)
+            f"""
+            INSERT INTO character_equipment (character_name, {column}, updated_at)
             VALUES (?, ?, CURRENT_TIMESTAMP)
             ON CONFLICT(character_name) DO UPDATE SET
-                main_hand_item_id = excluded.main_hand_item_id,
+                {column} = excluded.{column},
                 updated_at = CURRENT_TIMESTAMP
             """,
             (name, item_id),
         )
+
+    def _ensure_equipment_columns(self, connection: sqlite3.Connection) -> None:
+        """
+        Добавляет новые слоты экипировки в существующую таблицу без пересоздания базы.
+        """
+        columns = {
+            str(row["name"])
+            for row in connection.execute("PRAGMA table_info(character_equipment)")
+        }
+        if "chest_item_id" not in columns:
+            connection.execute("ALTER TABLE character_equipment ADD COLUMN chest_item_id TEXT")
+
+
+def _equipment_column_for_slot(slot: str) -> str:
+    """
+    Возвращает имя SQLite-колонки для поддерживаемого слота экипировки.
+    """
+    if slot == MAIN_HAND_SLOT:
+        return "main_hand_item_id"
+    if slot == CHEST_SLOT:
+        return "chest_item_id"
+    msg = f"unsupported equipment slot: {slot!r}"
+    raise EquipmentError(msg)

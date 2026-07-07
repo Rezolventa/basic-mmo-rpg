@@ -47,6 +47,7 @@ class ClientMessageType(StrEnum):
     INTERACTION_OPTION_SELECTED = "interaction_option_selected"
     EQUIP_ITEM_REQUESTED = "equip_item_requested"
     UNEQUIP_ITEM_REQUESTED = "unequip_item_requested"
+    VENDOR_BUY_REQUESTED = "vendor_buy_requested"
     ATTACK_REQUESTED = "attack_requested"
     STOP_ATTACK_REQUESTED = "stop_attack_requested"
     RESPAWN_REQUESTED = "respawn_requested"
@@ -67,6 +68,7 @@ class ServerMessageType(StrEnum):
     ENTITY_REMOVED = "entity_removed"
     INVENTORY_UPDATED = "inventory_updated"
     EQUIPMENT_UPDATED = "equipment_updated"
+    VENDOR_OPENED = "vendor_opened"
     COMBAT_EVENT = "combat_event"
     ERROR = "error"
 
@@ -157,6 +159,44 @@ class InteractionMenu:
     title: str
     body: str
     options: tuple[InteractionMenuOption, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class VendorOffer:
+    """
+    Хранит одну server-authoritative позицию в окне торговца.
+    """
+
+    offer_id: str
+    item_id: str
+    display_name: str
+    price_item_id: str
+    price_display_name: str
+    price_quantity: int
+    enabled: bool = True
+    details: str | None = None
+    disabled_reason: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class VendorWindow:
+    """
+    Хранит server-authoritative окно покупки у NPC-торговца.
+    """
+
+    vendor_id: str
+    title: str
+    offers: tuple[VendorOffer, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class VendorPurchaseRequest:
+    """
+    Хранит клиентский запрос покупки позиции у торговца.
+    """
+
+    vendor_id: str
+    offer_id: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -519,6 +559,102 @@ def interaction_menu_from_payload(payload: Mapping[str, Any]) -> InteractionMenu
     )
 
 
+def vendor_offer_to_payload(offer: VendorOffer) -> dict[str, Any]:
+    """
+    Преобразует позицию торговца в JSON-готовый payload.
+    """
+    payload: dict[str, Any] = {
+        "id": offer.offer_id,
+        "item_id": offer.item_id,
+        "display_name": offer.display_name,
+        "price_item_id": offer.price_item_id,
+        "price_display_name": offer.price_display_name,
+        "price_quantity": offer.price_quantity,
+        "enabled": offer.enabled,
+    }
+    if offer.details is not None:
+        payload["details"] = offer.details
+    if offer.disabled_reason is not None:
+        payload["disabled_reason"] = offer.disabled_reason
+    return payload
+
+
+def vendor_offer_from_payload(payload: Mapping[str, Any]) -> VendorOffer:
+    """
+    Создает позицию торговца из server-authoritative payload-а.
+    """
+    offer_id = payload.get("id")
+    if not isinstance(offer_id, str) or not offer_id:
+        msg = "vendor offer id must be a non-empty string"
+        raise ProtocolError(msg)
+    return VendorOffer(
+        offer_id=offer_id,
+        item_id=_string_field(payload, "item_id"),
+        display_name=_string_field(payload, "display_name"),
+        price_item_id=_string_field(payload, "price_item_id"),
+        price_display_name=_string_field(payload, "price_display_name"),
+        price_quantity=_positive_int_field(payload, "price_quantity"),
+        enabled=_bool_field(payload, "enabled"),
+        details=_optional_string_field(payload, "details"),
+        disabled_reason=_optional_string_field(payload, "disabled_reason"),
+    )
+
+
+def vendor_opened_payload(
+    vendor_id: str,
+    title: str,
+    offers: tuple[VendorOffer, ...],
+) -> dict[str, Any]:
+    """
+    Создает payload серверного окна торговца.
+    """
+    return {
+        "vendor_id": vendor_id,
+        "title": title,
+        "offers": [vendor_offer_to_payload(offer) for offer in offers],
+    }
+
+
+def vendor_window_from_payload(payload: Mapping[str, Any]) -> VendorWindow:
+    """
+    Создает окно торговца из server-authoritative payload-а.
+    """
+    raw_offers = payload.get("offers")
+    if not isinstance(raw_offers, list):
+        msg = "vendor offers must be a list"
+        raise ProtocolError(msg)
+
+    offers: list[VendorOffer] = []
+    for raw_offer in raw_offers:
+        offer_payload = _map_payload(raw_offer, "vendor offer")
+        offers.append(vendor_offer_from_payload(offer_payload))
+
+    return VendorWindow(
+        vendor_id=_string_field(payload, "vendor_id"),
+        title=_string_field(payload, "title"),
+        offers=tuple(offers),
+    )
+
+
+def vendor_buy_requested_payload(vendor_id: str, offer_id: str) -> dict[str, Any]:
+    """
+    Создает payload клиентского запроса покупки у торговца.
+    """
+    return {"vendor_id": vendor_id, "offer_id": offer_id}
+
+
+def vendor_purchase_request_from_payload(
+    payload: Mapping[str, Any],
+) -> VendorPurchaseRequest:
+    """
+    Извлекает запрос покупки у торговца из payload-а клиента.
+    """
+    return VendorPurchaseRequest(
+        vendor_id=_string_field(payload, "vendor_id"),
+        offer_id=_string_field(payload, "offer_id"),
+    )
+
+
 def attack_requested_payload(target_id: str) -> dict[str, Any]:
     """
     Создает payload клиентского запроса атаки объекта мира.
@@ -714,7 +850,7 @@ def equipment_updated_payload(equipment: Equipment) -> dict[str, Any]:
     """
     Создает payload серверного обновления экипировки.
     """
-    return {"main_hand": equipment.main_hand}
+    return {"main_hand": equipment.main_hand, "chest": equipment.chest}
 
 
 def equipment_from_payload(payload: Mapping[str, Any]) -> Equipment:
@@ -725,7 +861,11 @@ def equipment_from_payload(payload: Mapping[str, Any]) -> Equipment:
     if main_hand is not None and (not isinstance(main_hand, str) or not main_hand):
         msg = "equipment main_hand must be a non-empty string or null"
         raise ProtocolError(msg)
-    return Equipment(main_hand=main_hand)
+    chest = payload.get("chest")
+    if chest is not None and (not isinstance(chest, str) or not chest):
+        msg = "equipment chest must be a non-empty string or null"
+        raise ProtocolError(msg)
+    return Equipment(main_hand=main_hand, chest=chest)
 
 
 def player_to_payload(player: PlayerState, name: str | None = None) -> dict[str, Any]:

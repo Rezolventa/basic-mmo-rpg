@@ -278,10 +278,11 @@ def test_create_empty_map_from_template_writes_valid_map(tmp_path: Path) -> None
     assert entity_positions["npc-jack-lumber"] == [32, 0]
     assert entity_positions["npc-kopai"] == [64, 0]
     assert entity_positions["npc-fogu"] == [96, 0]
-    assert entity_positions["creature-barbara"] == [128, 0]
-    assert entity_positions["object-player-respawn"] == [0, 32]
-    assert entity_positions["creature-boar"] == [32, 32]
-    assert entity_positions["lootable-training-dummy"] == [64, 32]
+    assert entity_positions["npc-bjorn"] == [128, 0]
+    assert entity_positions["creature-barbara"] == [0, 32]
+    assert entity_positions["object-player-respawn"] == [32, 32]
+    assert entity_positions["creature-boar"] == [64, 32]
+    assert entity_positions["lootable-training-dummy"] == [96, 32]
     assert document.state.width == 5
     assert document.state.height == 4
     assert document.state.tile_at(0, 0) == "."

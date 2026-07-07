@@ -14,7 +14,7 @@ from basic_mmo_rpg.client.network import NetworkClient
 from basic_mmo_rpg.client.rendering import Renderer
 from basic_mmo_rpg.client.ui import ChatLine, TimedText
 from basic_mmo_rpg.domain.entities import WorldEntity
-from basic_mmo_rpg.domain.equipment import MAIN_HAND_SLOT, Equipment
+from basic_mmo_rpg.domain.equipment import CHEST_SLOT, MAIN_HAND_SLOT, Equipment
 from basic_mmo_rpg.domain.geometry import Rect, Vec2
 from basic_mmo_rpg.domain.inventory import ItemStack
 from basic_mmo_rpg.domain.movement import MovementIntent, PlayerState, move_player
@@ -23,6 +23,7 @@ from basic_mmo_rpg.shared.protocol import (
     InteractionMenu,
     ProtocolError,
     ServerMessageType,
+    VendorWindow,
     entities_from_snapshot_payload,
     equipment_from_payload,
     interaction_menu_from_payload,
@@ -30,6 +31,7 @@ from basic_mmo_rpg.shared.protocol import (
     inventory_items_from_payload,
     player_snapshots_from_payload,
     tile_map_from_payload,
+    vendor_window_from_payload,
 )
 from basic_mmo_rpg.storage.map_loader import load_tile_map
 
@@ -166,6 +168,7 @@ class GameClient:
         self.inventory_items: list[ItemStack] = []
         self.equipment = Equipment()
         self.interaction_menu: InteractionMenu | None = None
+        self.vendor_window: VendorWindow | None = None
         self.combat_mode_active = False
         self.hovered_attackable_entity_id: str | None = None
         self.selected_attack_target_id: str | None = None
@@ -256,6 +259,7 @@ class GameClient:
             equipment=self.equipment,
             inventory_visible=self.inventory_visible,
             interaction_menu=self.interaction_menu,
+            vendor_window=self.vendor_window,
             combat_mode_active=self.combat_mode_active,
             hovered_attackable_entity_id=self.hovered_attackable_entity_id,
             selected_attack_target_id=self.selected_attack_target_id,
@@ -285,6 +289,10 @@ class GameClient:
         if getattr(self, "interaction_menu", None) is not None:
             if event.key == pygame.K_ESCAPE:
                 self.interaction_menu = None
+            return
+        if getattr(self, "vendor_window", None) is not None:
+            if event.key == pygame.K_ESCAPE:
+                self.vendor_window = None
             return
 
         if event.key == pygame.K_RETURN:
@@ -354,6 +362,9 @@ class GameClient:
         if getattr(self, "interaction_menu", None) is not None:
             self._handle_interaction_menu_click(position)
             return
+        if getattr(self, "vendor_window", None) is not None:
+            self._handle_vendor_click(position)
+            return
         if not self._local_player_can_act():
             return
 
@@ -395,6 +406,9 @@ class GameClient:
         if hit.slot == MAIN_HAND_SLOT and self.equipment.main_hand is not None:
             self.network_client.send_unequip_item_request(MAIN_HAND_SLOT)
             return True
+        if hit.slot == CHEST_SLOT and self.equipment.chest is not None:
+            self.network_client.send_unequip_item_request(CHEST_SLOT)
+            return True
         return True
 
     def _handle_interaction_menu_click(self, position: tuple[int, int]) -> None:
@@ -408,6 +422,18 @@ class GameClient:
         if option is None or not option.enabled:
             return
         self.network_client.send_interaction_option_selected(menu.entity_id, option.option_id)
+
+    def _handle_vendor_click(self, position: tuple[int, int]) -> None:
+        """
+        Отправляет запрос покупки активной позиции торговца.
+        """
+        vendor_window = self.vendor_window
+        if vendor_window is None:
+            return
+        offer = self.renderer.vendor_hit_at_position(self.screen, position, vendor_window)
+        if offer is None or not offer.enabled:
+            return
+        self.network_client.send_vendor_buy_request(vendor_window.vendor_id, offer.offer_id)
 
     def _send_interaction_under_cursor(self) -> None:
         """
@@ -432,6 +458,7 @@ class GameClient:
         if (
             self.chat_input_active
             or getattr(self, "interaction_menu", None) is not None
+            or getattr(self, "vendor_window", None) is not None
             or not self._local_player_can_act()
         ):
             return MovementIntent()
@@ -467,6 +494,8 @@ class GameClient:
                 self._apply_interaction_result(message.payload)
             elif message.type == ServerMessageType.INTERACTION_MENU_OPENED:
                 self._apply_interaction_menu_opened(message.payload)
+            elif message.type == ServerMessageType.VENDOR_OPENED:
+                self._apply_vendor_opened(message.payload)
             elif message.type == ServerMessageType.COMBAT_EVENT:
                 self._apply_combat_event(message.payload)
             elif message.type == ServerMessageType.INVENTORY_UPDATED:
@@ -632,6 +661,17 @@ class GameClient:
         """
         try:
             self.interaction_menu = interaction_menu_from_payload(payload)
+            self.vendor_window = None
+        except ProtocolError:
+            return
+
+    def _apply_vendor_opened(self, payload: dict[str, object]) -> None:
+        """
+        Открывает или обновляет server-authoritative окно торговца.
+        """
+        try:
+            self.vendor_window = vendor_window_from_payload(payload)
+            self.interaction_menu = None
         except ProtocolError:
             return
 
@@ -732,6 +772,7 @@ class GameClient:
         self.death_dialog_visible = not player.is_alive
         if not player.can_act:
             self.interaction_menu = None
+            self.vendor_window = None
             self.combat_mode_active = False
             self.hovered_attackable_entity_id = None
             self.selected_attack_target_id = None

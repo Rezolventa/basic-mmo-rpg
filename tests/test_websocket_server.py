@@ -19,6 +19,7 @@ from basic_mmo_rpg.domain.inventory import (
     FISH_ITEM_ID,
     FISHING_ROD_ITEM_ID,
     GOLD_ITEM_ID,
+    IRON_CHEST_ARMOR_ITEM_ID,
     LEATHER_ITEM_ID,
     LOG_ITEM_ID,
     LUMBER_AXE_ITEM_ID,
@@ -53,6 +54,8 @@ from basic_mmo_rpg.shared.protocol import (
     players_from_snapshot_payload,
     respawn_requested_payload,
     unequip_item_requested_payload,
+    vendor_buy_requested_payload,
+    vendor_window_from_payload,
 )
 from basic_mmo_rpg.storage.characters import CharacterRepository
 from basic_mmo_rpg.storage.map_loader import tile_map_from_dict
@@ -253,6 +256,39 @@ def _open_map_with_kopai() -> object:
     return raw_map
 
 
+def _open_map_with_bjorn() -> object:
+    """
+    Возвращает открытую карту с NPC Bjorn рядом со spawn-ом.
+    """
+    raw_map: dict[str, object] = {
+        "tile_size": 32,
+        "spawn": [32, 32],
+        "legend": {
+            ".": {"name": "floor", "solid": False, "color": [50, 120, 60]},
+            "#": {"name": "wall", "solid": True, "color": [90, 90, 90]},
+        },
+        "tiles": [
+            "..........",
+            "..........",
+            "..........",
+            "..........",
+        ],
+        "entities": [
+            {
+                "id": "npc-bjorn",
+                "kind": "npc",
+                "name": "Bjorn",
+                "position": [64, 32],
+                "size": [24, 30],
+                "interaction_radius": 64,
+                "dialogue": "",
+                "solid": True,
+            }
+        ],
+    }
+    return raw_map
+
+
 def _open_map_with_fogu_barbara_and_gate() -> object:
     """
     Возвращает открытую карту с NPC Fogu, овцой Барбарой и калиткой.
@@ -432,6 +468,24 @@ def _open_map_with_lethal_boar() -> object:
     }
 
 
+def _open_map_with_weak_boar() -> object:
+    """
+    Возвращает карту с кабаном, чей урон броня снижает до минимальной единицы.
+    """
+    raw_map = _open_map_with_lethal_boar()
+    entities = raw_map["entities"]
+    assert isinstance(entities, list)
+    boar = entities[1]
+    assert isinstance(boar, dict)
+    components = boar["components"]
+    assert isinstance(components, dict)
+    combat = components["combat"]
+    assert isinstance(combat, dict)
+    combat["min_damage"] = 2
+    combat["max_damage"] = 2
+    return raw_map
+
+
 def test_websocket_server_accepts_two_clients_and_broadcasts_movement(tmp_path: Path) -> None:
     """
     Проверяет websocket-сценарий с двумя клиентами и серверной обработкой движения.
@@ -504,6 +558,13 @@ def test_websocket_server_equips_and_unequips_main_hand(tmp_path: Path) -> None:
     asyncio.run(_equipment_smoke(tmp_path))
 
 
+def test_websocket_server_opens_vendor_and_buys_chest_armor(tmp_path: Path) -> None:
+    """
+    Проверяет покупку нагрудной брони у NPC-торговца.
+    """
+    asyncio.run(_vendor_purchase_smoke(tmp_path))
+
+
 def test_websocket_server_sends_interaction_result_only_to_actor(tmp_path: Path) -> None:
     """
     Проверяет, что результат взаимодействия с NPC получает только инициатор.
@@ -539,6 +600,13 @@ def test_websocket_server_boar_kills_and_player_respawns(tmp_path: Path) -> None
     Проверяет ответную атаку кабана, смерть игрока и respawn_requested.
     """
     asyncio.run(_boar_kills_and_player_respawns_smoke(tmp_path))
+
+
+def test_chest_armor_reduces_incoming_damage_to_minimum_one(tmp_path: Path) -> None:
+    """
+    Проверяет, что нагрудная броня снижает входящий урон, но не ниже 1.
+    """
+    asyncio.run(_chest_armor_reduces_incoming_damage_smoke(tmp_path))
 
 
 def test_websocket_server_dead_player_reconnects_dead_until_respawn(
@@ -1076,6 +1144,80 @@ async def _equipment_smoke(tmp_path: Path) -> None:
     assert multiplayer_server.character_repository.load_equipment("Alice") == Equipment()
 
 
+async def _vendor_purchase_smoke(tmp_path: Path) -> None:
+    """
+    Запускает сервер и проверяет покупку нагрудной брони у Bjorn.
+    """
+    multiplayer_server = _server_for_test(tmp_path, raw_map=_open_map_with_bjorn())
+    multiplayer_server.character_repository.load_or_create("Alice", Vec2(32, 32))
+    multiplayer_server.character_repository.add_item("Alice", GOLD_ITEM_ID, quantity=25)
+
+    async with _running_test_server(multiplayer_server) as uri, connect(uri) as first_client:
+        await _send_join(first_client, "Alice")
+        await _recv_player_id(first_client)
+        await _recv_message_type(first_client, ServerMessageType.INVENTORY_UPDATED)
+        await _recv_message_type(first_client, ServerMessageType.EQUIPMENT_UPDATED)
+
+        menu = await _open_npc_menu(first_client, "npc-bjorn")
+        await _select_interaction_option(first_client, "npc-bjorn", "vendor:open")
+        vendor_message = await _recv_message_type(first_client, ServerMessageType.VENDOR_OPENED)
+        vendor_window = vendor_window_from_payload(vendor_message.payload)
+
+        await first_client.send(
+            encode_message(
+                ProtocolMessage(
+                    type=ClientMessageType.VENDOR_BUY_REQUESTED,
+                    payload=vendor_buy_requested_payload("npc-bjorn", "iron_chest_armor"),
+                )
+            )
+        )
+        inventory_message = await _recv_message_type(
+            first_client,
+            ServerMessageType.INVENTORY_UPDATED,
+        )
+        purchase_result = await _recv_message_type(
+            first_client,
+            ServerMessageType.INTERACTION_RESULT,
+        )
+        refreshed_vendor_message = await _recv_message_type(
+            first_client,
+            ServerMessageType.VENDOR_OPENED,
+        )
+
+        await first_client.send(
+            encode_message(
+                ProtocolMessage(
+                    type=ClientMessageType.EQUIP_ITEM_REQUESTED,
+                    payload=equip_item_requested_payload(IRON_CHEST_ARMOR_ITEM_ID),
+                )
+            )
+        )
+        equipment_message = await _recv_message_type(
+            first_client,
+            ServerMessageType.EQUIPMENT_UPDATED,
+        )
+
+    inventory = inventory_items_from_payload(inventory_message.payload)
+    quantities = {item.item_id: item.quantity for item in inventory}
+    refreshed_vendor = vendor_window_from_payload(refreshed_vendor_message.payload)
+
+    assert menu.body in {"Примеришь?", "Тебе это пригодится."}
+    assert menu.options[0].option_id == "vendor:open"
+    assert vendor_window.vendor_id == "npc-bjorn"
+    assert vendor_window.offers[0].display_name == "Железная кираса"
+    assert vendor_window.offers[0].price_quantity == 25
+    assert vendor_window.offers[0].enabled is True
+    assert quantities == {IRON_CHEST_ARMOR_ITEM_ID: 1}
+    assert purchase_result.payload["text"] == "Вы купили Железная кираса"
+    assert refreshed_vendor.offers[0].enabled is False
+    assert equipment_from_payload(equipment_message.payload) == Equipment(
+        chest=IRON_CHEST_ARMOR_ITEM_ID
+    )
+    assert multiplayer_server.character_repository.load_equipment("Alice") == Equipment(
+        chest=IRON_CHEST_ARMOR_ITEM_ID
+    )
+
+
 async def _interaction_result_only_to_actor_smoke(tmp_path: Path) -> None:
     """
     Запускает сервер и проверяет успешное взаимодействие с NPC.
@@ -1330,6 +1472,42 @@ async def _boar_kills_and_player_respawns_smoke(tmp_path: Path) -> None:
     assert death_message.payload["add_to_journal"] is False
     assert dead_player.hit_points == 0
     assert respawned_player.hit_points == 15
+
+
+async def _chest_armor_reduces_incoming_damage_smoke(tmp_path: Path) -> None:
+    """
+    Проверяет server-side поглощение входящего урона нагрудной броней.
+    """
+    multiplayer_server = _server_for_test(
+        tmp_path,
+        raw_map=_open_map_with_weak_boar(),
+        random_source=random.Random(0),
+    )
+    multiplayer_server.character_repository.load_or_create("Alice", Vec2(32, 32))
+    multiplayer_server.character_repository.add_item("Alice", IRON_CHEST_ARMOR_ITEM_ID)
+    multiplayer_server.character_repository.equip_item("Alice", IRON_CHEST_ARMOR_ITEM_ID)
+    multiplayer_server.world.add_player("player-1", "Alice", Vec2(32, 32))
+    recording_websocket = _RecordingWebSocket()
+    session = PlayerSession(
+        session_id="session-1",
+        player_id="player-1",
+        character_name="Alice",
+        websocket=recording_websocket,
+    )
+    multiplayer_server.sessions[session.session_id] = session
+    multiplayer_server.world.aggro_creature("creature-boar", "player-1")
+
+    await multiplayer_server._tick_enemy_combat(now=1.0)
+
+    player = multiplayer_server.world.players["player-1"]
+    combat_message = decode_message(recording_websocket.sent_messages[0])
+
+    assert player.hit_points == 29
+    assert combat_message.type == ServerMessageType.COMBAT_EVENT
+    assert combat_message.payload["floating_text"] == "-1"
+    assert combat_message.payload["text"] == (
+        "Кабан атаковал вас: -1 (1/2 поглощено броней)"
+    )
 
 
 async def _dead_player_reconnects_dead_until_respawn_smoke(tmp_path: Path) -> None:
