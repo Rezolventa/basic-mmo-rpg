@@ -20,6 +20,8 @@ from basic_mmo_rpg.shared.protocol import EntitySnapshot, PlayerSnapshot, world_
 
 CREATURE_MOVE_SECONDS = 2.0
 CREATURE_COOLDOWN_SECONDS = 2.0
+CREATURE_COOLDOWN_JITTER_FRACTION = 0.20
+CREATURE_INITIAL_COOLDOWN_MAX_FRACTION = 1.0
 CREATURE_CHASE_MOVE_SECONDS = 0.45
 CREATURE_RETURN_MOVE_SECONDS = 0.7
 CREATURE_LEASH_DISTANCE = 256.0
@@ -32,6 +34,7 @@ CREATURE_DIRECTIONS = (
     Vec2(-1, 0),
     Vec2(1, 0),
 )
+CREATURE_WANDER_DIRECTIONS = (*CREATURE_DIRECTIONS, Vec2(0, 0))
 
 
 @dataclass(slots=True)
@@ -77,6 +80,7 @@ class MultiplayerWorld:
             entity.entity_id: CreatureMotion(
                 entity_id=entity.entity_id,
                 home_position=entity.position,
+                cooldown_remaining=self._initial_creature_cooldown_seconds(),
             )
             for entity in self.entity_states.values()
             if entity.kind == EntityKind.CREATURE
@@ -488,7 +492,7 @@ class MultiplayerWorld:
                         motion.action_remaining = 0.0
                         motion.start_position = None
                         motion.target_position = None
-                        motion.cooldown_remaining = CREATURE_COOLDOWN_SECONDS
+                        motion.cooldown_remaining = self._creature_cooldown_seconds()
             self.entity_states[entity.entity_id] = replace(
                 entity,
                 body=updated_body,
@@ -702,14 +706,14 @@ class MultiplayerWorld:
         motion.cooldown_remaining = (
             0.0
             if motion.aggro_target_id is not None or motion.returning_home
-            else CREATURE_COOLDOWN_SECONDS
+            else self._creature_cooldown_seconds()
         )
 
     def _start_creature_action(self, entity: WorldEntity, motion: CreatureMotion) -> None:
         """
         Выбирает направление creature и начинает движение или ожидание на месте.
         """
-        direction = self.random_source.choice(CREATURE_DIRECTIONS)
+        direction = self.random_source.choice(CREATURE_WANDER_DIRECTIONS)
         tile_size = self.tile_map.tile_size
         target_position = entity.position + Vec2(direction.x * tile_size, direction.y * tile_size)
         if self._is_creature_target_available(entity, target_position):
@@ -786,6 +790,23 @@ class MultiplayerWorld:
             motion.target_position = None
         motion.action_duration = duration
         motion.action_remaining = duration
+
+    def _creature_cooldown_seconds(self) -> float:
+        """
+        Возвращает базовый cooldown creature с небольшим случайным рассинхроном.
+        """
+        jitter = self.random_source.random() * CREATURE_COOLDOWN_JITTER_FRACTION
+        return CREATURE_COOLDOWN_SECONDS * (1.0 + jitter)
+
+    def _initial_creature_cooldown_seconds(self) -> float:
+        """
+        Возвращает стартовую задержку creature, чтобы сущности не начинали шаг синхронно.
+        """
+        return (
+            CREATURE_COOLDOWN_SECONDS
+            * self.random_source.random()
+            * CREATURE_INITIAL_COOLDOWN_MAX_FRACTION
+        )
 
     def _is_creature_at_home(self, entity: WorldEntity, motion: CreatureMotion) -> bool:
         """

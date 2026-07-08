@@ -6,7 +6,13 @@ from dataclasses import replace
 from basic_mmo_rpg.domain.geometry import Vec2
 from basic_mmo_rpg.domain.inventory import LEATHER_ITEM_ID
 from basic_mmo_rpg.domain.movement import MovementIntent
-from basic_mmo_rpg.server.world import MultiplayerWorld
+from basic_mmo_rpg.server.world import (
+    CREATURE_COOLDOWN_JITTER_FRACTION,
+    CREATURE_COOLDOWN_SECONDS,
+    CREATURE_INITIAL_COOLDOWN_MAX_FRACTION,
+    CREATURE_MOVE_SECONDS,
+    MultiplayerWorld,
+)
 from basic_mmo_rpg.shared.protocol import (
     entities_from_snapshot_payload,
     players_from_snapshot_payload,
@@ -443,6 +449,75 @@ def test_world_moves_creature_smoothly_between_tiles() -> None:
     assert moved_sheep is not None
     assert halfway_sheep.position == Vec2(sheep.position.x + 16, sheep.position.y)
     assert moved_sheep.position == Vec2(sheep.position.x + 32, sheep.position.y)
+
+
+def test_world_can_choose_creature_stay_in_place_wander_vector() -> None:
+    """
+    Проверяет, что обычный wander-выбор creature может равновероятно остаться на месте.
+    """
+    world = MultiplayerWorld(
+        tile_map=tile_map_from_dict(_open_map_with_gate_and_sheep()),
+        random_source=random.Random(3),
+    )
+    sheep = world.get_entity("creature-barbara")
+    assert sheep is not None
+    motion = world.creature_motions[sheep.entity_id]
+
+    world.tick(motion.cooldown_remaining)
+    assert motion.target_position == sheep.position
+
+    world.tick(CREATURE_MOVE_SECONDS)
+    still_sheep = world.get_entity("creature-barbara")
+
+    assert still_sheep is not None
+    assert still_sheep.position == sheep.position
+
+
+def test_world_adds_jitter_to_creature_movement_cooldown() -> None:
+    """
+    Проверяет, что после шага creature получает небольшой случайный разброс cooldown-а.
+    """
+    world = MultiplayerWorld(
+        tile_map=tile_map_from_dict(_open_map_with_gate_and_sheep()),
+        random_source=random.Random(0),
+    )
+    sheep = world.get_entity("creature-barbara")
+    assert sheep is not None
+    motion = world.creature_motions[sheep.entity_id]
+
+    world.tick(CREATURE_COOLDOWN_SECONDS)
+    world.tick(2.0)
+
+    assert motion.cooldown_remaining >= CREATURE_COOLDOWN_SECONDS
+    assert motion.cooldown_remaining <= (
+        CREATURE_COOLDOWN_SECONDS * (1.0 + CREATURE_COOLDOWN_JITTER_FRACTION)
+    )
+
+
+def test_world_randomizes_initial_creature_movement_cooldown() -> None:
+    """
+    Проверяет, что creature получает случайную стартовую задержку перед первым шагом.
+    """
+    random_source = random.Random(0)
+    expected_cooldown = (
+        CREATURE_COOLDOWN_SECONDS
+        * random.Random(0).random()
+        * CREATURE_INITIAL_COOLDOWN_MAX_FRACTION
+    )
+
+    world = MultiplayerWorld(
+        tile_map=tile_map_from_dict(_open_map_with_gate_and_sheep()),
+        random_source=random_source,
+    )
+    sheep = world.get_entity("creature-barbara")
+    assert sheep is not None
+    motion = world.creature_motions[sheep.entity_id]
+
+    assert motion.cooldown_remaining == expected_cooldown
+    assert motion.cooldown_remaining >= 0.0
+    assert motion.cooldown_remaining <= (
+        CREATURE_COOLDOWN_SECONDS * CREATURE_INITIAL_COOLDOWN_MAX_FRACTION
+    )
 
 
 def test_world_returns_neutral_creature_after_leash_distance() -> None:
