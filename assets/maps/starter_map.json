@@ -222,6 +222,56 @@
       }
     },
     {
+      "id": "object-forge",
+      "components": {
+        "identity": {
+          "kind": "object",
+          "name": "Горн",
+          "visual": "forge"
+        },
+        "body": {
+          "position": [
+            812,
+            289
+          ],
+          "size": [
+            28,
+            28
+          ],
+          "solid": true
+        },
+        "interaction": {
+          "radius": 64,
+          "dialogue": ""
+        }
+      }
+    },
+    {
+      "id": "object-anvil",
+      "components": {
+        "identity": {
+          "kind": "object",
+          "name": "Наковальня",
+          "visual": "anvil"
+        },
+        "body": {
+          "position": [
+            852,
+            289
+          ],
+          "size": [
+            28,
+            24
+          ],
+          "solid": true
+        },
+        "interaction": {
+          "radius": 64,
+          "dialogue": ""
+        }
+      }
+    },
+    {
       "id": "gate-sheep-pen",
       "components": {
         "identity": {

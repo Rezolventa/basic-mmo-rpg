@@ -15,6 +15,8 @@ SHEARS_ITEM_ID = "shears"
 WOOL_ITEM_ID = "wool"
 RUSTY_SWORD_ITEM_ID = "rusty_sword"
 LEATHER_ITEM_ID = "leather"
+IRON_ORE_ITEM_ID = "iron_ore"
+IRON_INGOT_ITEM_ID = "iron_ingot"
 IRON_CHEST_ARMOR_ITEM_ID = "iron_chest_armor"
 
 
@@ -113,6 +115,16 @@ ITEM_DEFINITIONS: dict[str, ItemDefinition] = {
     LEATHER_ITEM_ID: ItemDefinition(
         item_id=LEATHER_ITEM_ID,
         display_name="Кожа",
+        stack_limit=999,
+    ),
+    IRON_ORE_ITEM_ID: ItemDefinition(
+        item_id=IRON_ORE_ITEM_ID,
+        display_name="Железная руда",
+        stack_limit=999,
+    ),
+    IRON_INGOT_ITEM_ID: ItemDefinition(
+        item_id=IRON_INGOT_ITEM_ID,
+        display_name="Железный слиток",
         stack_limit=999,
     ),
     IRON_CHEST_ARMOR_ITEM_ID: ItemDefinition(

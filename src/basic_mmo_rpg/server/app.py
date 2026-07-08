@@ -25,6 +25,8 @@ from basic_mmo_rpg.domain.inventory import (
     FISHING_ROD_ITEM_ID,
     GOLD_ITEM_ID,
     IRON_CHEST_ARMOR_ITEM_ID,
+    IRON_INGOT_ITEM_ID,
+    IRON_ORE_ITEM_ID,
     LOG_ITEM_ID,
     LUMBER_AXE_ITEM_ID,
     PICKAXE_ITEM_ID,
@@ -89,9 +91,15 @@ FUNDAY_GOLD_REWARD = 1
 LUMBERJACKING_SUCCESS_CHANCE = 1.0
 JACK_REQUIRED_LOGS = 5
 JACK_GOLD_REWARD = 1
-MINING_SUCCESS_CHANCE = 0.8
+MINING_STONE_SUCCESS_CHANCE = 0.5
+IRON_ORE_SUCCESS_CHANCE = 0.3
 KOPAI_REQUIRED_STONES = 3
 KOPAI_GOLD_REWARD = 1
+FORGE_ENTITY_ID = "object-forge"
+FORGE_REQUIRED_IRON_ORE = 1
+FORGE_SMELTING_SUCCESS_CHANCE = 0.8
+ANVIL_ENTITY_ID = "object-anvil"
+ANVIL_REQUIRED_IRON_INGOTS = 35
 FOGU_REQUIRED_WOOL = 1
 FOGU_GOLD_REWARD = 1
 WOOL_REGROW_SECONDS = 30.0
@@ -131,6 +139,17 @@ class PlayerSession:
 
 
 @dataclass(frozen=True, slots=True)
+class GatheringRewardOutcome:
+    """
+    Описывает один взаимоисключающий исход добычи ресурса.
+    """
+
+    item_id: str
+    success_chance: float
+    success_text: str
+
+
+@dataclass(frozen=True, slots=True)
 class TileGatheringRule:
     """
     Описывает server-authoritative правило добычи ресурса из тайла.
@@ -143,6 +162,7 @@ class TileGatheringRule:
     missing_tool_text: str
     success_text: str
     failure_text: str | None = None
+    reward_outcomes: tuple[GatheringRewardOutcome, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -209,9 +229,30 @@ class RepeatableQuestDefinition:
     success_text: str
 
 
+@dataclass(frozen=True, slots=True)
+class CraftingRecipeDefinition:
+    """
+    Описывает простой server-authoritative рецепт обмена у world-object станции.
+    """
+
+    recipe_id: str
+    option_id: str
+    cost_item_id: str
+    cost_quantity: int
+    reward_item_id: str
+    reward_quantity: int
+    success_text: str
+    success_chance: float = 1.0
+    failure_text: str | None = None
+    consume_cost_on_failure: bool = False
+    result_presentation: str = INTERACTION_PRESENTATION_BUBBLE
+    result_targets_player: bool = False
+
+
 OPTION_KIND_ACTION = "action"
 QUEST_KIND_REPEATABLE = "repeatable"
 OPTION_KIND_VENDOR = "vendor"
+OPTION_KIND_CRAFT = "craft"
 VENDOR_OPTION_ID = "vendor:open"
 
 NPC_DIALOGUE_LINES: dict[str, tuple[str, ...]] = {
@@ -315,10 +356,52 @@ TILE_GATHERING_RULES: dict[str, TileGatheringRule] = {
         tile_name="rock",
         tool_item_id=PICKAXE_ITEM_ID,
         reward_item_id=STONE_ITEM_ID,
-        success_chance=MINING_SUCCESS_CHANCE,
+        success_chance=0.0,
         missing_tool_text="Нужна кирка в руке",
         success_text="Вы добыли камень",
-        failure_text="Не удалось добыть камень",
+        failure_text="Ничего не удалось накопать",
+        reward_outcomes=(
+            GatheringRewardOutcome(
+                item_id=STONE_ITEM_ID,
+                success_chance=MINING_STONE_SUCCESS_CHANCE,
+                success_text="Вы добыли камень",
+            ),
+            GatheringRewardOutcome(
+                item_id=IRON_ORE_ITEM_ID,
+                success_chance=IRON_ORE_SUCCESS_CHANCE,
+                success_text="Вы добыли железную руду",
+            ),
+        ),
+    ),
+}
+
+CRAFTING_STATION_RECIPES: dict[str, tuple[CraftingRecipeDefinition, ...]] = {
+    FORGE_ENTITY_ID: (
+        CraftingRecipeDefinition(
+            recipe_id="smelt_iron_ingot",
+            option_id="craft:smelt_iron_ingot",
+            cost_item_id=IRON_ORE_ITEM_ID,
+            cost_quantity=FORGE_REQUIRED_IRON_ORE,
+            reward_item_id=IRON_INGOT_ITEM_ID,
+            reward_quantity=1,
+            success_text="Вы получили железный слиток",
+            success_chance=FORGE_SMELTING_SUCCESS_CHANCE,
+            failure_text="Руда испортилась",
+            consume_cost_on_failure=True,
+            result_presentation=INTERACTION_PRESENTATION_FEED,
+            result_targets_player=True,
+        ),
+    ),
+    ANVIL_ENTITY_ID: (
+        CraftingRecipeDefinition(
+            recipe_id="forge_iron_chest_armor",
+            option_id="craft:forge_iron_chest_armor",
+            cost_item_id=IRON_INGOT_ITEM_ID,
+            cost_quantity=ANVIL_REQUIRED_IRON_INGOTS,
+            reward_item_id=IRON_CHEST_ARMOR_ITEM_ID,
+            reward_quantity=1,
+            success_text="Вы выковали Железную кирасу",
+        ),
     ),
 }
 
@@ -831,6 +914,9 @@ class MultiplayerServer:
         if entity.kind == EntityKind.NPC:
             await self._send_npc_interaction_menu(session, entity)
             return
+        if self._is_crafting_station(entity.entity_id):
+            await self._send_crafting_station_menu(session, entity)
+            return
 
         if not entity.dialogue:
             return
@@ -862,7 +948,16 @@ class MultiplayerServer:
 
         selection = interaction_option_selection_from_payload(payload)
         entity = self._resolve_interaction_entity(session, selection.entity_id)
-        if entity is None or entity.kind != EntityKind.NPC:
+        if entity is None:
+            return
+        if self._is_crafting_station(entity.entity_id):
+            await self._handle_crafting_station_option_selection(
+                session,
+                entity,
+                selection.option_id,
+            )
+            return
+        if entity.kind != EntityKind.NPC:
             return
 
         option = self._npc_option_by_id(session, entity, selection.option_id)
@@ -888,6 +983,31 @@ class MultiplayerServer:
 
         await self._send_npc_interaction_menu(session, entity)
 
+    async def _handle_crafting_station_option_selection(
+        self,
+        session: PlayerSession,
+        entity: WorldEntity,
+        option_id: str,
+    ) -> None:
+        """
+        Проверяет и выполняет выбранную опцию world-object станции крафта.
+        """
+        option = self._crafting_station_option_by_id(session, entity, option_id)
+        if option is None:
+            logger.info(
+                "Crafting option ignored: name=%s target_id=%s option_id=%s reason=missing",
+                session.character_name,
+                entity.entity_id,
+                option_id,
+            )
+            return
+        if not option.enabled:
+            await self._send_crafting_station_menu(session, entity)
+            return
+
+        await self._handle_crafting_recipe_option(session, entity, option_id)
+        await self._send_crafting_station_menu(session, entity)
+
     async def _send_npc_interaction_menu(
         self,
         session: PlayerSession,
@@ -909,6 +1029,27 @@ class MultiplayerServer:
             ),
         )
 
+    async def _send_crafting_station_menu(
+        self,
+        session: PlayerSession,
+        entity: WorldEntity,
+    ) -> None:
+        """
+        Отправляет клиенту актуальное окно взаимодействия с world-object станцией крафта.
+        """
+        await self._send(
+            session.websocket,
+            ProtocolMessage(
+                type=ServerMessageType.INTERACTION_MENU_OPENED,
+                payload=interaction_menu_opened_payload(
+                    entity_id=entity.entity_id,
+                    title=entity.name,
+                    body=entity.dialogue,
+                    options=tuple(self._crafting_station_options(session, entity)),
+                ),
+            ),
+        )
+
     def _npc_option_by_id(
         self,
         session: PlayerSession,
@@ -919,6 +1060,20 @@ class MultiplayerServer:
         Находит опцию в актуальном серверном списке NPC.
         """
         for option in self._npc_interaction_options(session, entity):
+            if option.option_id == option_id:
+                return option
+        return None
+
+    def _crafting_station_option_by_id(
+        self,
+        session: PlayerSession,
+        entity: WorldEntity,
+        option_id: str,
+    ) -> InteractionMenuOption | None:
+        """
+        Находит опцию в актуальном серверном списке станции крафта.
+        """
+        for option in self._crafting_station_options(session, entity):
             if option.option_id == option_id:
                 return option
         return None
@@ -958,6 +1113,19 @@ class MultiplayerServer:
             )
         return options
 
+    def _crafting_station_options(
+        self,
+        session: PlayerSession,
+        entity: WorldEntity,
+    ) -> list[InteractionMenuOption]:
+        """
+        Собирает доступные игроку рецепты станции крафта на текущий момент.
+        """
+        return [
+            self._crafting_recipe_menu_option(session, recipe)
+            for recipe in CRAFTING_STATION_RECIPES.get(entity.entity_id, ())
+        ]
+
     def _npc_dialogue_for(self, entity: WorldEntity) -> str:
         """
         Возвращает актуальную реплику NPC, включая случайные фразы торговцев.
@@ -995,6 +1163,37 @@ class MultiplayerServer:
             progress=progress,
             disabled_reason=None if enabled else f"Нужно: {progress}",
         )
+
+    def _crafting_recipe_menu_option(
+        self,
+        session: PlayerSession,
+        recipe: CraftingRecipeDefinition,
+    ) -> InteractionMenuOption:
+        """
+        Создает UI-опцию рецепта станции крафта с прогрессом по материалам.
+        """
+        current_quantity = self.character_repository.item_quantity(
+            session.character_name,
+            recipe.cost_item_id,
+        )
+        cost_name = item_definition_for(recipe.cost_item_id).display_name
+        reward_name = item_definition_for(recipe.reward_item_id).display_name
+        progress = f"{cost_name} {current_quantity}/{recipe.cost_quantity}"
+        enabled = current_quantity >= recipe.cost_quantity
+        return InteractionMenuOption(
+            option_id=recipe.option_id,
+            label=f"{cost_name} -> {reward_name} ({current_quantity}/{recipe.cost_quantity})",
+            kind=OPTION_KIND_CRAFT,
+            enabled=enabled,
+            progress=progress,
+            disabled_reason=None if enabled else f"Нужно: {progress}",
+        )
+
+    def _is_crafting_station(self, entity_id: str) -> bool:
+        """
+        Проверяет, есть ли у world-object серверные рецепты крафта.
+        """
+        return entity_id in CRAFTING_STATION_RECIPES
 
     def _is_tool_grant_option(self, entity_id: str, option_id: str) -> bool:
         """
@@ -1069,6 +1268,116 @@ class MultiplayerServer:
             text=quest.success_text,
         )
         await self._send_inventory_update(session, inventory)
+
+    async def _handle_crafting_recipe_option(
+        self,
+        session: PlayerSession,
+        entity: WorldEntity,
+        option_id: str,
+    ) -> None:
+        """
+        Выполняет выбранный рецепт станции крафта как атомарный обмен предметов.
+        """
+        recipe = self._crafting_recipe_definition(entity.entity_id, option_id)
+        if recipe is None:
+            return
+
+        if (
+            recipe.success_chance < 1.0
+            and self.random.random() >= recipe.success_chance
+            and recipe.consume_cost_on_failure
+        ):
+            await self._handle_failed_consuming_crafting_attempt(session, entity, recipe)
+            return
+
+        try:
+            inventory, crafted = self.character_repository.exchange_items(
+                name=session.character_name,
+                cost_item_id=recipe.cost_item_id,
+                cost_quantity=recipe.cost_quantity,
+                reward_item_id=recipe.reward_item_id,
+                reward_quantity=recipe.reward_quantity,
+            )
+        except InventoryLimitError as exc:
+            await self._send_inventory_limit_result(
+                session=session,
+                target_id=entity.entity_id,
+                target_name=entity.name,
+                error=exc,
+            )
+            return
+
+        if not crafted:
+            return
+
+        logger.info(
+            "Crafting recipe completed: name=%s station_id=%s recipe_id=%s",
+            session.character_name,
+            entity.entity_id,
+            recipe.recipe_id,
+        )
+        await self._send_crafting_result(session, entity, recipe, recipe.success_text)
+        await self._send_inventory_update(session, inventory)
+
+    async def _handle_failed_consuming_crafting_attempt(
+        self,
+        session: PlayerSession,
+        entity: WorldEntity,
+        recipe: CraftingRecipeDefinition,
+    ) -> None:
+        """
+        Выполняет неудачную попытку крафта, которая расходует материалы без награды.
+        """
+        if (
+            self.character_repository.item_quantity(session.character_name, recipe.cost_item_id)
+            < recipe.cost_quantity
+        ):
+            return
+
+        inventory = self.character_repository.remove_item(
+            session.character_name,
+            recipe.cost_item_id,
+            recipe.cost_quantity,
+        )
+        if recipe.failure_text is not None:
+            await self._send_crafting_result(session, entity, recipe, recipe.failure_text)
+        await self._send_inventory_update(session, inventory)
+
+    async def _send_crafting_result(
+        self,
+        session: PlayerSession,
+        entity: WorldEntity,
+        recipe: CraftingRecipeDefinition,
+        text: str,
+    ) -> None:
+        """
+        Отправляет результат крафта в нужную UI-презентацию.
+        """
+        target_id = entity.entity_id
+        target_name = entity.name
+        if recipe.result_targets_player:
+            target_id = session.player_id
+            target_name = session.character_name
+        await self._send_interaction_result(
+            session=session,
+            target_id=target_id,
+            target_name=target_name,
+            text=text,
+            presentation=recipe.result_presentation,
+        )
+
+    def _crafting_recipe_definition(
+        self,
+        entity_id: str,
+        option_id: str,
+    ) -> CraftingRecipeDefinition | None:
+        """
+        Возвращает server-side определение рецепта станции крафта.
+        """
+        for recipe in CRAFTING_STATION_RECIPES.get(entity_id, ()):
+            if recipe.option_id == option_id:
+                return recipe
+        return None
 
     async def _handle_vendor_buy_request(
         self,
@@ -1525,6 +1834,10 @@ class MultiplayerServer:
             return
 
         rule = action.rule
+        if rule.reward_outcomes:
+            await self._complete_gathering_outcome_action(session, rule)
+            return
+
         if rule.success_chance >= 1.0 or self.random.random() < rule.success_chance:
             try:
                 inventory = self.character_repository.add_item(
@@ -1558,6 +1871,64 @@ class MultiplayerServer:
                 text=rule.failure_text,
                 presentation=INTERACTION_PRESENTATION_FEED,
             )
+
+    async def _complete_gathering_outcome_action(
+        self,
+        session: PlayerSession,
+        rule: TileGatheringRule,
+    ) -> None:
+        """
+        Применяет добычу с взаимоисключающими исходами одного случайного броска.
+        """
+        outcome = self._select_gathering_reward_outcome(rule)
+        if outcome is None:
+            if rule.failure_text is not None:
+                await self._send_interaction_result(
+                    session=session,
+                    target_id=session.player_id,
+                    target_name=session.character_name,
+                    text=rule.failure_text,
+                    presentation=INTERACTION_PRESENTATION_FEED,
+                )
+            return
+
+        try:
+            inventory = self.character_repository.add_item(
+                session.character_name,
+                outcome.item_id,
+            )
+        except InventoryLimitError as exc:
+            await self._send_inventory_limit_result(
+                session,
+                session.player_id,
+                session.character_name,
+                exc,
+                presentation=INTERACTION_PRESENTATION_FEED,
+            )
+            return
+        await self._send_inventory_update(session, inventory)
+        await self._send_interaction_result(
+            session=session,
+            target_id=session.player_id,
+            target_name=session.character_name,
+            text=outcome.success_text,
+            presentation=INTERACTION_PRESENTATION_FEED,
+        )
+
+    def _select_gathering_reward_outcome(
+        self,
+        rule: TileGatheringRule,
+    ) -> GatheringRewardOutcome | None:
+        """
+        Выбирает исход добычи по накопительной вероятности.
+        """
+        roll = self.random.random()
+        cumulative_chance = 0.0
+        for outcome in rule.reward_outcomes:
+            cumulative_chance += outcome.success_chance
+            if roll < cumulative_chance:
+                return outcome
+        return None
 
     async def _tick_combat(self, now: float) -> None:
         """

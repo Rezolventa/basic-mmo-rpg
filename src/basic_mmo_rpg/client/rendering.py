@@ -49,6 +49,11 @@ RESPAWN_CROSS_SHADOW = (78, 72, 65)
 DUMMY_WOOD = (147, 102, 58)
 DUMMY_CLOTH = (117, 85, 54)
 DUMMY_BASE = (82, 60, 42)
+FORGE_STONE = (82, 86, 92)
+FORGE_FIRE = (213, 80, 42)
+FORGE_EMBER = (245, 162, 73)
+ANVIL_BODY = (92, 101, 112)
+ANVIL_TOP = (146, 156, 166)
 HOVER_OUTLINE = (238, 216, 112)
 WATER_HOVER_FILL = (112, 190, 235, 70)
 WATER_HOVER_BORDER = (178, 226, 250)
@@ -370,6 +375,12 @@ class Renderer:
         if entity.visual == "respawn_cross":
             self._draw_respawn_cross(screen, body, outline_color)
             return
+        if entity.visual == "forge":
+            self._draw_forge(screen, body, outline_color)
+            return
+        if entity.visual == "anvil":
+            self._draw_anvil(screen, body, outline_color)
+            return
         if entity.kind == EntityKind.GATE:
             self._draw_gate(screen, body, entity, outline_color)
             if selected:
@@ -536,6 +547,49 @@ class Renderer:
         horizontal = pygame.Rect(body.left + 3, body.centery - 4, body.width - 6, 8)
         pygame.draw.rect(screen, RESPAWN_CROSS, vertical, border_radius=2)
         pygame.draw.rect(screen, RESPAWN_CROSS, horizontal, border_radius=2)
+
+    def _draw_forge(
+        self,
+        screen: pygame.Surface,
+        body: pygame.Rect,
+        outline_color: tuple[int, int, int],
+    ) -> None:
+        """
+        Рисует горн как каменную чашу с огнем.
+        """
+        pygame.draw.rect(screen, outline_color, body.inflate(5, 5), border_radius=4)
+        pygame.draw.rect(screen, FORGE_STONE, body, border_radius=4)
+        mouth = pygame.Rect(body.left + 4, body.top + 6, body.width - 8, body.height - 10)
+        pygame.draw.rect(screen, INPUT_BACKGROUND, mouth, border_radius=3)
+        flame = pygame.Rect(mouth.left + 4, mouth.top + 4, mouth.width - 8, mouth.height - 6)
+        pygame.draw.ellipse(screen, FORGE_FIRE, flame)
+        ember = flame.inflate(-8, -8)
+        if ember.width > 0 and ember.height > 0:
+            pygame.draw.ellipse(screen, FORGE_EMBER, ember)
+
+    def _draw_anvil(
+        self,
+        screen: pygame.Surface,
+        body: pygame.Rect,
+        outline_color: tuple[int, int, int],
+    ) -> None:
+        """
+        Рисует наковальню простым силуэтом.
+        """
+        pygame.draw.rect(screen, outline_color, body.inflate(5, 5), border_radius=3)
+        top = pygame.Rect(body.left + 2, body.top + 5, body.width - 4, max(8, body.height // 4))
+        horn = pygame.Rect(body.right - 5, body.top + 6, 8, max(6, body.height // 5))
+        waist = pygame.Rect(
+            body.left + body.width // 4,
+            top.bottom,
+            body.width // 2,
+            max(8, body.height // 3),
+        )
+        base = pygame.Rect(body.left + 4, body.bottom - 8, body.width - 8, 8)
+        pygame.draw.rect(screen, ANVIL_TOP, top, border_radius=2)
+        pygame.draw.rect(screen, ANVIL_TOP, horn, border_radius=2)
+        pygame.draw.rect(screen, ANVIL_BODY, waist, border_radius=2)
+        pygame.draw.rect(screen, ANVIL_BODY, base, border_radius=2)
 
     def _draw_health_bar(
         self,

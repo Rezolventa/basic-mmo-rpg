@@ -20,6 +20,8 @@ from basic_mmo_rpg.domain.inventory import (
     FISHING_ROD_ITEM_ID,
     GOLD_ITEM_ID,
     IRON_CHEST_ARMOR_ITEM_ID,
+    IRON_INGOT_ITEM_ID,
+    IRON_ORE_ITEM_ID,
     LEATHER_ITEM_ID,
     LOG_ITEM_ID,
     LUMBER_AXE_ITEM_ID,
@@ -284,6 +286,67 @@ def _open_map_with_bjorn() -> object:
                 "dialogue": "",
                 "solid": True,
             }
+        ],
+    }
+    return raw_map
+
+
+def _open_map_with_crafting_stations() -> object:
+    """
+    Возвращает открытую карту с горном и наковальней рядом со spawn-ом.
+    """
+    raw_map: dict[str, object] = {
+        "tile_size": 32,
+        "spawn": [32, 32],
+        "legend": {
+            ".": {"name": "floor", "solid": False, "color": [50, 120, 60]},
+            "#": {"name": "wall", "solid": True, "color": [90, 90, 90]},
+        },
+        "tiles": [
+            "..........",
+            "..........",
+            "..........",
+            "..........",
+        ],
+        "entities": [
+            {
+                "id": "object-forge",
+                "components": {
+                    "identity": {
+                        "kind": "object",
+                        "name": "Горн",
+                        "visual": "forge",
+                    },
+                    "body": {
+                        "position": [64, 32],
+                        "size": [28, 28],
+                        "solid": True,
+                    },
+                    "interaction": {
+                        "radius": 64,
+                        "dialogue": "",
+                    },
+                },
+            },
+            {
+                "id": "object-anvil",
+                "components": {
+                    "identity": {
+                        "kind": "object",
+                        "name": "Наковальня",
+                        "visual": "anvil",
+                    },
+                    "body": {
+                        "position": [64, 64],
+                        "size": [28, 24],
+                        "solid": True,
+                    },
+                    "interaction": {
+                        "radius": 64,
+                        "dialogue": "",
+                    },
+                },
+            },
         ],
     }
     return raw_map
@@ -753,6 +816,13 @@ def test_websocket_server_mining_success_adds_stone(tmp_path: Path) -> None:
     asyncio.run(_mining_success_smoke(tmp_path))
 
 
+def test_websocket_server_mining_can_add_iron_ore(tmp_path: Path) -> None:
+    """
+    Проверяет шанс дополнительной добычи железной руды из rock-тайла.
+    """
+    asyncio.run(_mining_iron_ore_success_smoke(tmp_path))
+
+
 def test_websocket_server_mining_failure_only_sends_result(tmp_path: Path) -> None:
     """
     Проверяет неудачную добычу камня без изменения инвентаря.
@@ -772,6 +842,34 @@ def test_websocket_server_kopai_grants_pickaxe_before_exchange(tmp_path: Path) -
     Проверяет, что Kopai сначала выдает кирку, даже если у игрока уже есть камни.
     """
     asyncio.run(_kopai_grants_pickaxe_before_exchange_smoke(tmp_path))
+
+
+def test_websocket_server_forge_smelt_iron_ore(tmp_path: Path) -> None:
+    """
+    Проверяет обмен железной руды на железный слиток у горна.
+    """
+    asyncio.run(_forge_smelt_iron_ore_smoke(tmp_path))
+
+
+def test_websocket_server_forge_can_lose_ore_on_failed_smelt(tmp_path: Path) -> None:
+    """
+    Проверяет неудачную плавку, при которой руда тратится без слитка.
+    """
+    asyncio.run(_forge_failed_smelt_loses_ore_smoke(tmp_path))
+
+
+def test_websocket_server_anvil_forges_chest_armor(tmp_path: Path) -> None:
+    """
+    Проверяет обмен железных слитков на Железную кирасу у наковальни.
+    """
+    asyncio.run(_anvil_forge_chest_armor_smoke(tmp_path))
+
+
+def test_websocket_server_anvil_shows_ingredient_progress(tmp_path: Path) -> None:
+    """
+    Проверяет отображение прогресса ингредиентов в опции наковальни.
+    """
+    asyncio.run(_anvil_shows_ingredient_progress_smoke(tmp_path))
 
 
 def test_websocket_server_fogu_grants_shears(tmp_path: Path) -> None:
@@ -2341,6 +2439,52 @@ async def _mining_success_smoke(tmp_path: Path) -> None:
     assert multiplayer_server.character_repository.item_quantity("Alice", STONE_ITEM_ID) == 1
 
 
+async def _mining_iron_ore_success_smoke(tmp_path: Path) -> None:
+    """
+    Запускает сервер и проверяет получение железной руды из тайла rock.
+    """
+    multiplayer_server = _server_for_test(
+        tmp_path,
+        raw_map=_open_map_with_rock(),
+        random_source=random.Random(5),
+    )
+    multiplayer_server.character_repository.load_or_create("Alice", Vec2(32, 32))
+    multiplayer_server.character_repository.add_item("Alice", PICKAXE_ITEM_ID)
+    multiplayer_server.character_repository.equip_item("Alice", PICKAXE_ITEM_ID)
+
+    async with _running_test_server(multiplayer_server) as uri, connect(uri) as first_client:
+        await _send_join(first_client, "Alice")
+        first_id = await _recv_player_id(first_client)
+        await _recv_message_type(first_client, ServerMessageType.INVENTORY_UPDATED)
+
+        await first_client.send(
+            encode_message(
+                ProtocolMessage(
+                    type=ClientMessageType.INTERACT_REQUESTED,
+                    payload=interact_tile_requested_payload(2, 1),
+                )
+            )
+        )
+        inventory_message = await _recv_message_type(
+            first_client,
+            ServerMessageType.INVENTORY_UPDATED,
+        )
+        result_message = await _recv_message_type(
+            first_client,
+            ServerMessageType.INTERACTION_RESULT,
+        )
+
+    inventory = inventory_items_from_payload(inventory_message.payload)
+    quantities = {item.item_id: item.quantity for item in inventory}
+    assert result_message.payload["actor_id"] == first_id
+    assert result_message.payload["target_id"] == first_id
+    assert result_message.payload["text"] == "Вы добыли железную руду"
+    assert quantities[PICKAXE_ITEM_ID] == 1
+    assert STONE_ITEM_ID not in quantities
+    assert quantities[IRON_ORE_ITEM_ID] == 1
+    assert multiplayer_server.character_repository.item_quantity("Alice", IRON_ORE_ITEM_ID) == 1
+
+
 async def _mining_failure_smoke(tmp_path: Path) -> None:
     """
     Запускает сервер и проверяет неудачную попытку добычи камня.
@@ -2375,7 +2519,7 @@ async def _mining_failure_smoke(tmp_path: Path) -> None:
 
     assert result_message.payload["actor_id"] == first_id
     assert result_message.payload["target_id"] == first_id
-    assert result_message.payload["text"] == "Не удалось добыть камень"
+    assert result_message.payload["text"] == "Ничего не удалось накопать"
     assert result_message.payload["add_to_journal"] is True
     assert result_message.payload["presentation"] == INTERACTION_PRESENTATION_FEED
     assert multiplayer_server.character_repository.item_quantity("Alice", STONE_ITEM_ID) == 0
@@ -2468,6 +2612,177 @@ async def _kopai_grants_pickaxe_before_exchange_smoke(tmp_path: Path) -> None:
     assert GOLD_ITEM_ID not in quantities
     assert multiplayer_server.character_repository.item_quantity("Alice", STONE_ITEM_ID) == 3
     assert multiplayer_server.character_repository.item_quantity("Alice", GOLD_ITEM_ID) == 0
+
+
+async def _forge_smelt_iron_ore_smoke(tmp_path: Path) -> None:
+    """
+    Запускает сервер и проверяет обмен железной руды на железный слиток у горна.
+    """
+    multiplayer_server = _server_for_test(
+        tmp_path,
+        raw_map=_open_map_with_crafting_stations(),
+        random_source=random.Random(1),
+    )
+    multiplayer_server.character_repository.load_or_create("Alice", Vec2(32, 32))
+    multiplayer_server.character_repository.add_item("Alice", IRON_ORE_ITEM_ID, quantity=34)
+
+    async with _running_test_server(multiplayer_server) as uri, connect(uri) as first_client:
+        await _send_join(first_client, "Alice")
+        first_id = await _recv_player_id(first_client)
+        await _recv_message_type(first_client, ServerMessageType.INVENTORY_UPDATED)
+
+        menu = await _open_npc_menu(first_client, "object-forge")
+        assert menu.title == "Горн"
+        assert len(menu.options) == 1
+        assert menu.options[0].option_id == "craft:smelt_iron_ingot"
+        assert menu.options[0].label == "Железная руда -> Железный слиток (34/1)"
+        assert menu.options[0].enabled is True
+        await _select_interaction_option(first_client, "object-forge", "craft:smelt_iron_ingot")
+        result_message = await _recv_message_type(
+            first_client,
+            ServerMessageType.INTERACTION_RESULT,
+        )
+        inventory_message = await _recv_message_type(
+            first_client,
+            ServerMessageType.INVENTORY_UPDATED,
+        )
+
+    inventory = inventory_items_from_payload(inventory_message.payload)
+    quantities = {item.item_id: item.quantity for item in inventory}
+    assert result_message.payload["actor_id"] == first_id
+    assert result_message.payload["target_id"] == first_id
+    assert result_message.payload["target_name"] == "Alice"
+    assert result_message.payload["text"] == "Вы получили железный слиток"
+    assert result_message.payload["presentation"] == INTERACTION_PRESENTATION_FEED
+    assert quantities[IRON_ORE_ITEM_ID] == 33
+    assert quantities[IRON_INGOT_ITEM_ID] == 1
+    assert multiplayer_server.character_repository.item_quantity("Alice", IRON_ORE_ITEM_ID) == 33
+    assert multiplayer_server.character_repository.item_quantity("Alice", IRON_INGOT_ITEM_ID) == 1
+
+
+async def _forge_failed_smelt_loses_ore_smoke(tmp_path: Path) -> None:
+    """
+    Запускает сервер и проверяет неудачную плавку с потерей руды.
+    """
+    multiplayer_server = _server_for_test(
+        tmp_path,
+        raw_map=_open_map_with_crafting_stations(),
+        random_source=random.Random(0),
+    )
+    multiplayer_server.character_repository.load_or_create("Alice", Vec2(32, 32))
+    multiplayer_server.character_repository.add_item("Alice", IRON_ORE_ITEM_ID, quantity=1)
+
+    async with _running_test_server(multiplayer_server) as uri, connect(uri) as first_client:
+        await _send_join(first_client, "Alice")
+        first_id = await _recv_player_id(first_client)
+        await _recv_message_type(first_client, ServerMessageType.INVENTORY_UPDATED)
+
+        menu = await _open_npc_menu(first_client, "object-forge")
+        assert menu.options[0].enabled is True
+        await _select_interaction_option(first_client, "object-forge", "craft:smelt_iron_ingot")
+        result_message = await _recv_message_type(
+            first_client,
+            ServerMessageType.INTERACTION_RESULT,
+        )
+        inventory_message = await _recv_message_type(
+            first_client,
+            ServerMessageType.INVENTORY_UPDATED,
+        )
+
+    inventory = inventory_items_from_payload(inventory_message.payload)
+    quantities = {item.item_id: item.quantity for item in inventory}
+    assert result_message.payload["actor_id"] == first_id
+    assert result_message.payload["target_id"] == first_id
+    assert result_message.payload["target_name"] == "Alice"
+    assert result_message.payload["text"] == "Руда испортилась"
+    assert result_message.payload["presentation"] == INTERACTION_PRESENTATION_FEED
+    assert IRON_ORE_ITEM_ID not in quantities
+    assert IRON_INGOT_ITEM_ID not in quantities
+    assert multiplayer_server.character_repository.item_quantity("Alice", IRON_ORE_ITEM_ID) == 0
+    assert multiplayer_server.character_repository.item_quantity("Alice", IRON_INGOT_ITEM_ID) == 0
+
+
+async def _anvil_forge_chest_armor_smoke(tmp_path: Path) -> None:
+    """
+    Запускает сервер и проверяет обмен железных слитков на кирасу у наковальни.
+    """
+    multiplayer_server = _server_for_test(
+        tmp_path,
+        raw_map=_open_map_with_crafting_stations(),
+    )
+    multiplayer_server.character_repository.load_or_create("Alice", Vec2(32, 32))
+    multiplayer_server.character_repository.add_item(
+        "Alice",
+        IRON_INGOT_ITEM_ID,
+        quantity=35,
+    )
+
+    async with _running_test_server(multiplayer_server) as uri, connect(uri) as first_client:
+        await _send_join(first_client, "Alice")
+        first_id = await _recv_player_id(first_client)
+        await _recv_message_type(first_client, ServerMessageType.INVENTORY_UPDATED)
+
+        menu = await _open_npc_menu(first_client, "object-anvil")
+        assert menu.title == "Наковальня"
+        assert menu.options[0].option_id == "craft:forge_iron_chest_armor"
+        assert menu.options[0].label == "Железный слиток -> Железная кираса (35/35)"
+        assert menu.options[0].enabled is True
+        await _select_interaction_option(
+            first_client,
+            "object-anvil",
+            "craft:forge_iron_chest_armor",
+        )
+        result_message = await _recv_message_type(
+            first_client,
+            ServerMessageType.INTERACTION_RESULT,
+        )
+        inventory_message = await _recv_message_type(
+            first_client,
+            ServerMessageType.INVENTORY_UPDATED,
+        )
+
+    inventory = inventory_items_from_payload(inventory_message.payload)
+    quantities = {item.item_id: item.quantity for item in inventory}
+    assert result_message.payload["actor_id"] == first_id
+    assert result_message.payload["target_id"] == "object-anvil"
+    assert result_message.payload["target_name"] == "Наковальня"
+    assert result_message.payload["text"] == "Вы выковали Железную кирасу"
+    assert IRON_INGOT_ITEM_ID not in quantities
+    assert quantities[IRON_CHEST_ARMOR_ITEM_ID] == 1
+    assert multiplayer_server.character_repository.item_quantity("Alice", IRON_INGOT_ITEM_ID) == 0
+    assert (
+        multiplayer_server.character_repository.item_quantity("Alice", IRON_CHEST_ARMOR_ITEM_ID)
+        == 1
+    )
+
+
+async def _anvil_shows_ingredient_progress_smoke(tmp_path: Path) -> None:
+    """
+    Запускает сервер и проверяет disabled-опцию наковальни с прогрессом материалов.
+    """
+    multiplayer_server = _server_for_test(
+        tmp_path,
+        raw_map=_open_map_with_crafting_stations(),
+    )
+    multiplayer_server.character_repository.load_or_create("Alice", Vec2(32, 32))
+    multiplayer_server.character_repository.add_item(
+        "Alice",
+        IRON_INGOT_ITEM_ID,
+        quantity=34,
+    )
+
+    async with _running_test_server(multiplayer_server) as uri, connect(uri) as first_client:
+        await _send_join(first_client, "Alice")
+        await _recv_player_id(first_client)
+        await _recv_message_type(first_client, ServerMessageType.INVENTORY_UPDATED)
+
+        menu = await _open_npc_menu(first_client, "object-anvil")
+
+    assert menu.title == "Наковальня"
+    assert menu.options[0].option_id == "craft:forge_iron_chest_armor"
+    assert menu.options[0].label == "Железный слиток -> Железная кираса (34/35)"
+    assert menu.options[0].enabled is False
+    assert menu.options[0].disabled_reason == "Нужно: Железный слиток 34/35"
 
 
 async def _fogu_grants_shears_smoke(tmp_path: Path) -> None:
