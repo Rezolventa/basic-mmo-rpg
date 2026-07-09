@@ -215,6 +215,69 @@ def test_save_editable_map_writes_json_and_clears_dirty(tmp_path: Path) -> None:
     assert reloaded.state.tile_at(1, 1) == "~"
 
 
+def test_save_editable_map_preserves_new_tile_metadata(tmp_path: Path) -> None:
+    source_path = Path("assets/maps/starter_map.json")
+    target_path = tmp_path / "map.json"
+    target_path.write_text(source_path.read_text(encoding="utf-8"), encoding="utf-8")
+    document = load_editable_map(target_path)
+
+    document.state.select_tile("C")
+    document.state.paint_tile(1, 1)
+    saved_map = save_editable_map(target_path, document.raw_map, document.state)
+    reloaded = load_editable_map(target_path)
+
+    assert saved_map["legend"]["T"]["sprites"] == [
+        "tiles/tree_deciduous_1.png",
+        "tiles/tree_deciduous_2.png",
+        "tiles/tree_deciduous_3.png",
+        "tiles/tree_deciduous_4.png",
+        "tiles/tree_conifer_1.png",
+        "tiles/tree_conifer_2.png",
+        "tiles/tree_conifer_3.png",
+        "tiles/tree_conifer_4.png",
+    ]
+    assert saved_map["legend"]["T"]["collision_rect"] == [9, 18, 14, 14]
+    assert saved_map["legend"]["R"]["sprites"] == [
+        "tiles/rock_1.png",
+        "tiles/rock_2.png",
+        "tiles/rock_3.png",
+    ]
+    assert saved_map["legend"]["R"]["collision_rect"] == [5, 8, 22, 20]
+    assert saved_map["legend"]["C"]["sprites"] == ["tiles/cave_wall_1.png"]
+    assert reloaded.state.tile_at(1, 1) == "C"
+    assert reloaded.state.definitions["T"].collision_rect == (9, 18, 14, 14)
+    assert reloaded.state.definitions["R"].collision_rect == (5, 8, 22, 20)
+    assert reloaded.state.definitions["C"].sprites == ("tiles/cave_wall_1.png",)
+
+
+def test_map_editor_renderer_loads_new_tile_sprites_without_window(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SDL_VIDEODRIVER", "dummy")
+
+    import pygame
+
+    from tools.map_editor.rendering import MapEditorRenderer
+
+    pygame.init()
+    try:
+        document = load_editable_map(Path("assets/maps/starter_map.json"))
+        renderer = MapEditorRenderer(
+            document.state,
+            Path("assets/maps/starter_map.json"),
+            Viewport(),
+        )
+        screen = pygame.Surface((320, 240))
+
+        renderer.draw(screen, hovered_tile=(1, 1))
+
+        assert len(renderer.tile_sprites["T"]) == 8
+        assert len(renderer.tile_sprites["R"]) == 3
+        assert len(renderer.tile_sprites["C"]) == 1
+    finally:
+        pygame.quit()
+
+
 def test_create_backup_uses_available_backup_path(tmp_path: Path) -> None:
     """
     Проверяет, что backup не затирает уже существующую резервную копию.
@@ -255,6 +318,11 @@ def test_create_empty_map_from_template_writes_valid_map(tmp_path: Path) -> None
 
     assert raw_map["legend"]["W"]["name"] == "wooden floor"
     assert raw_map["legend"]["W"]["solid"] is False
+    assert raw_map["legend"]["W"]["color"] == [120, 98, 72]
+    assert raw_map["legend"]["T"]["collision_rect"] == [9, 18, 14, 14]
+    assert raw_map["legend"]["R"]["collision_rect"] == [5, 8, 22, 20]
+    assert raw_map["legend"]["C"]["name"] == "cave wall"
+    assert raw_map["legend"]["C"]["sprites"] == ["tiles/cave_wall_1.png"]
     assert raw_map["tiles"] == [
         ".....",
         ".....",

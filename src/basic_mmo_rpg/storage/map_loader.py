@@ -39,15 +39,19 @@ def tile_map_from_dict(raw_map: dict[str, Any]) -> TileMap:
     raw_tiles = raw_map["tiles"]
     spawn_x, spawn_y = raw_map.get("spawn", [tile_size, tile_size])
 
-    definitions = {
-        key: TileDefinition(
+    definitions: dict[str, TileDefinition] = {}
+    for key, value in legend.items():
+        sprites = _parse_sprites(value)
+        definitions[key] = TileDefinition(
             key=key,
             name=str(value["name"]),
             solid=bool(value["solid"]),
             color=_parse_color(value["color"]),
+            sprites=sprites,
+            sprite_offset=_parse_sprite_offset(value),
+            sprite_offsets=_parse_sprite_offsets(value, len(sprites)),
+            collision_rect=_parse_tile_collision_rect(value),
         )
-        for key, value in legend.items()
-    }
     tiles = tuple(tuple(row) for row in raw_tiles)
 
     return TileMap(
@@ -482,3 +486,109 @@ def _parse_color(raw_color: object) -> tuple[int, int, int]:
         msg = f"RGB color channels must be between 0 and 255, got {raw_color!r}"
         raise ValueError(msg)
     return channels
+
+
+def _parse_sprites(raw_definition: object) -> tuple[str, ...]:
+    """
+    Р§РёС‚Р°РµС‚ РЅРµРѕР±СЏР·Р°С‚РµР»СЊРЅС‹Рµ РїСѓС‚Рё Рє СЃРїСЂР°Р№С‚Р°Рј С‚Р°Р№Р»Р°.
+    """
+    if not isinstance(raw_definition, dict):
+        msg = "tile definition must be an object"
+        raise ValueError(msg)
+    raw_sprites = raw_definition.get("sprites")
+    if raw_sprites is None:
+        raw_sprite = raw_definition.get("sprite")
+        if raw_sprite is None:
+            return ()
+        raw_sprites = [raw_sprite]
+    if not isinstance(raw_sprites, list):
+        msg = "tile sprites must be a list of paths"
+        raise ValueError(msg)
+    sprites: list[str] = []
+    for raw_sprite in raw_sprites:
+        if not isinstance(raw_sprite, str) or not raw_sprite.strip():
+            msg = "tile sprite path must be a non-empty string"
+            raise ValueError(msg)
+        sprites.append(raw_sprite.strip())
+    return tuple(sprites)
+
+
+def _parse_sprite_offset(raw_definition: object) -> tuple[int, int]:
+    """
+    Читает необязательное смещение спрайта тайла в пикселях.
+    """
+    if not isinstance(raw_definition, dict):
+        msg = "tile definition must be an object"
+        raise ValueError(msg)
+    raw_offset = raw_definition.get("sprite_offset")
+    if raw_offset is None:
+        return (0, 0)
+    if not isinstance(raw_offset, list) or len(raw_offset) != 2:
+        msg = "tile sprite_offset must be a two-item list"
+        raise ValueError(msg)
+    offset_x, offset_y = raw_offset
+    if (
+        not isinstance(offset_x, int)
+        or isinstance(offset_x, bool)
+        or not isinstance(offset_y, int)
+        or isinstance(offset_y, bool)
+    ):
+        msg = "tile sprite_offset coordinates must be integers"
+        raise ValueError(msg)
+    return offset_x, offset_y
+
+
+def _parse_sprite_offsets(
+    raw_definition: object,
+    expected_count: int,
+) -> tuple[tuple[int, int], ...]:
+    """
+    Читает необязательные смещения для отдельных вариантов спрайта тайла.
+    """
+    if not isinstance(raw_definition, dict):
+        msg = "tile definition must be an object"
+        raise ValueError(msg)
+    raw_offsets = raw_definition.get("sprite_offsets")
+    if raw_offsets is None:
+        return ()
+    if not isinstance(raw_offsets, list):
+        msg = "tile sprite_offsets must be a list"
+        raise ValueError(msg)
+    if not raw_offsets:
+        return ()
+    if len(raw_offsets) != expected_count:
+        msg = "tile sprite_offsets must match sprites count"
+        raise ValueError(msg)
+    return tuple(
+        _parse_sprite_offset({"sprite_offset": raw_offset})
+        for raw_offset in raw_offsets
+    )
+
+
+def _parse_tile_collision_rect(raw_definition: object) -> tuple[int, int, int, int] | None:
+    """
+    Читает необязательный прямоугольник коллизии тайла.
+    """
+    if not isinstance(raw_definition, dict):
+        msg = "tile definition must be an object"
+        raise ValueError(msg)
+    raw_rect = raw_definition.get("collision_rect")
+    if raw_rect is None:
+        return None
+    if not isinstance(raw_rect, list) or len(raw_rect) != 4:
+        msg = "tile collision_rect must be a four-item list"
+        raise ValueError(msg)
+    offset_x, offset_y, width, height = raw_rect
+    if (
+        not isinstance(offset_x, int)
+        or isinstance(offset_x, bool)
+        or not isinstance(offset_y, int)
+        or isinstance(offset_y, bool)
+        or not isinstance(width, int)
+        or isinstance(width, bool)
+        or not isinstance(height, int)
+        or isinstance(height, bool)
+    ):
+        msg = "tile collision_rect values must be integers"
+        raise ValueError(msg)
+    return offset_x, offset_y, width, height

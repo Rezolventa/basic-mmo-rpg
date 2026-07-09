@@ -238,6 +238,18 @@ def test_tile_map_payload_round_trips_server_map() -> None:
     assert restored.height == tile_map.height
     assert restored.tile_size == tile_map.tile_size
     assert restored.fingerprint == tile_map.fingerprint
+    assert restored.definitions["T"].sprites == tile_map.definitions["T"].sprites
+    assert restored.definitions["T"].sprite_offset == tile_map.definitions["T"].sprite_offset
+    assert restored.definitions["T"].sprite_offsets == tile_map.definitions["T"].sprite_offsets
+    assert restored.definitions["T"].collision_rect == tile_map.definitions["T"].collision_rect
+    assert restored.definitions["R"].sprites == tile_map.definitions["R"].sprites
+    assert restored.definitions["R"].sprite_offset == tile_map.definitions["R"].sprite_offset
+    assert restored.definitions["R"].sprite_offsets == tile_map.definitions["R"].sprite_offsets
+    assert restored.definitions["R"].collision_rect == tile_map.definitions["R"].collision_rect
+    assert restored.definitions["C"].sprites == tile_map.definitions["C"].sprites
+    assert restored.definitions["C"].sprite_offset == tile_map.definitions["C"].sprite_offset
+    assert restored.definitions["C"].sprite_offsets == tile_map.definitions["C"].sprite_offsets
+    assert restored.definitions["C"].collision_rect == tile_map.definitions["C"].collision_rect
     assert len(restored.entities) == len(tile_map.entities)
 
 

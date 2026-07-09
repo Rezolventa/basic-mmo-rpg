@@ -176,6 +176,32 @@ def _open_map_with_rock() -> object:
     }
 
 
+def _open_map_with_cave_wall() -> object:
+    """
+    Возвращает карту с cave wall рядом со spawn.
+    """
+    return {
+        "tile_size": 32,
+        "spawn": [32, 32],
+        "legend": {
+            ".": {"name": "floor", "solid": False, "color": [50, 120, 60]},
+            "C": {
+                "name": "cave wall",
+                "solid": True,
+                "color": [69, 74, 76],
+                "sprites": ["tiles/cave_wall_1.png"],
+            },
+            "#": {"name": "wall", "solid": True, "color": [90, 90, 90]},
+        },
+        "tiles": [
+            "..........",
+            "..C.......",
+            "..........",
+            "..........",
+        ],
+    }
+
+
 def _open_map_with_water_and_tree() -> object:
     """
     Возвращает открытую карту с водой и деревом рядом со spawn-ом.
@@ -834,6 +860,13 @@ def test_websocket_server_mining_success_adds_stone(tmp_path: Path) -> None:
     Проверяет успешную добычу камня и сохранение камня в инвентаре.
     """
     asyncio.run(_mining_success_smoke(tmp_path))
+
+
+def test_websocket_server_cave_wall_mining_success_adds_stone(tmp_path: Path) -> None:
+    """
+    Проверяет Mining-flow для cave wall.
+    """
+    asyncio.run(_cave_wall_mining_success_smoke(tmp_path))
 
 
 def test_websocket_server_mining_can_add_iron_ore(tmp_path: Path) -> None:
@@ -2528,6 +2561,54 @@ async def _mining_success_smoke(tmp_path: Path) -> None:
     multiplayer_server = _server_for_test(
         tmp_path,
         raw_map=_open_map_with_rock(),
+        random_source=random.Random(1),
+    )
+    multiplayer_server.character_repository.load_or_create("Alice", Vec2(32, 32))
+    _set_gathering_skills(multiplayer_server.character_repository, "Alice", mining=0)
+    multiplayer_server.character_repository.add_item("Alice", PICKAXE_ITEM_ID)
+    multiplayer_server.character_repository.equip_item("Alice", PICKAXE_ITEM_ID)
+
+    async with _running_test_server(multiplayer_server) as uri, connect(uri) as first_client:
+        await _send_join(first_client, "Alice")
+        first_id = await _recv_player_id(first_client)
+        await _recv_message_type(first_client, ServerMessageType.INVENTORY_UPDATED)
+
+        await first_client.send(
+            encode_message(
+                ProtocolMessage(
+                    type=ClientMessageType.INTERACT_REQUESTED,
+                    payload=interact_tile_requested_payload(2, 1),
+                )
+            )
+        )
+        inventory_message = await _recv_message_type(
+            first_client,
+            ServerMessageType.INVENTORY_UPDATED,
+        )
+        result_message = await _recv_message_type(
+            first_client,
+            ServerMessageType.INTERACTION_RESULT,
+        )
+
+    inventory = inventory_items_from_payload(inventory_message.payload)
+    quantities = {item.item_id: item.quantity for item in inventory}
+    assert result_message.payload["actor_id"] == first_id
+    assert result_message.payload["target_id"] == first_id
+    assert result_message.payload["text"] == "Вы добыли камень"
+    assert result_message.payload["add_to_journal"] is True
+    assert result_message.payload["presentation"] == INTERACTION_PRESENTATION_FEED
+    assert quantities[PICKAXE_ITEM_ID] == 1
+    assert quantities[STONE_ITEM_ID] == 1
+    assert multiplayer_server.character_repository.item_quantity("Alice", STONE_ITEM_ID) == 1
+
+
+async def _cave_wall_mining_success_smoke(tmp_path: Path) -> None:
+    """
+    Проверяет добычу камня из cave wall.
+    """
+    multiplayer_server = _server_for_test(
+        tmp_path,
+        raw_map=_open_map_with_cave_wall(),
         random_source=random.Random(1),
     )
     multiplayer_server.character_repository.load_or_create("Alice", Vec2(32, 32))

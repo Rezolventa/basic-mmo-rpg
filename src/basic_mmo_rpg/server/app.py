@@ -8,7 +8,7 @@ import math
 import random
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from websockets.asyncio.server import ServerConnection, serve
@@ -394,6 +394,10 @@ TILE_GATHERING_RULES: dict[str, TileGatheringRule] = {
         ),
     ),
 }
+TILE_GATHERING_RULES["cave wall"] = replace(
+    TILE_GATHERING_RULES["rock"],
+    tile_name="cave wall",
+)
 
 CRAFTING_STATION_RECIPES: dict[str, tuple[CraftingRecipeDefinition, ...]] = {
     FORGE_ENTITY_ID: (

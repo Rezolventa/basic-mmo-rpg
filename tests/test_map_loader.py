@@ -25,7 +25,33 @@ def test_starter_map_loads() -> None:
     wooden_floor = tile_map.definitions["W"]
     assert wooden_floor.name == "wooden floor"
     assert not wooden_floor.solid
-    assert wooden_floor.color == (138, 91, 52)
+    assert wooden_floor.color == (120, 98, 72)
+    assert tile_map.definitions["T"].sprites == (
+        "tiles/tree_deciduous_1.png",
+        "tiles/tree_deciduous_2.png",
+        "tiles/tree_deciduous_3.png",
+        "tiles/tree_deciduous_4.png",
+        "tiles/tree_conifer_1.png",
+        "tiles/tree_conifer_2.png",
+        "tiles/tree_conifer_3.png",
+        "tiles/tree_conifer_4.png",
+    )
+    assert tile_map.definitions["T"].sprite_offset == (0, 0)
+    assert tile_map.definitions["T"].sprite_offsets == ()
+    assert tile_map.definitions["T"].collision_rect == (9, 18, 14, 14)
+    assert tile_map.definitions["R"].sprites == (
+        "tiles/rock_1.png",
+        "tiles/rock_2.png",
+        "tiles/rock_3.png",
+    )
+    assert tile_map.definitions["R"].sprite_offset == (0, 0)
+    assert tile_map.definitions["R"].sprite_offsets == ()
+    assert tile_map.definitions["R"].collision_rect == (5, 8, 22, 20)
+    assert tile_map.definitions["C"].name == "cave wall"
+    assert tile_map.definitions["C"].sprites == ("tiles/cave_wall_1.png",)
+    assert tile_map.definitions["C"].sprite_offset == (0, 0)
+    assert tile_map.definitions["C"].sprite_offsets == ()
+    assert tile_map.definitions["C"].collision_rect is None
     entities = {entity.entity_id: entity for entity in tile_map.entities}
     assert len(entities) == 12
     assert entities["npc-funday"].kind == EntityKind.NPC
@@ -93,6 +119,9 @@ def test_starter_map_loads() -> None:
     assert tile_map.is_water_tile(8, 14)
     assert tile_map.is_tree_tile(5, 3)
     assert tile_map.is_rock_tile(4, 17)
+    assert tile_map.is_mineable_tile(4, 17)
+    assert tile_map.tile_collision_rect(5, 3) == Rect(169, 114, 14, 14)
+    assert tile_map.tile_collision_rect(4, 17) == Rect(133, 552, 22, 20)
     assert tile_map.tile_coordinates_at(Vec2(8 * 32 + 1, 14 * 32 + 1)) == (8, 14)
     assert tile_map.tile_rect(8, 14).left == 8 * 32
 
@@ -107,6 +136,94 @@ def test_rect_outside_map_is_blocked() -> None:
     assert tile_map.is_rect_blocked(Rect(-1, 32, 20, 20))
     assert tile_map.is_rect_blocked(Rect(32, -1, 20, 20))
     assert tile_map.is_rect_blocked(Rect(tile_map.pixel_size.x - 10, 32, 20, 20))
+
+
+def test_cave_wall_tile_is_mineable_but_not_regular_rock() -> None:
+    """
+    Проверяет cave wall как Mining-тайл.
+    """
+    tile_map = tile_map_from_dict(
+        {
+            "tile_size": 32,
+            "legend": {
+                ".": {"name": "grass", "solid": False, "color": [55, 130, 73]},
+                "C": {
+                    "name": "cave wall",
+                    "solid": True,
+                    "color": [69, 74, 76],
+                    "sprites": ["tiles/cave_wall_1.png"],
+                },
+            },
+            "tiles": [
+                "...",
+                ".C.",
+                "...",
+            ],
+        }
+    )
+
+    assert not tile_map.is_rock_tile(1, 1)
+    assert tile_map.is_mineable_tile(1, 1)
+    assert tile_map.definitions["C"].sprites == ("tiles/cave_wall_1.png",)
+    assert tile_map.definitions["C"].sprite_offset == (0, 0)
+    assert tile_map.definitions["C"].sprite_offsets == ()
+    assert tile_map.definitions["C"].collision_rect is None
+
+
+def test_tile_collision_rect_allows_rock_corners() -> None:
+    """
+    Проверяет, что rock блокирует центр тайла, но не его визуально пустые углы.
+    """
+    tile_map = tile_map_from_dict(
+        {
+            "tile_size": 32,
+            "legend": {
+                ".": {"name": "grass", "solid": False, "color": [55, 130, 73]},
+                "R": {
+                    "name": "rock",
+                    "solid": True,
+                    "color": [55, 130, 73],
+                    "collision_rect": [5, 8, 22, 20],
+                },
+            },
+            "tiles": [
+                "...",
+                ".R.",
+                "...",
+            ],
+        }
+    )
+
+    assert not tile_map.is_rect_blocked(Rect(32, 32, 5, 8))
+    assert tile_map.is_rect_blocked(Rect(40, 44, 8, 8))
+
+
+def test_tile_collision_rect_allows_tree_canopy_and_corners() -> None:
+    """
+    Проверяет, что tree блокирует ствол, но не весь визуальный тайл кроны.
+    """
+    tile_map = tile_map_from_dict(
+        {
+            "tile_size": 32,
+            "legend": {
+                ".": {"name": "grass", "solid": False, "color": [55, 130, 73]},
+                "T": {
+                    "name": "tree",
+                    "solid": True,
+                    "color": [55, 130, 73],
+                    "collision_rect": [9, 18, 14, 14],
+                },
+            },
+            "tiles": [
+                "...",
+                ".T.",
+                "...",
+            ],
+        }
+    )
+
+    assert not tile_map.is_rect_blocked(Rect(32, 32, 9, 18))
+    assert tile_map.is_rect_blocked(Rect(42, 52, 6, 6))
 
 
 def test_map_fingerprint_changes_when_entity_position_changes() -> None:

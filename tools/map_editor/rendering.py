@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from math import floor
 from pathlib import Path
 
 import pygame
 
+from basic_mmo_rpg.domain.tiles import TileDefinition
 from tools.map_editor.state import EditableMapState
 from tools.map_editor.viewport import Viewport
 
@@ -19,6 +21,8 @@ HELP_BORDER = (245, 225, 118)
 PALETTE_BACKGROUND = (23, 26, 31)
 PALETTE_SELECTED_BORDER = (245, 225, 118)
 PALETTE_BORDER = (83, 91, 104)
+COLLISION_FILL = (220, 60, 72, 42)
+COLLISION_BORDER = (220, 60, 72)
 ENTITY_FILL = (88, 120, 166, 95)
 ENTITY_SOLID_FILL = (161, 116, 74, 110)
 ENTITY_BORDER = (188, 207, 232)
@@ -34,6 +38,8 @@ PALETTE_ROW_HEIGHT = 40
 STATUS_ROW_HEIGHT = 34
 MIN_WINDOW_SIZE = (640, 420)
 MAX_INITIAL_WINDOW_SIZE = (1600, 920)
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+TILE_SPRITE_ROOT = PROJECT_ROOT / "assets" / "sprites"
 HELP_LINES = (
     "F1 - toggle hotkeys",
     "1..9 - select tile",
@@ -59,6 +65,14 @@ class MapEditorRenderer:
         self.state = state
         self.map_path = map_path
         self.viewport = viewport
+        self.tile_sprites = {
+            key: self._load_tile_sprites(definition.sprites)
+            for key, definition in state.definitions.items()
+        }
+        self.tile_sprite_offsets = {
+            key: self._tile_sprite_offsets_for_definition(definition)
+            for key, definition in state.definitions.items()
+        }
         self.font = pygame.font.SysFont("arial", 16)
         self.small_font = pygame.font.SysFont("arial", 14)
 
@@ -84,11 +98,17 @@ class MapEditorRenderer:
         """
         screen.fill(BACKGROUND)
         view_height = self._map_view_height(screen)
+        previous_clip = screen.get_clip()
+        screen.set_clip(pygame.Rect(0, 0, screen.get_width(), view_height))
         self._draw_tiles(screen, view_height)
+        self._draw_tile_sprites(screen, view_height, foreground=False)
         self._draw_grid(screen, view_height)
+        self._draw_collision_rects(screen, view_height)
         self._draw_entities(screen, view_height, hovered_tile)
+        self._draw_tile_sprites(screen, view_height, foreground=True)
         if hovered_tile is not None:
             self._draw_hovered_tile(screen, hovered_tile, view_height)
+        screen.set_clip(previous_clip)
         self._draw_scrollbars(screen, view_height)
         if help_visible:
             self._draw_help_overlay(screen)
@@ -137,25 +157,7 @@ class MapEditorRenderer:
 
     def _draw_tiles(self, screen: pygame.Surface, view_height: int) -> None:
         tile_size = self.state.tile_size
-        start_x = max(0, floor(self.viewport.offset_x / tile_size))
-        start_y = max(0, floor(self.viewport.offset_y / tile_size))
-        end_x = min(
-            self.state.width,
-            floor(
-                (self.viewport.offset_x + self.viewport.visible_world_width(screen.get_width()))
-                / tile_size
-            )
-            + 2,
-        )
-        end_y = min(
-            self.state.height,
-            floor(
-                (self.viewport.offset_y + self.viewport.visible_world_height(view_height))
-                / tile_size
-            )
-            + 2,
-        )
-
+        start_x, start_y, end_x, end_y = self._visible_tile_bounds(screen, view_height)
         for tile_y in range(start_y, end_y):
             for tile_x in range(start_x, end_x):
                 tile_key = self.state.tile_at(tile_x, tile_y)
@@ -172,27 +174,42 @@ class MapEditorRenderer:
                     rect,
                 )
 
+    def _draw_tile_sprites(
+        self,
+        screen: pygame.Surface,
+        view_height: int,
+        *,
+        foreground: bool,
+    ) -> None:
+        tile_size = self.state.tile_size
+        start_x, start_y, end_x, end_y = self._visible_tile_bounds(screen, view_height)
+        start_y = max(0, start_y - 2)
+        for tile_y in range(start_y, end_y):
+            for tile_x in range(start_x, end_x):
+                tile_key = self.state.tile_at(tile_x, tile_y)
+                is_foreground_tile = self.state.definitions[tile_key].name == "tree"
+                if is_foreground_tile != foreground:
+                    continue
+                sprites = self.tile_sprites.get(tile_key, ())
+                if not sprites:
+                    continue
+                sprite_index = self._sprite_index_for_tile(sprites, tile_x, tile_y)
+                sprite = sprites[sprite_index]
+                sprite_offsets = self.tile_sprite_offsets.get(tile_key, ())
+                offset_x, offset_y = sprite_offsets[sprite_index]
+                sprite_world_x = (
+                    tile_x * tile_size + (tile_size - sprite.get_width()) / 2 + offset_x
+                )
+                sprite_world_y = tile_y * tile_size + tile_size - sprite.get_height() + offset_y
+                screen_x, screen_y = self.viewport.world_to_screen(
+                    sprite_world_x,
+                    sprite_world_y,
+                )
+                screen.blit(self._scaled_sprite(sprite), (screen_x, screen_y))
+
     def _draw_grid(self, screen: pygame.Surface, view_height: int) -> None:
         tile_size = self.state.tile_size
-        start_x = max(0, floor(self.viewport.offset_x / tile_size))
-        start_y = max(0, floor(self.viewport.offset_y / tile_size))
-        end_x = min(
-            self.state.width,
-            floor(
-                (self.viewport.offset_x + self.viewport.visible_world_width(screen.get_width()))
-                / tile_size
-            )
-            + 2,
-        )
-        end_y = min(
-            self.state.height,
-            floor(
-                (self.viewport.offset_y + self.viewport.visible_world_height(view_height))
-                / tile_size
-            )
-            + 2,
-        )
-
+        start_x, start_y, end_x, end_y = self._visible_tile_bounds(screen, view_height)
         for tile_x in range(start_x, end_x + 1):
             screen_x, _ = self.viewport.world_to_screen(tile_x * tile_size, 0)
             pygame.draw.line(screen, GRID_LINE, (screen_x, 0), (screen_x, view_height))
@@ -221,6 +238,29 @@ class MapEditorRenderer:
         overlay.fill(HOVER_FILL)
         screen.blit(overlay, rect.topleft)
         pygame.draw.rect(screen, HOVER_BORDER, rect, width=2)
+
+    def _draw_collision_rects(self, screen: pygame.Surface, view_height: int) -> None:
+        tile_size = self.state.tile_size
+        start_x, start_y, end_x, end_y = self._visible_tile_bounds(screen, view_height)
+        for tile_y in range(start_y, end_y):
+            for tile_x in range(start_x, end_x):
+                tile_key = self.state.tile_at(tile_x, tile_y)
+                definition = self.state.definitions[tile_key]
+                if not definition.solid or definition.collision_rect is None:
+                    continue
+                offset_x, offset_y, width, height = definition.collision_rect
+                rect = self._world_rect_to_screen(
+                    tile_x * tile_size + offset_x,
+                    tile_y * tile_size + offset_y,
+                    width,
+                    height,
+                )
+                if rect.top >= view_height or rect.bottom < 0:
+                    continue
+                overlay = pygame.Surface(rect.size, pygame.SRCALPHA)
+                overlay.fill(COLLISION_FILL)
+                screen.blit(overlay, rect.topleft)
+                pygame.draw.rect(screen, COLLISION_BORDER, rect, width=1)
 
     def _draw_entities(
         self,
@@ -298,9 +338,17 @@ class MapEditorRenderer:
             tile_key = self.state.tile_at(tile_x, tile_y)
             definition = self.state.definitions[tile_key]
             solid = "solid" if definition.solid else "walkable"
+            sprite_detail = (
+                f" sprites={len(definition.sprites)}" if definition.sprites else ""
+            )
+            collision_detail = (
+                f" collision={definition.collision_rect}"
+                if definition.collision_rect is not None
+                else ""
+            )
             tile_detail = (
                 f"Tile: ({tile_x}, {tile_y}) key={tile_key!r} "
-                f"name={definition.name!r} {solid}"
+                f"name={definition.name!r} {solid}{sprite_detail}{collision_detail}"
             )
             detail = f"{status_message} | {tile_detail}" if status_message else tile_detail
         detail_surface = self.font.render(detail, True, TEXT_COLOR)
@@ -334,6 +382,7 @@ class MapEditorRenderer:
                 else PALETTE_BORDER
             )
             pygame.draw.rect(screen, definition.color, swatch_rect)
+            self._draw_palette_sprite(screen, swatch_rect, tile_key)
             pygame.draw.rect(screen, border_color, swatch_rect, width=2)
             screen.blit(label_surface, (swatch_rect.right + 8, y + 4))
 
@@ -437,6 +486,32 @@ class MapEditorRenderer:
     def _map_view_height(self, screen: pygame.Surface) -> int:
         return max(0, screen.get_height() - BOTTOM_PANEL_HEIGHT)
 
+    def _visible_tile_bounds(
+        self,
+        screen: pygame.Surface,
+        view_height: int,
+    ) -> tuple[int, int, int, int]:
+        tile_size = self.state.tile_size
+        start_x = max(0, floor(self.viewport.offset_x / tile_size))
+        start_y = max(0, floor(self.viewport.offset_y / tile_size))
+        end_x = min(
+            self.state.width,
+            floor(
+                (self.viewport.offset_x + self.viewport.visible_world_width(screen.get_width()))
+                / tile_size
+            )
+            + 2,
+        )
+        end_y = min(
+            self.state.height,
+            floor(
+                (self.viewport.offset_y + self.viewport.visible_world_height(view_height))
+                / tile_size
+            )
+            + 2,
+        )
+        return start_x, start_y, end_x, end_y
+
     def _world_rect_to_screen(
         self,
         x: float,
@@ -447,3 +522,72 @@ class MapEditorRenderer:
         left, top = self.viewport.world_to_screen(x, y)
         right, bottom = self.viewport.world_to_screen(x + width, y + height)
         return pygame.Rect(left, top, max(1, right - left), max(1, bottom - top))
+
+    def _load_tile_sprites(self, sprite_paths: Sequence[str]) -> tuple[pygame.Surface, ...]:
+        """
+        Загружает PNG-спрайты тайлов для предпросмотра в редакторе.
+        """
+        sprites: list[pygame.Surface] = []
+        for sprite_path in sprite_paths:
+            path = TILE_SPRITE_ROOT / sprite_path
+            try:
+                sprite = pygame.image.load(path)
+                if pygame.display.get_surface() is not None:
+                    sprite = sprite.convert_alpha()
+                sprites.append(sprite)
+            except (FileNotFoundError, pygame.error):
+                continue
+        return tuple(sprites)
+
+    def _tile_sprite_offsets_for_definition(
+        self,
+        definition: TileDefinition,
+    ) -> tuple[tuple[int, int], ...]:
+        """
+        Возвращает offset для каждого загруженного варианта спрайта.
+        """
+        sprite_count = len(self.tile_sprites.get(definition.key, ()))
+        if sprite_count == 0:
+            return ()
+        if definition.sprite_offsets:
+            return definition.sprite_offsets[:sprite_count]
+        return (definition.sprite_offset,) * sprite_count
+
+    def _sprite_index_for_tile(
+        self,
+        sprites: Sequence[pygame.Surface],
+        tile_x: int,
+        tile_y: int,
+    ) -> int:
+        """
+        Выбирает стабильный вариант спрайта по координатам тайла.
+        """
+        return (tile_x * 73856093 ^ tile_y * 19349663) % len(sprites)
+
+    def _scaled_sprite(self, sprite: pygame.Surface) -> pygame.Surface:
+        if self.viewport.zoom == 1.0:
+            return sprite
+        width = max(1, round(sprite.get_width() * self.viewport.zoom))
+        height = max(1, round(sprite.get_height() * self.viewport.zoom))
+        return pygame.transform.scale(sprite, (width, height))
+
+    def _draw_palette_sprite(
+        self,
+        screen: pygame.Surface,
+        swatch_rect: pygame.Rect,
+        tile_key: str,
+    ) -> None:
+        sprites = self.tile_sprites.get(tile_key, ())
+        if not sprites:
+            return
+        sprite = sprites[0]
+        scale = min(
+            swatch_rect.width / sprite.get_width(),
+            swatch_rect.height / sprite.get_height(),
+        )
+        width = max(1, round(sprite.get_width() * scale))
+        height = max(1, round(sprite.get_height() * scale))
+        preview = pygame.transform.scale(sprite, (width, height))
+        left = swatch_rect.centerx - preview.get_width() // 2
+        top = swatch_rect.centery - preview.get_height() // 2
+        screen.blit(preview, (left, top))

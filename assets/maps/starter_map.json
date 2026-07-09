@@ -54,27 +54,70 @@
       "name": "wooden floor",
       "solid": false,
       "color": [
-        138,
-        91,
-        52
+        120,
+        98,
+        72
       ]
     },
     "T": {
       "name": "tree",
       "solid": true,
       "color": [
-        39,
-        88,
-        50
+        55,
+        130,
+        73
+      ],
+      "sprites": [
+        "tiles/tree_deciduous_1.png",
+        "tiles/tree_deciduous_2.png",
+        "tiles/tree_deciduous_3.png",
+        "tiles/tree_deciduous_4.png",
+        "tiles/tree_conifer_1.png",
+        "tiles/tree_conifer_2.png",
+        "tiles/tree_conifer_3.png",
+        "tiles/tree_conifer_4.png"
+      ],
+      "sprite_offset": [
+        0,
+        0
+      ],
+      "collision_rect": [
+        9,
+        18,
+        14,
+        14
       ]
     },
     "R": {
       "name": "rock",
       "solid": true,
       "color": [
-        102,
-        106,
-        112
+        55,
+        130,
+        73
+      ],
+      "sprites": [
+        "tiles/rock_1.png",
+        "tiles/rock_2.png",
+        "tiles/rock_3.png"
+      ],
+      "collision_rect": [
+        5,
+        8,
+        22,
+        20
+      ]
+    },
+    "C": {
+      "name": "cave wall",
+      "solid": true,
+      "color": [
+        69,
+        74,
+        76
+      ],
+      "sprites": [
+        "tiles/cave_wall_1.png"
       ]
     }
   },

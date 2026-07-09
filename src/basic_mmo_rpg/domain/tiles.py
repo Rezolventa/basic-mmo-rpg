@@ -23,6 +23,10 @@ class TileDefinition:
     name: str
     solid: bool
     color: tuple[int, int, int]
+    sprites: tuple[str, ...] = ()
+    sprite_offset: tuple[int, int] = (0, 0)
+    sprite_offsets: tuple[tuple[int, int], ...] = ()
+    collision_rect: tuple[int, int, int, int] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -62,6 +66,22 @@ class TileMap:
         if missing:
             msg = f"map references unknown tile keys: {sorted(missing)!r}"
             raise ValueError(msg)
+        for definition in self.definitions.values():
+            collision_rect = definition.collision_rect
+            if collision_rect is None:
+                continue
+            offset_x, offset_y, width, height = collision_rect
+            if width <= 0 or height <= 0:
+                msg = "tile collision_rect size must be positive"
+                raise ValueError(msg)
+            if (
+                offset_x < 0
+                or offset_y < 0
+                or offset_x + width > self.tile_size
+                or offset_y + height > self.tile_size
+            ):
+                msg = "tile collision_rect must fit inside tile_size"
+                raise ValueError(msg)
 
         entity_ids = [entity.entity_id for entity in self.entities]
         if len(entity_ids) != len(set(entity_ids)):
@@ -154,6 +174,27 @@ class TileMap:
             height=self.tile_size,
         )
 
+    def tile_collision_rect(self, tile_x: int, tile_y: int) -> Rect | None:
+        """
+        Возвращает прямоугольник коллизии тайла или `None` для проходимого тайла.
+        """
+        if not self.in_bounds(tile_x, tile_y):
+            msg = f"tile coordinates out of bounds: ({tile_x}, {tile_y})"
+            raise IndexError(msg)
+        tile_key = self.tile_at(tile_x, tile_y)
+        definition = self.definitions[tile_key]
+        if not definition.solid:
+            return None
+        if definition.collision_rect is None:
+            return self.tile_rect(tile_x, tile_y)
+        offset_x, offset_y, width, height = definition.collision_rect
+        return Rect(
+            x=tile_x * self.tile_size + offset_x,
+            y=tile_y * self.tile_size + offset_y,
+            width=width,
+            height=height,
+        )
+
     def tile_name_at(self, tile_x: int, tile_y: int) -> str:
         """
         Возвращает доменное имя тайла по координатам тайловой сетки.
@@ -188,6 +229,14 @@ class TileMap:
         """
         return self.has_tile_name(tile_x, tile_y, "rock")
 
+    def is_mineable_tile(self, tile_x: int, tile_y: int) -> bool:
+        """
+        Проверяет Mining-тайл.
+        """
+        if not self.in_bounds(tile_x, tile_y):
+            return False
+        return self.tile_name_at(tile_x, tile_y) in {"rock", "cave wall"}
+
     def has_tile_name(self, tile_x: int, tile_y: int, name: str) -> bool:
         """
         Проверяет, имеет ли тайл указанное доменное имя.
@@ -220,7 +269,8 @@ class TileMap:
 
         for tile_y in range(top, bottom + 1):
             for tile_x in range(left, right + 1):
-                if self.is_solid_tile(tile_x, tile_y):
+                tile_collision_rect = self.tile_collision_rect(tile_x, tile_y)
+                if tile_collision_rect is not None and rect.intersects(tile_collision_rect):
                     return True
         return False
 
@@ -234,6 +284,16 @@ def _tile_map_fingerprint_payload(tile_map: TileMap) -> dict[str, object]:
                 "name": definition.name,
                 "solid": definition.solid,
                 "color": list(definition.color),
+                "sprites": list(definition.sprites),
+                "sprite_offset": list(definition.sprite_offset),
+                "sprite_offsets": [
+                    list(sprite_offset) for sprite_offset in definition.sprite_offsets
+                ],
+                "collision_rect": (
+                    None
+                    if definition.collision_rect is None
+                    else list(definition.collision_rect)
+                ),
             }
             for key, definition in sorted(tile_map.definitions.items())
         },

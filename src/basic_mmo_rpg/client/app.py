@@ -39,7 +39,7 @@ from basic_mmo_rpg.storage.map_loader import load_tile_map
 
 DEFAULT_MAP_PATH = Path(__file__).resolve().parents[3] / "assets" / "maps" / "starter_map.json"
 DEFAULT_SERVER_URL = "ws://127.0.0.1:8765"
-WINDOW_SIZE = (960, 640)
+WINDOW_SIZE = (1280, 720)
 PLAYER_ID = "local-player"
 LOCAL_RECONCILE_RATE = 8.0
 LOCAL_RECONCILE_DEAD_ZONE = 3.0
@@ -983,7 +983,7 @@ class GameClient:
         if (
             not self.tile_map.is_water_tile(tile_x, tile_y)
             and not self.tile_map.is_tree_tile(tile_x, tile_y)
-            and not self.tile_map.is_rock_tile(tile_x, tile_y)
+            and not self.tile_map.is_mineable_tile(tile_x, tile_y)
         ):
             return None
         return tile

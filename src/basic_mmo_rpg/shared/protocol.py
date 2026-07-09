@@ -321,6 +321,16 @@ def tile_map_to_payload(tile_map: TileMap) -> dict[str, Any]:
                 "name": definition.name,
                 "solid": definition.solid,
                 "color": list(definition.color),
+                "sprites": list(definition.sprites),
+                "sprite_offset": list(definition.sprite_offset),
+                "sprite_offsets": [
+                    list(sprite_offset) for sprite_offset in definition.sprite_offsets
+                ],
+                "collision_rect": (
+                    None
+                    if definition.collision_rect is None
+                    else list(definition.collision_rect)
+                ),
             }
             for key, definition in tile_map.definitions.items()
         },
@@ -343,11 +353,19 @@ def tile_map_from_payload(payload: Mapping[str, Any]) -> TileMap:
     for key, value in raw_legend.items():
         tile_key = _tile_key(key)
         definition_payload = _map_payload(value, "tile definition")
+        sprites = _tile_sprites_from_payload(definition_payload)
         definitions[tile_key] = TileDefinition(
             key=tile_key,
             name=_string_field(definition_payload, "name"),
             solid=_bool_field(definition_payload, "solid"),
             color=_color_from_payload(definition_payload.get("color")),
+            sprites=sprites,
+            sprite_offset=_tile_sprite_offset_from_payload(definition_payload),
+            sprite_offsets=_tile_sprite_offsets_from_payload(
+                definition_payload,
+                len(sprites),
+            ),
+            collision_rect=_tile_collision_rect_from_payload(definition_payload),
         )
 
     raw_tiles = payload.get("tiles")
@@ -1404,6 +1422,90 @@ def _color_from_payload(raw_color: object) -> tuple[int, int, int]:
             raise ProtocolError(msg)
         channels.append(channel)
     return channels[0], channels[1], channels[2]
+
+
+def _tile_sprites_from_payload(payload: Mapping[str, Any]) -> tuple[str, ...]:
+    raw_sprites = payload.get("sprites")
+    if raw_sprites is None:
+        raw_sprite = payload.get("sprite")
+        if raw_sprite is None:
+            return ()
+        raw_sprites = [raw_sprite]
+    if not isinstance(raw_sprites, list):
+        msg = "map tile sprites must be a list"
+        raise ProtocolError(msg)
+    sprites: list[str] = []
+    for raw_sprite in raw_sprites:
+        if not isinstance(raw_sprite, str) or not raw_sprite.strip():
+            msg = "map tile sprite path must be a non-empty string"
+            raise ProtocolError(msg)
+        sprites.append(raw_sprite.strip())
+    return tuple(sprites)
+
+
+def _tile_sprite_offset_from_payload(payload: Mapping[str, Any]) -> tuple[int, int]:
+    raw_offset = payload.get("sprite_offset")
+    if raw_offset is None:
+        return (0, 0)
+    if not isinstance(raw_offset, list) or len(raw_offset) != 2:
+        msg = "map tile sprite_offset must be a two-item list"
+        raise ProtocolError(msg)
+    offset_x, offset_y = raw_offset
+    if (
+        not isinstance(offset_x, int)
+        or isinstance(offset_x, bool)
+        or not isinstance(offset_y, int)
+        or isinstance(offset_y, bool)
+    ):
+        msg = "map tile sprite_offset coordinates must be integers"
+        raise ProtocolError(msg)
+    return offset_x, offset_y
+
+
+def _tile_sprite_offsets_from_payload(
+    payload: Mapping[str, Any],
+    expected_count: int,
+) -> tuple[tuple[int, int], ...]:
+    raw_offsets = payload.get("sprite_offsets")
+    if raw_offsets is None:
+        return ()
+    if not isinstance(raw_offsets, list):
+        msg = "map tile sprite_offsets must be a list"
+        raise ProtocolError(msg)
+    if not raw_offsets:
+        return ()
+    if len(raw_offsets) != expected_count:
+        msg = "map tile sprite_offsets must match sprites count"
+        raise ProtocolError(msg)
+    return tuple(
+        _tile_sprite_offset_from_payload({"sprite_offset": raw_offset})
+        for raw_offset in raw_offsets
+    )
+
+
+def _tile_collision_rect_from_payload(
+    payload: Mapping[str, Any],
+) -> tuple[int, int, int, int] | None:
+    raw_rect = payload.get("collision_rect")
+    if raw_rect is None:
+        return None
+    if not isinstance(raw_rect, list) or len(raw_rect) != 4:
+        msg = "map tile collision_rect must be a four-item list"
+        raise ProtocolError(msg)
+    offset_x, offset_y, width, height = raw_rect
+    if (
+        not isinstance(offset_x, int)
+        or isinstance(offset_x, bool)
+        or not isinstance(offset_y, int)
+        or isinstance(offset_y, bool)
+        or not isinstance(width, int)
+        or isinstance(width, bool)
+        or not isinstance(height, int)
+        or isinstance(height, bool)
+    ):
+        msg = "map tile collision_rect values must be integers"
+        raise ProtocolError(msg)
+    return offset_x, offset_y, width, height
 
 
 def _required_component_payload(

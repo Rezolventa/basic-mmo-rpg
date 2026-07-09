@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping, Sequence
+from pathlib import Path
 
 import pygame
 
@@ -17,7 +18,7 @@ from basic_mmo_rpg.domain.inventory import (
 )
 from basic_mmo_rpg.domain.movement import PlayerState
 from basic_mmo_rpg.domain.skills import DEMO_SKILL_CAP, CharacterSkill, format_skill_percent
-from basic_mmo_rpg.domain.tiles import TileMap
+from basic_mmo_rpg.domain.tiles import TileDefinition, TileMap
 from basic_mmo_rpg.shared.protocol import (
     InteractionMenu,
     InteractionMenuOption,
@@ -77,6 +78,7 @@ SLOT_BACKGROUND = (29, 32, 38, 230)
 SLOT_BORDER = (92, 104, 118)
 EQUIPPED_BORDER = (225, 198, 104)
 DISABLED_SLOT_BACKGROUND = (31, 34, 39)
+TILE_SPRITE_ROOT = Path(__file__).resolve().parents[3] / "assets" / "sprites"
 
 
 class Renderer:
@@ -91,6 +93,14 @@ class Renderer:
         self.tile_map = tile_map
         self.tile_surfaces = {
             key: self._create_tile_surface(definition.color)
+            for key, definition in tile_map.definitions.items()
+        }
+        self.tile_sprites = {
+            key: self._load_tile_sprites(definition.sprites)
+            for key, definition in tile_map.definitions.items()
+        }
+        self.tile_sprite_offsets = {
+            key: self._tile_sprite_offsets_for_definition(definition)
             for key, definition in tile_map.definitions.items()
         }
         self.font = pygame.font.SysFont("arial", 18)
@@ -170,6 +180,7 @@ class Renderer:
                 body_color=PLAYER_BODY,
                 tunic_color=PLAYER_TUNIC,
             )
+        self._draw_tile_sprites(screen, camera, foreground=True)
         self._draw_floating_texts(
             screen=screen,
             camera=camera,
@@ -282,6 +293,37 @@ class Renderer:
                 world_position = Vec2(tile_x * tile_size, tile_y * tile_size)
                 screen_position = camera.world_to_screen(world_position)
                 screen.blit(surface, screen_position)
+        self._draw_tile_sprites(screen, camera, foreground=False)
+
+    def _draw_tile_sprites(
+        self,
+        screen: pygame.Surface,
+        camera: Camera,
+        *,
+        foreground: bool,
+    ) -> None:
+        """
+        Рисует спрайтовые тайлы. Деревья можно вывести отдельным foreground-слоем.
+        """
+        tile_size = self.tile_map.tile_size
+        for tile_y in range(self.tile_map.height):
+            for tile_x in range(self.tile_map.width):
+                tile_key = self.tile_map.tile_at(tile_x, tile_y)
+                is_foreground_tile = self.tile_map.definitions[tile_key].name == "tree"
+                if is_foreground_tile != foreground:
+                    continue
+                sprites = self.tile_sprites.get(tile_key, ())
+                if not sprites:
+                    continue
+                sprite_index = self._sprite_index_for_tile(sprites, tile_x, tile_y)
+                sprite = sprites[sprite_index]
+                sprite_offsets = self.tile_sprite_offsets.get(tile_key, ())
+                offset_x, offset_y = sprite_offsets[sprite_index]
+                world_position = Vec2(tile_x * tile_size, tile_y * tile_size)
+                screen_x, screen_y = camera.world_to_screen(world_position)
+                sprite_x = screen_x + (tile_size - sprite.get_width()) // 2 + offset_x
+                sprite_y = screen_y + tile_size - sprite.get_height() + offset_y
+                screen.blit(sprite, (sprite_x, sprite_y))
 
     def _draw_system_message(self, screen: pygame.Surface, message: str) -> None:
         """
@@ -334,7 +376,7 @@ class Renderer:
         """
         if self.tile_map.is_tree_tile(tile_x, tile_y):
             return TREE_HOVER_FILL, TREE_HOVER_BORDER
-        if self.tile_map.is_rock_tile(tile_x, tile_y):
+        if self.tile_map.is_mineable_tile(tile_x, tile_y):
             return ROCK_HOVER_FILL, ROCK_HOVER_BORDER
         return WATER_HOVER_FILL, WATER_HOVER_BORDER
 
@@ -1423,3 +1465,41 @@ class Renderer:
             pygame.draw.rect(surface, GRID_LINE, Rect(dot_x, dot_y, 2, 2).to_pygame())
 
         return surface
+
+    def _load_tile_sprites(self, sprite_paths: Sequence[str]) -> tuple[pygame.Surface, ...]:
+        """
+        Загружает PNG-спрайты тайла.
+        """
+        sprites: list[pygame.Surface] = []
+        for sprite_path in sprite_paths:
+            path = TILE_SPRITE_ROOT / sprite_path
+            try:
+                sprites.append(pygame.image.load(path).convert_alpha())
+            except (FileNotFoundError, pygame.error):
+                continue
+        return tuple(sprites)
+
+    def _tile_sprite_offsets_for_definition(
+        self,
+        definition: TileDefinition,
+    ) -> tuple[tuple[int, int], ...]:
+        """
+        Возвращает offset для каждого загруженного варианта спрайта.
+        """
+        sprite_count = len(self.tile_sprites.get(definition.key, ()))
+        if sprite_count == 0:
+            return ()
+        if definition.sprite_offsets:
+            return definition.sprite_offsets[:sprite_count]
+        return (definition.sprite_offset,) * sprite_count
+
+    def _sprite_index_for_tile(
+        self,
+        sprites: Sequence[pygame.Surface],
+        tile_x: int,
+        tile_y: int,
+    ) -> int:
+        """
+        Выбирает индекс варианта спрайта по координатам.
+        """
+        return (tile_x * 73856093 ^ tile_y * 19349663) % len(sprites)
