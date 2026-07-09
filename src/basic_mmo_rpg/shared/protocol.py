@@ -23,6 +23,7 @@ from basic_mmo_rpg.domain.equipment import MAIN_HAND_SLOT, Equipment, validate_e
 from basic_mmo_rpg.domain.geometry import Vec2
 from basic_mmo_rpg.domain.inventory import ItemStack
 from basic_mmo_rpg.domain.movement import MovementIntent, PlayerState
+from basic_mmo_rpg.domain.skills import CharacterSkill, character_skill_for
 from basic_mmo_rpg.domain.tiles import TileDefinition, TileMap
 
 INTERACTION_PRESENTATION_BUBBLE = "bubble"
@@ -68,6 +69,7 @@ class ServerMessageType(StrEnum):
     ENTITY_REMOVED = "entity_removed"
     INVENTORY_UPDATED = "inventory_updated"
     EQUIPMENT_UPDATED = "equipment_updated"
+    SKILLS_UPDATED = "skills_updated"
     VENDOR_OPENED = "vendor_opened"
     COMBAT_EVENT = "combat_event"
     ERROR = "error"
@@ -804,6 +806,58 @@ def inventory_items_from_payload(payload: Mapping[str, Any]) -> list[ItemStack]:
             raise ProtocolError(msg)
         items.append(inventory_item_from_payload(raw_item))
     return items
+
+
+def skill_to_payload(skill: CharacterSkill) -> dict[str, Any]:
+    """
+    Преобразует скилл персонажа в JSON-готовый элемент payload-а.
+    """
+    return {
+        "skill_id": skill.skill_id,
+        "display_name": skill.display_name,
+        "value_tenths": skill.value_tenths,
+    }
+
+
+def skill_from_payload(payload: Mapping[str, Any]) -> CharacterSkill:
+    """
+    Создает скилл персонажа из server-authoritative payload-а.
+    """
+    skill_id = _string_field(payload, "skill_id")
+    display_name = _string_field(payload, "display_name")
+    value_tenths = _non_negative_int_field(payload, "value_tenths")
+    try:
+        skill = character_skill_for(skill_id, value_tenths)
+    except ValueError as exc:
+        msg = str(exc)
+        raise ProtocolError(msg) from exc
+    if skill.display_name != display_name:
+        msg = "skill display_name does not match skill_id"
+        raise ProtocolError(msg)
+    return skill
+
+
+def skills_updated_payload(skills: list[CharacterSkill]) -> dict[str, Any]:
+    """
+    Создает payload серверного обновления скиллов персонажа.
+    """
+    return {"skills": [skill_to_payload(skill) for skill in skills]}
+
+
+def skills_from_payload(payload: Mapping[str, Any]) -> list[CharacterSkill]:
+    """
+    Извлекает список скиллов персонажа из payload-а обновления.
+    """
+    raw_skills = payload.get("skills")
+    if not isinstance(raw_skills, list):
+        msg = "skills must be a list"
+        raise ProtocolError(msg)
+
+    skills: list[CharacterSkill] = []
+    for raw_skill in raw_skills:
+        skill_payload = _map_payload(raw_skill, "skill")
+        skills.append(skill_from_payload(skill_payload))
+    return skills
 
 
 def equip_item_requested_payload(item_id: str) -> dict[str, Any]:

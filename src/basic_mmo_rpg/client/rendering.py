@@ -16,6 +16,7 @@ from basic_mmo_rpg.domain.inventory import (
     item_definition_for,
 )
 from basic_mmo_rpg.domain.movement import PlayerState
+from basic_mmo_rpg.domain.skills import DEMO_SKILL_CAP, CharacterSkill, format_skill_percent
 from basic_mmo_rpg.domain.tiles import TileMap
 from basic_mmo_rpg.shared.protocol import (
     InteractionMenu,
@@ -116,6 +117,8 @@ class Renderer:
         inventory_items: Sequence[ItemStack] = (),
         equipment: Equipment | None = None,
         inventory_visible: bool = False,
+        character_skills: Sequence[CharacterSkill] = (),
+        skills_visible: bool = False,
         interaction_menu: InteractionMenu | None = None,
         vendor_window: VendorWindow | None = None,
         combat_mode_active: bool = False,
@@ -186,6 +189,8 @@ class Renderer:
             self._draw_chat_journal(screen, chat_lines)
         if inventory_visible:
             self._draw_inventory(screen, inventory_items, equipment)
+        if skills_visible:
+            self._draw_skills(screen, character_skills, inventory_visible)
         if interaction_menu is not None:
             self._draw_interaction_menu(screen, interaction_menu)
         if vendor_window is not None:
@@ -1101,6 +1106,53 @@ class Renderer:
             )
             screen.blit(surface, (row_rect.left + 5, row_rect.top + 3))
 
+    def _draw_skills(
+        self,
+        screen: pygame.Surface,
+        skills: Sequence[CharacterSkill],
+        inventory_visible: bool,
+    ) -> None:
+        """
+        Рисует панель игровых скиллов персонажа.
+        """
+        panel_rect = self._skills_panel_rect(screen, inventory_visible)
+        panel = pygame.Surface(panel_rect.size, pygame.SRCALPHA)
+        panel.fill(PANEL_BACKGROUND)
+        screen.blit(panel, panel_rect.topleft)
+        pygame.draw.rect(screen, BUBBLE_BORDER, panel_rect, width=1, border_radius=6)
+
+        title = self.font.render("Скиллы", True, TEXT_COLOR)
+        screen.blit(title, (panel_rect.left + 12, panel_rect.top + 10))
+
+        if not skills:
+            empty = self.small_font.render("Пусто", True, MUTED_TEXT_COLOR)
+            screen.blit(empty, (panel_rect.left + 12, panel_rect.top + 42))
+            return
+
+        y = panel_rect.top + 44
+        for skill in skills:
+            if y + 32 > panel_rect.bottom - 10:
+                break
+            name = self._tail_to_width(skill.display_name, panel_rect.width - 96, self.small_font)
+            value = format_skill_percent(skill.value_tenths)
+            name_surface = self.small_font.render(name, True, TEXT_COLOR)
+            value_surface = self.small_font.render(value, True, MUTED_TEXT_COLOR)
+            screen.blit(name_surface, (panel_rect.left + 12, y))
+            screen.blit(
+                value_surface,
+                (panel_rect.right - 12 - value_surface.get_width(), y),
+            )
+
+            bar_rect = pygame.Rect(panel_rect.left + 12, y + 20, panel_rect.width - 24, 6)
+            pygame.draw.rect(screen, SLOT_BACKGROUND, bar_rect, border_radius=3)
+            fill_width = int(
+                bar_rect.width * min(skill.value_tenths, DEMO_SKILL_CAP) / DEMO_SKILL_CAP
+            )
+            if fill_width > 0:
+                fill_rect = pygame.Rect(bar_rect.left, bar_rect.top, fill_width, bar_rect.height)
+                pygame.draw.rect(screen, EQUIPPED_BORDER, fill_rect, border_radius=3)
+            y += 38
+
     def _draw_equipment_slots(self, screen: pygame.Surface, equipment: Equipment) -> None:
         """
         Рисует слоты paperdoll и суммарную броню.
@@ -1164,6 +1216,27 @@ class Renderer:
         height = min(320, screen.get_height() - 90)
         left = max(20, screen.get_width() - width - 20)
         return pygame.Rect(left, 20, width, height)
+
+    def _skills_panel_rect(
+        self,
+        screen: pygame.Surface,
+        inventory_visible: bool,
+    ) -> pygame.Rect:
+        """
+        Возвращает прямоугольник панели скиллов персонажа.
+        """
+        width = min(300, max(240, screen.get_width() - 40))
+        height = 176
+        left = max(20, screen.get_width() - width - 20)
+        top = 20
+        if inventory_visible:
+            inventory_rect = self._inventory_panel_rect(screen)
+            candidate_top = inventory_rect.bottom + 12
+            if candidate_top + height <= screen.get_height() - 20:
+                top = candidate_top
+            else:
+                left = 20
+        return pygame.Rect(left, top, width, min(height, screen.get_height() - 40))
 
     def _main_hand_slot_rect(self, screen: pygame.Surface) -> pygame.Rect:
         """

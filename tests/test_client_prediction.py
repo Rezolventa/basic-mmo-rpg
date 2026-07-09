@@ -25,6 +25,7 @@ from basic_mmo_rpg.domain.equipment import CHEST_SLOT, MAIN_HAND_SLOT, Equipment
 from basic_mmo_rpg.domain.geometry import Vec2
 from basic_mmo_rpg.domain.inventory import FISHING_ROD_ITEM_ID, IRON_CHEST_ARMOR_ITEM_ID, ItemStack
 from basic_mmo_rpg.domain.movement import MovementIntent, PlayerState
+from basic_mmo_rpg.domain.skills import FISHING_SKILL_ID, CharacterSkill
 from basic_mmo_rpg.shared.protocol import (
     INTERACTION_PRESENTATION_FEED,
     InteractionMenu,
@@ -36,6 +37,7 @@ from basic_mmo_rpg.shared.protocol import (
     interaction_menu_opened_payload,
     interaction_result_payload,
     inventory_updated_payload,
+    skills_updated_payload,
     vendor_opened_payload,
 )
 from basic_mmo_rpg.storage.map_loader import tile_map_from_dict
@@ -725,6 +727,23 @@ def test_client_applies_equipment_update() -> None:
 
     assert client.equipment.main_hand == FISHING_ROD_ITEM_ID
     assert client.equipment.chest == IRON_CHEST_ARMOR_ITEM_ID
+
+
+def test_client_applies_skills_update() -> None:
+    """
+    Проверяет, что клиент принимает authoritative-обновление скиллов.
+    """
+    client = object.__new__(GameClient)
+    client.character_skills = []
+    skill = CharacterSkill(
+        skill_id=FISHING_SKILL_ID,
+        display_name="Рыбалка",
+        value_tenths=123,
+    )
+
+    client._apply_skills_updated(skills_updated_payload([skill]))
+
+    assert client.character_skills == [skill]
 
 
 def test_client_inventory_click_requests_equip() -> None:

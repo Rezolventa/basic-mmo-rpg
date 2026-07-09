@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import random
 import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
@@ -18,6 +19,16 @@ from basic_mmo_rpg.domain.inventory import (
     equipment_slot_for_item,
     item_definition_for,
     item_stack_for,
+)
+from basic_mmo_rpg.domain.skills import (
+    INITIAL_SKILL_MAX,
+    INITIAL_SKILL_MIN,
+    SKILL_DEFINITIONS,
+    CharacterSkill,
+    apply_skill_gain,
+    character_skill_for,
+    skill_definition_for,
+    validate_skill_value,
 )
 
 
@@ -105,6 +116,18 @@ class CharacterRepository:
                 )
                 """
             )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS character_skills (
+                    character_name TEXT NOT NULL,
+                    skill_id TEXT NOT NULL,
+                    value_tenths INTEGER NOT NULL,
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (character_name, skill_id),
+                    FOREIGN KEY (character_name) REFERENCES characters(name)
+                )
+                """
+            )
 
     def load_or_create(self, name: str, default_position: Vec2) -> CharacterRecord:
         """
@@ -160,6 +183,87 @@ class CharacterRepository:
         """
         with self._connect() as connection:
             return self._load_equipment(connection, name)
+
+    def load_skills(self, name: str) -> list[CharacterSkill]:
+        """
+        Загружает persistent-значения игровых скиллов персонажа.
+        """
+        with self._connect() as connection:
+            return self._load_skills(connection, name)
+
+    def ensure_character_skills(
+        self,
+        name: str,
+        random_source: random.Random,
+    ) -> list[CharacterSkill]:
+        """
+        Досоздает недостающие скиллы персонажа со стартовым случайным значением.
+        """
+        with self._connect() as connection:
+            existing_ids = {skill.skill_id for skill in self._load_skills(connection, name)}
+            for definition in SKILL_DEFINITIONS:
+                if definition.skill_id in existing_ids:
+                    continue
+                initial_value = random_source.randint(INITIAL_SKILL_MIN, INITIAL_SKILL_MAX)
+                self._set_skill_value(connection, name, definition.skill_id, initial_value)
+            return self._load_skills(connection, name)
+
+    def skill_value(self, name: str, skill_id: str) -> int:
+        """
+        Возвращает значение скилла персонажа в десятых долях процента.
+        """
+        skill_definition_for(skill_id)
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT value_tenths
+                FROM character_skills
+                WHERE character_name = ? AND skill_id = ?
+                """,
+                (name, skill_id),
+            ).fetchone()
+        return int(row["value_tenths"]) if row is not None else 0
+
+    def set_skill_value(
+        self,
+        name: str,
+        skill_id: str,
+        value_tenths: int,
+    ) -> list[CharacterSkill]:
+        """
+        Записывает значение скилла персонажа.
+        """
+        skill_definition_for(skill_id)
+        value_tenths = validate_skill_value(value_tenths)
+        with self._connect() as connection:
+            self._set_skill_value(connection, name, skill_id, value_tenths)
+            return self._load_skills(connection, name)
+
+    def increase_skill(
+        self,
+        name: str,
+        skill_id: str,
+        gain_tenths: int = 1,
+    ) -> tuple[list[CharacterSkill], CharacterSkill, bool]:
+        """
+        Увеличивает скилл персонажа с учетом демо-ограничения.
+        """
+        skill_definition_for(skill_id)
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT value_tenths
+                FROM character_skills
+                WHERE character_name = ? AND skill_id = ?
+                """,
+                (name, skill_id),
+            ).fetchone()
+            current_value = int(row["value_tenths"]) if row is not None else 0
+            next_value = apply_skill_gain(current_value, gain_tenths)
+            if next_value != current_value:
+                self._set_skill_value(connection, name, skill_id, next_value)
+            skills = self._load_skills(connection, name)
+        return skills, character_skill_for(skill_id, next_value), next_value != current_value
 
     def has_item(self, name: str, item_id: str) -> bool:
         """
@@ -467,6 +571,29 @@ class CharacterRepository:
             chest=str(chest) if chest is not None else None,
         )
 
+    def _load_skills(
+        self,
+        connection: sqlite3.Connection,
+        name: str,
+    ) -> list[CharacterSkill]:
+        """
+        Загружает скиллы персонажа через существующее SQLite-соединение.
+        """
+        rows = connection.execute(
+            """
+            SELECT skill_id, value_tenths
+            FROM character_skills
+            WHERE character_name = ?
+            """,
+            (name,),
+        ).fetchall()
+        values = {str(row["skill_id"]): int(row["value_tenths"]) for row in rows}
+        return [
+            character_skill_for(definition.skill_id, values[definition.skill_id])
+            for definition in SKILL_DEFINITIONS
+            if definition.skill_id in values
+        ]
+
     def _item_quantity(
         self,
         connection: sqlite3.Connection,
@@ -534,6 +661,32 @@ class CharacterRepository:
                 updated_at = CURRENT_TIMESTAMP
             """,
             (name, item_id, quantity),
+        )
+
+    def _set_skill_value(
+        self,
+        connection: sqlite3.Connection,
+        name: str,
+        skill_id: str,
+        value_tenths: int,
+    ) -> None:
+        """
+        Записывает значение скилла через существующее SQLite-соединение.
+        """
+        connection.execute(
+            """
+            INSERT INTO character_skills (
+                character_name,
+                skill_id,
+                value_tenths,
+                updated_at
+            )
+            VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(character_name, skill_id) DO UPDATE SET
+                value_tenths = excluded.value_tenths,
+                updated_at = CURRENT_TIMESTAMP
+            """,
+            (name, skill_id, value_tenths),
         )
 
     def _set_equipment_slot(

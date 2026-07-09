@@ -40,6 +40,20 @@ from basic_mmo_rpg.domain.inventory import (
     item_definition_for,
 )
 from basic_mmo_rpg.domain.movement import PlayerState
+from basic_mmo_rpg.domain.skills import (
+    FISHING_SKILL_ID,
+    LUMBERJACKING_SKILL_ID,
+    MINING_SKILL_ID,
+    CharacterSkill,
+    fishing_action_seconds,
+    fishing_success_chance,
+    format_skill_percent,
+    lumberjacking_double_log_chance,
+    lumberjacking_success_chance,
+    mining_iron_ore_chance,
+    mining_success_chance,
+    skill_gain_chance,
+)
 from basic_mmo_rpg.server.world import MultiplayerWorld
 from basic_mmo_rpg.shared.protocol import (
     INTERACTION_PRESENTATION_BUBBLE,
@@ -67,6 +81,7 @@ from basic_mmo_rpg.shared.protocol import (
     inventory_updated_payload,
     map_fingerprint_from_payload,
     movement_intent_from_payload,
+    skills_updated_payload,
     tile_map_to_payload,
     vendor_opened_payload,
     vendor_purchase_request_from_payload,
@@ -156,6 +171,7 @@ class TileGatheringRule:
     """
 
     tile_name: str
+    skill_id: str
     tool_item_id: str
     reward_item_id: str
     success_chance: float
@@ -337,6 +353,7 @@ NPC_REPEATABLE_QUESTS: dict[str, RepeatableQuestDefinition] = {
 TILE_GATHERING_RULES: dict[str, TileGatheringRule] = {
     "water": TileGatheringRule(
         tile_name="water",
+        skill_id=FISHING_SKILL_ID,
         tool_item_id=FISHING_ROD_ITEM_ID,
         reward_item_id=FISH_ITEM_ID,
         success_chance=FISHING_SUCCESS_CHANCE,
@@ -346,14 +363,17 @@ TILE_GATHERING_RULES: dict[str, TileGatheringRule] = {
     ),
     "tree": TileGatheringRule(
         tile_name="tree",
+        skill_id=LUMBERJACKING_SKILL_ID,
         tool_item_id=LUMBER_AXE_ITEM_ID,
         reward_item_id=LOG_ITEM_ID,
+        failure_text="Не удалось нарубить древесины",
         success_chance=LUMBERJACKING_SUCCESS_CHANCE,
         missing_tool_text="Нужен топор в руке",
         success_text="Вы нарубили древесины",
     ),
     "rock": TileGatheringRule(
         tile_name="rock",
+        skill_id=MINING_SKILL_ID,
         tool_item_id=PICKAXE_ITEM_ID,
         reward_item_id=STONE_ITEM_ID,
         success_chance=0.0,
@@ -486,6 +506,7 @@ class MultiplayerServer:
             )
             await self._send_inventory_update(session)
             await self._send_equipment_update(session)
+            await self._send_skills_update(session)
             await self._broadcast_snapshot()
 
             async for raw_message in websocket:
@@ -534,6 +555,7 @@ class MultiplayerServer:
             name=character_name,
             default_position=self.world.tile_map.spawn,
         )
+        self.character_repository.ensure_character_skills(character_name, self.random)
         disconnected_state = self.disconnected_player_states.pop(character_name, None)
         if disconnected_state is None:
             self.world.add_player(player_id, character_name, character.position)
@@ -1767,13 +1789,17 @@ class MultiplayerServer:
         if self.world.set_player_action(session.player_id, "gathering") is None:
             return
         self._stop_attack(session)
+        skill_value = self.character_repository.skill_value(session.character_name, rule.skill_id)
+        action_seconds = GATHERING_ACTION_SECONDS
+        if rule.skill_id == FISHING_SKILL_ID:
+            action_seconds = fishing_action_seconds(skill_value)
         self.pending_gathering_actions[session.player_id] = PendingGatheringAction(
             session_id=session.session_id,
             player_id=session.player_id,
             character_name=session.character_name,
             tile=tile,
             rule=rule,
-            completes_at=now + GATHERING_ACTION_SECONDS,
+            completes_at=now + action_seconds,
         )
         await self._broadcast_snapshot()
 
@@ -1834,43 +1860,178 @@ class MultiplayerServer:
             return
 
         rule = action.rule
-        if rule.reward_outcomes:
-            await self._complete_gathering_outcome_action(session, rule)
-            return
+        skill_value = self.character_repository.skill_value(session.character_name, rule.skill_id)
+        should_try_skill_gain = False
+        if rule.skill_id == MINING_SKILL_ID:
+            should_try_skill_gain = await self._complete_mining_action(
+                session,
+                rule,
+                skill_value,
+            )
+        elif rule.skill_id == LUMBERJACKING_SKILL_ID:
+            should_try_skill_gain = await self._complete_lumberjacking_action(
+                session,
+                rule,
+                skill_value,
+            )
+        else:
+            should_try_skill_gain = await self._complete_fishing_action(
+                session,
+                rule,
+                skill_value,
+            )
 
-        if rule.success_chance >= 1.0 or self.random.random() < rule.success_chance:
-            try:
-                inventory = self.character_repository.add_item(
-                    session.character_name,
-                    rule.reward_item_id,
-                )
-            except InventoryLimitError as exc:
-                await self._send_inventory_limit_result(
-                    session,
-                    session.player_id,
-                    session.character_name,
-                    exc,
-                    presentation=INTERACTION_PRESENTATION_FEED,
-                )
-                return
-            await self._send_inventory_update(session, inventory)
-            await self._send_interaction_result(
+        if should_try_skill_gain:
+            await self._try_improve_skill(session, rule.skill_id)
+
+    async def _complete_fishing_action(
+        self,
+        session: PlayerSession,
+        rule: TileGatheringRule,
+        skill_value: int,
+    ) -> bool:
+        """
+        Применяет результат рыбалки с учетом Fishing.
+        """
+        if self.random.random() < fishing_success_chance(skill_value):
+            return await self._add_gathering_reward(
                 session=session,
-                target_id=session.player_id,
-                target_name=session.character_name,
+                item_id=rule.reward_item_id,
+                quantity=1,
                 text=rule.success_text,
-                presentation=INTERACTION_PRESENTATION_FEED,
             )
-            return
+        await self._send_gathering_failure(session, rule)
+        return True
 
-        if rule.failure_text is not None:
-            await self._send_interaction_result(
-                session=session,
-                target_id=session.player_id,
-                target_name=session.character_name,
-                text=rule.failure_text,
+    async def _complete_lumberjacking_action(
+        self,
+        session: PlayerSession,
+        rule: TileGatheringRule,
+        skill_value: int,
+    ) -> bool:
+        """
+        Применяет результат рубки дерева с учетом Lumberjacking.
+        """
+        if self.random.random() >= lumberjacking_success_chance(skill_value):
+            await self._send_gathering_failure(session, rule)
+            return True
+
+        quantity = 1
+        text = rule.success_text
+        if self.random.random() < lumberjacking_double_log_chance(skill_value):
+            quantity = 2
+            text = "Вы нарубили 2 бревна"
+        return await self._add_gathering_reward(
+            session=session,
+            item_id=rule.reward_item_id,
+            quantity=quantity,
+            text=text,
+        )
+
+    async def _complete_mining_action(
+        self,
+        session: PlayerSession,
+        rule: TileGatheringRule,
+        skill_value: int,
+    ) -> bool:
+        """
+        Применяет результат добычи rock-тайла с учетом Mining.
+        """
+        if self.random.random() >= mining_success_chance(skill_value):
+            await self._send_gathering_failure(session, rule)
+            return True
+
+        item_id = STONE_ITEM_ID
+        text = rule.success_text
+        if self.random.random() < mining_iron_ore_chance(skill_value):
+            item_id = IRON_ORE_ITEM_ID
+            text = "Вы добыли железную руду"
+        return await self._add_gathering_reward(
+            session=session,
+            item_id=item_id,
+            quantity=1,
+            text=text,
+        )
+
+    async def _add_gathering_reward(
+        self,
+        session: PlayerSession,
+        item_id: str,
+        quantity: int,
+        text: str,
+    ) -> bool:
+        """
+        Добавляет добычу в инвентарь и отправляет результат игроку.
+        """
+        try:
+            inventory = self.character_repository.add_item(
+                session.character_name,
+                item_id,
+                quantity=quantity,
+            )
+        except InventoryLimitError as exc:
+            await self._send_inventory_limit_result(
+                session,
+                session.player_id,
+                session.character_name,
+                exc,
                 presentation=INTERACTION_PRESENTATION_FEED,
             )
+            return False
+        await self._send_inventory_update(session, inventory)
+        await self._send_interaction_result(
+            session=session,
+            target_id=session.player_id,
+            target_name=session.character_name,
+            text=text,
+            presentation=INTERACTION_PRESENTATION_FEED,
+        )
+        return True
+
+    async def _send_gathering_failure(
+        self,
+        session: PlayerSession,
+        rule: TileGatheringRule,
+    ) -> None:
+        """
+        Отправляет игроку неуспешный результат валидной попытки добычи.
+        """
+        if rule.failure_text is None:
+            return
+        await self._send_interaction_result(
+            session=session,
+            target_id=session.player_id,
+            target_name=session.character_name,
+            text=rule.failure_text,
+            presentation=INTERACTION_PRESENTATION_FEED,
+        )
+
+    async def _try_improve_skill(
+        self,
+        session: PlayerSession,
+        skill_id: str,
+    ) -> None:
+        """
+        Делает roll на рост скилла после валидного применения.
+        """
+        current_value = self.character_repository.skill_value(session.character_name, skill_id)
+        chance = skill_gain_chance(current_value)
+        if chance <= 0 or self.random.random() >= chance:
+            return
+        skills, improved_skill, changed = self.character_repository.increase_skill(
+            session.character_name,
+            skill_id,
+        )
+        if not changed:
+            return
+        await self._send_skills_update(session, skills)
+        await self._send_interaction_result(
+            session=session,
+            target_id=session.player_id,
+            target_name=session.character_name,
+            text=_skill_gain_text(improved_skill),
+            presentation=INTERACTION_PRESENTATION_FEED,
+        )
 
     async def _complete_gathering_outcome_action(
         self,
@@ -2415,6 +2576,24 @@ class MultiplayerServer:
             ),
         )
 
+    async def _send_skills_update(
+        self,
+        session: PlayerSession,
+        skills: list[CharacterSkill] | None = None,
+    ) -> None:
+        """
+        Отправляет актуальные значения скиллов одному клиенту.
+        """
+        if skills is None:
+            skills = self.character_repository.load_skills(session.character_name)
+        await self._send(
+            session.websocket,
+            ProtocolMessage(
+                type=ServerMessageType.SKILLS_UPDATED,
+                payload=skills_updated_payload(skills),
+            ),
+        )
+
     async def _game_loop(self) -> None:
         """
         Продвигает мир с фиксированной частотой тиков и периодически рассылает snapshot-ы.
@@ -2524,6 +2703,16 @@ class MultiplayerServer:
         Создает короткий уникальный id для нового подключенного игрока.
         """
         return f"player-{uuid.uuid4().hex[:8]}"
+
+
+def _skill_gain_text(skill: CharacterSkill) -> str:
+    """
+    Форматирует журналируемое сообщение о росте скилла.
+    """
+    verb = "повысилась"
+    if skill.skill_id == MINING_SKILL_ID:
+        verb = "повысилось"
+    return f"{skill.display_name} {verb} до {format_skill_percent(skill.value_tenths)}"
 
 
 def parse_args() -> argparse.Namespace:

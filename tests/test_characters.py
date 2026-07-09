@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import random
 import sqlite3
 from pathlib import Path
 
@@ -14,6 +15,12 @@ from basic_mmo_rpg.domain.inventory import (
     IRON_CHEST_ARMOR_ITEM_ID,
     RUSTY_SWORD_ITEM_ID,
     InventoryLimitError,
+)
+from basic_mmo_rpg.domain.skills import (
+    DEMO_SKILL_CAP,
+    FISHING_SKILL_ID,
+    LUMBERJACKING_SKILL_ID,
+    MINING_SKILL_ID,
 )
 from basic_mmo_rpg.storage.characters import CharacterRepository
 
@@ -33,6 +40,46 @@ def test_character_repository_loads_creates_and_saves_position(tmp_path: Path) -
     assert created.position == Vec2(32, 48)
     assert loaded.name == "Alice"
     assert loaded.position == Vec2(96, 112)
+
+
+def test_character_repository_initializes_and_persists_skills(tmp_path: Path) -> None:
+    """
+    Проверяет ленивую инициализацию игровых скиллов персонажа.
+    """
+    repository = CharacterRepository(tmp_path / "characters.sqlite3")
+    repository.initialize()
+    repository.load_or_create("Alice", Vec2(32, 48))
+
+    skills = repository.ensure_character_skills("Alice", random.Random(1))
+    loaded_skills = repository.load_skills("Alice")
+
+    assert [skill.skill_id for skill in skills] == [
+        MINING_SKILL_ID,
+        LUMBERJACKING_SKILL_ID,
+        FISHING_SKILL_ID,
+    ]
+    assert skills == loaded_skills
+    assert all(0 <= skill.value_tenths <= 99 for skill in skills)
+
+
+def test_character_repository_increases_skill_until_demo_cap(tmp_path: Path) -> None:
+    """
+    Проверяет сохранение роста скилла и демо-ограничение 40.0%.
+    """
+    repository = CharacterRepository(tmp_path / "characters.sqlite3")
+    repository.initialize()
+    repository.load_or_create("Alice", Vec2(32, 48))
+    repository.set_skill_value("Alice", FISHING_SKILL_ID, DEMO_SKILL_CAP - 1)
+
+    skills, improved_skill, changed = repository.increase_skill("Alice", FISHING_SKILL_ID)
+    _, capped_skill, capped_changed = repository.increase_skill("Alice", FISHING_SKILL_ID)
+
+    assert changed is True
+    assert improved_skill.value_tenths == DEMO_SKILL_CAP
+    assert capped_changed is False
+    assert capped_skill.value_tenths == DEMO_SKILL_CAP
+    assert repository.skill_value("Alice", FISHING_SKILL_ID) == DEMO_SKILL_CAP
+    assert skills[-1].value_tenths == DEMO_SKILL_CAP
 
 
 def test_character_repository_persists_inventory_items(tmp_path: Path) -> None:

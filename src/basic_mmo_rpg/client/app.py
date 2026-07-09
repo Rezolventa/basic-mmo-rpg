@@ -18,6 +18,7 @@ from basic_mmo_rpg.domain.equipment import CHEST_SLOT, MAIN_HAND_SLOT, Equipment
 from basic_mmo_rpg.domain.geometry import Rect, Vec2
 from basic_mmo_rpg.domain.inventory import ItemStack
 from basic_mmo_rpg.domain.movement import MovementIntent, PlayerState, move_player
+from basic_mmo_rpg.domain.skills import CharacterSkill
 from basic_mmo_rpg.shared.protocol import (
     INTERACTION_PRESENTATION_FEED,
     InteractionMenu,
@@ -30,6 +31,7 @@ from basic_mmo_rpg.shared.protocol import (
     interaction_presentation_from_payload,
     inventory_items_from_payload,
     player_snapshots_from_payload,
+    skills_from_payload,
     tile_map_from_payload,
     vendor_window_from_payload,
 )
@@ -167,6 +169,8 @@ class GameClient:
         self.inventory_visible = False
         self.inventory_items: list[ItemStack] = []
         self.equipment = Equipment()
+        self.skills_visible = False
+        self.character_skills: list[CharacterSkill] = []
         self.interaction_menu: InteractionMenu | None = None
         self.vendor_window: VendorWindow | None = None
         self.combat_mode_active = False
@@ -258,6 +262,8 @@ class GameClient:
             inventory_items=self.inventory_items,
             equipment=self.equipment,
             inventory_visible=self.inventory_visible,
+            character_skills=self.character_skills,
+            skills_visible=self.skills_visible,
             interaction_menu=self.interaction_menu,
             vendor_window=self.vendor_window,
             combat_mode_active=self.combat_mode_active,
@@ -302,6 +308,8 @@ class GameClient:
             self.chat_journal_visible = not self.chat_journal_visible
         elif event.key == pygame.K_b:
             self.inventory_visible = not self.inventory_visible
+        elif event.key == pygame.K_k:
+            self.skills_visible = not self.skills_visible
         elif not self._local_player_can_act():
             return
         elif event.key == pygame.K_TAB:
@@ -502,6 +510,8 @@ class GameClient:
                 self._apply_inventory_updated(message.payload)
             elif message.type == ServerMessageType.EQUIPMENT_UPDATED:
                 self._apply_equipment_updated(message.payload)
+            elif message.type == ServerMessageType.SKILLS_UPDATED:
+                self._apply_skills_updated(message.payload)
             elif message.type == ServerMessageType.ENTITY_REMOVED:
                 player_id = message.payload.get("id")
                 if isinstance(player_id, str):
@@ -733,6 +743,15 @@ class GameClient:
         """
         try:
             self.equipment = equipment_from_payload(payload)
+        except ProtocolError:
+            return
+
+    def _apply_skills_updated(self, payload: dict[str, object]) -> None:
+        """
+        Обновляет локальное отображение игровых скиллов из server authoritative payload-а.
+        """
+        try:
+            self.character_skills = skills_from_payload(payload)
         except ProtocolError:
             return
 

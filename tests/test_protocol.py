@@ -19,6 +19,7 @@ from basic_mmo_rpg.domain.equipment import CHEST_SLOT, MAIN_HAND_SLOT, Equipment
 from basic_mmo_rpg.domain.geometry import Vec2
 from basic_mmo_rpg.domain.inventory import FISHING_ROD_ITEM_ID, ItemStack
 from basic_mmo_rpg.domain.movement import MovementIntent, PlayerState
+from basic_mmo_rpg.domain.skills import FISHING_SKILL_ID, CharacterSkill
 from basic_mmo_rpg.shared.protocol import (
     INTERACTION_PRESENTATION_BUBBLE,
     INTERACTION_PRESENTATION_FEED,
@@ -65,6 +66,8 @@ from basic_mmo_rpg.shared.protocol import (
     player_snapshots_from_payload,
     players_from_snapshot_payload,
     respawn_requested_payload,
+    skills_from_payload,
+    skills_updated_payload,
     tile_map_from_payload,
     tile_map_to_payload,
     unequip_item_requested_payload,
@@ -372,6 +375,23 @@ def test_inventory_updated_payload_round_trips_items() -> None:
     payload = inventory_updated_payload([item])
 
     assert inventory_items_from_payload(payload) == [item]
+
+
+def test_skills_updated_payload_round_trips_skills() -> None:
+    """
+    Проверяет, что обновление скиллов сериализуется и валидируется протоколом.
+    """
+    skill = CharacterSkill(
+        skill_id=FISHING_SKILL_ID,
+        display_name="Рыбалка",
+        value_tenths=123,
+    )
+
+    payload = skills_updated_payload([skill])
+
+    assert skills_from_payload(payload) == [skill]
+    with pytest.raises(ProtocolError):
+        skills_from_payload({"skills": [{"skill_id": FISHING_SKILL_ID, "display_name": "x"}]})
 
 
 def test_equipment_payloads_round_trip() -> None:

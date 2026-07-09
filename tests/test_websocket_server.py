@@ -32,6 +32,11 @@ from basic_mmo_rpg.domain.inventory import (
     WOOL_ITEM_ID,
 )
 from basic_mmo_rpg.domain.movement import MovementIntent, PlayerState
+from basic_mmo_rpg.domain.skills import (
+    FISHING_SKILL_ID,
+    LUMBERJACKING_SKILL_ID,
+    MINING_SKILL_ID,
+)
 from basic_mmo_rpg.server.app import MultiplayerServer, PlayerSession
 from basic_mmo_rpg.server.world import MultiplayerWorld
 from basic_mmo_rpg.shared.protocol import (
@@ -55,6 +60,7 @@ from basic_mmo_rpg.shared.protocol import (
     movement_intent_to_payload,
     players_from_snapshot_payload,
     respawn_requested_payload,
+    skills_from_payload,
     unequip_item_requested_payload,
     vendor_buy_requested_payload,
     vendor_window_from_payload,
@@ -723,6 +729,13 @@ def test_websocket_server_fishing_failure_only_sends_result(tmp_path: Path) -> N
     asyncio.run(_fishing_failure_smoke(tmp_path))
 
 
+def test_websocket_server_gathering_can_increase_skill(tmp_path: Path) -> None:
+    """
+    Проверяет, что валидная попытка gathering-а может повысить связанный скилл.
+    """
+    asyncio.run(_gathering_skill_gain_smoke(tmp_path))
+
+
 def test_websocket_server_funday_exchanges_fish_for_gold(tmp_path: Path) -> None:
     """
     Проверяет обмен двух рыб на Gold при взаимодействии с Funday.
@@ -770,6 +783,13 @@ def test_websocket_server_lumberjacking_success_adds_log(tmp_path: Path) -> None
     Проверяет успешную рубку дерева и сохранение бревна в инвентаре.
     """
     asyncio.run(_lumberjacking_success_smoke(tmp_path))
+
+
+def test_websocket_server_lumberjacking_can_add_two_logs(tmp_path: Path) -> None:
+    """
+    Проверяет двойной дроп бревен при высоком Lumberjacking.
+    """
+    asyncio.run(_lumberjacking_double_log_smoke(tmp_path))
 
 
 def test_websocket_server_gathering_busy_state_blocks_controls(
@@ -1820,6 +1840,7 @@ async def _fishing_success_smoke(tmp_path: Path) -> None:
         random_source=random.Random(1),
     )
     multiplayer_server.character_repository.load_or_create("Alice", Vec2(32, 32))
+    _set_gathering_skills(multiplayer_server.character_repository, "Alice", fishing=0)
     multiplayer_server.character_repository.add_item("Alice", FISHING_ROD_ITEM_ID)
     multiplayer_server.character_repository.equip_item("Alice", FISHING_ROD_ITEM_ID)
 
@@ -1867,6 +1888,7 @@ async def _fishing_failure_smoke(tmp_path: Path) -> None:
         random_source=random.Random(0),
     )
     multiplayer_server.character_repository.load_or_create("Alice", Vec2(32, 32))
+    _set_gathering_skills(multiplayer_server.character_repository, "Alice", fishing=0)
     multiplayer_server.character_repository.add_item("Alice", FISHING_ROD_ITEM_ID)
     multiplayer_server.character_repository.equip_item("Alice", FISHING_ROD_ITEM_ID)
 
@@ -1897,6 +1919,56 @@ async def _fishing_failure_smoke(tmp_path: Path) -> None:
     assert multiplayer_server.character_repository.item_quantity("Alice", FISH_ITEM_ID) == 0
 
 
+async def _gathering_skill_gain_smoke(tmp_path: Path) -> None:
+    """
+    Запускает сервер и проверяет рост скилла после валидной попытки добычи.
+    """
+    multiplayer_server = _server_for_test(
+        tmp_path,
+        raw_map=_open_map_with_water(),
+        random_source=random.Random(0),
+    )
+    multiplayer_server.character_repository.load_or_create("Alice", Vec2(32, 32))
+    _set_gathering_skills(multiplayer_server.character_repository, "Alice", fishing=0)
+    multiplayer_server.character_repository.add_item("Alice", FISHING_ROD_ITEM_ID)
+    multiplayer_server.character_repository.equip_item("Alice", FISHING_ROD_ITEM_ID)
+
+    async with _running_test_server(multiplayer_server) as uri, connect(uri) as first_client:
+        await _send_join(first_client, "Alice")
+        first_id = await _recv_player_id(first_client)
+        await _recv_message_type(first_client, ServerMessageType.INVENTORY_UPDATED)
+
+        await first_client.send(
+            encode_message(
+                ProtocolMessage(
+                    type=ClientMessageType.INTERACT_REQUESTED,
+                    payload=interact_tile_requested_payload(2, 1),
+                )
+            )
+        )
+        result_message = await _recv_message_type(
+            first_client,
+            ServerMessageType.INTERACTION_RESULT,
+        )
+        skills_message = await _recv_message_type(
+            first_client,
+            ServerMessageType.SKILLS_UPDATED,
+        )
+        gain_message = await _recv_message_type(
+            first_client,
+            ServerMessageType.INTERACTION_RESULT,
+        )
+
+    skills = skills_from_payload(skills_message.payload)
+    fishing = next(skill for skill in skills if skill.skill_id == FISHING_SKILL_ID)
+    assert result_message.payload["actor_id"] == first_id
+    assert result_message.payload["text"] == "Рыба сорвалась"
+    assert fishing.value_tenths == 1
+    assert gain_message.payload["target_id"] == first_id
+    assert gain_message.payload["text"] == "Рыбалка повысилась до 0.1%"
+    assert multiplayer_server.character_repository.skill_value("Alice", FISHING_SKILL_ID) == 1
+
+
 async def _funday_exchange_smoke(tmp_path: Path) -> None:
     """
     Запускает сервер и проверяет сдачу двух рыб NPC Funday.
@@ -1906,6 +1978,7 @@ async def _funday_exchange_smoke(tmp_path: Path) -> None:
         raw_map=_open_map_with_entities(npc_position=[64, 32]),
     )
     multiplayer_server.character_repository.load_or_create("Alice", Vec2(32, 32))
+    _set_gathering_skills(multiplayer_server.character_repository, "Alice", fishing=0)
     multiplayer_server.character_repository.add_item("Alice", FISHING_ROD_ITEM_ID)
     multiplayer_server.character_repository.add_item("Alice", FISH_ITEM_ID, quantity=2)
 
@@ -2001,6 +2074,7 @@ async def _fishing_stack_overflow_smoke(tmp_path: Path) -> None:
         random_source=random.Random(1),
     )
     multiplayer_server.character_repository.load_or_create("Alice", Vec2(32, 32))
+    _set_gathering_skills(multiplayer_server.character_repository, "Alice", fishing=0)
     multiplayer_server.character_repository.add_item("Alice", FISHING_ROD_ITEM_ID)
     multiplayer_server.character_repository.equip_item("Alice", FISHING_ROD_ITEM_ID)
     multiplayer_server.character_repository.add_item("Alice", FISH_ITEM_ID, quantity=999)
@@ -2128,8 +2202,13 @@ async def _lumberjacking_success_smoke(tmp_path: Path) -> None:
     """
     Запускает сервер и проверяет успешное получение бревна из тайла дерева.
     """
-    multiplayer_server = _server_for_test(tmp_path, raw_map=_open_map_with_tree())
+    multiplayer_server = _server_for_test(
+        tmp_path,
+        raw_map=_open_map_with_tree(),
+        random_source=random.Random(1),
+    )
     multiplayer_server.character_repository.load_or_create("Alice", Vec2(32, 32))
+    _set_gathering_skills(multiplayer_server.character_repository, "Alice", lumberjacking=0)
     multiplayer_server.character_repository.add_item("Alice", LUMBER_AXE_ITEM_ID)
     multiplayer_server.character_repository.equip_item("Alice", LUMBER_AXE_ITEM_ID)
 
@@ -2167,6 +2246,55 @@ async def _lumberjacking_success_smoke(tmp_path: Path) -> None:
     assert multiplayer_server.character_repository.item_quantity("Alice", LOG_ITEM_ID) == 1
 
 
+async def _lumberjacking_double_log_smoke(tmp_path: Path) -> None:
+    """
+    Запускает сервер и проверяет получение двух бревен за одну успешную рубку.
+    """
+    multiplayer_server = _server_for_test(
+        tmp_path,
+        raw_map=_open_map_with_tree(),
+        random_source=random.Random(4),
+    )
+    multiplayer_server.character_repository.load_or_create("Alice", Vec2(32, 32))
+    _set_gathering_skills(
+        multiplayer_server.character_repository,
+        "Alice",
+        lumberjacking=400,
+    )
+    multiplayer_server.character_repository.add_item("Alice", LUMBER_AXE_ITEM_ID)
+    multiplayer_server.character_repository.equip_item("Alice", LUMBER_AXE_ITEM_ID)
+
+    async with _running_test_server(multiplayer_server) as uri, connect(uri) as first_client:
+        await _send_join(first_client, "Alice")
+        first_id = await _recv_player_id(first_client)
+        await _recv_message_type(first_client, ServerMessageType.INVENTORY_UPDATED)
+
+        await first_client.send(
+            encode_message(
+                ProtocolMessage(
+                    type=ClientMessageType.INTERACT_REQUESTED,
+                    payload=interact_tile_requested_payload(2, 1),
+                )
+            )
+        )
+        inventory_message = await _recv_message_type(
+            first_client,
+            ServerMessageType.INVENTORY_UPDATED,
+        )
+        result_message = await _recv_message_type(
+            first_client,
+            ServerMessageType.INTERACTION_RESULT,
+        )
+
+    inventory = inventory_items_from_payload(inventory_message.payload)
+    quantities = {item.item_id: item.quantity for item in inventory}
+    assert result_message.payload["actor_id"] == first_id
+    assert result_message.payload["target_id"] == first_id
+    assert result_message.payload["text"] == "Вы нарубили 2 бревна"
+    assert quantities[LOG_ITEM_ID] == 2
+    assert multiplayer_server.character_repository.item_quantity("Alice", LOG_ITEM_ID) == 2
+
+
 async def _gathering_busy_state_blocks_controls_smoke(tmp_path: Path) -> None:
     """
     Запускает сервер и проверяет блокировку команд на время добычи.
@@ -2177,6 +2305,7 @@ async def _gathering_busy_state_blocks_controls_smoke(tmp_path: Path) -> None:
         random_source=random.Random(1),
     )
     multiplayer_server.character_repository.load_or_create("Alice", Vec2(32, 32))
+    _set_gathering_skills(multiplayer_server.character_repository, "Alice", fishing=0)
     multiplayer_server.character_repository.add_item("Alice", FISHING_ROD_ITEM_ID)
     multiplayer_server.character_repository.add_item("Alice", LUMBER_AXE_ITEM_ID)
     multiplayer_server.character_repository.equip_item("Alice", FISHING_ROD_ITEM_ID)
@@ -2402,6 +2531,7 @@ async def _mining_success_smoke(tmp_path: Path) -> None:
         random_source=random.Random(1),
     )
     multiplayer_server.character_repository.load_or_create("Alice", Vec2(32, 32))
+    _set_gathering_skills(multiplayer_server.character_repository, "Alice", mining=0)
     multiplayer_server.character_repository.add_item("Alice", PICKAXE_ITEM_ID)
     multiplayer_server.character_repository.equip_item("Alice", PICKAXE_ITEM_ID)
 
@@ -2446,9 +2576,10 @@ async def _mining_iron_ore_success_smoke(tmp_path: Path) -> None:
     multiplayer_server = _server_for_test(
         tmp_path,
         raw_map=_open_map_with_rock(),
-        random_source=random.Random(5),
+        random_source=random.Random(4),
     )
     multiplayer_server.character_repository.load_or_create("Alice", Vec2(32, 32))
+    _set_gathering_skills(multiplayer_server.character_repository, "Alice", mining=400)
     multiplayer_server.character_repository.add_item("Alice", PICKAXE_ITEM_ID)
     multiplayer_server.character_repository.equip_item("Alice", PICKAXE_ITEM_ID)
 
@@ -2495,6 +2626,7 @@ async def _mining_failure_smoke(tmp_path: Path) -> None:
         random_source=random.Random(0),
     )
     multiplayer_server.character_repository.load_or_create("Alice", Vec2(32, 32))
+    _set_gathering_skills(multiplayer_server.character_repository, "Alice", mining=0)
     multiplayer_server.character_repository.add_item("Alice", PICKAXE_ITEM_ID)
     multiplayer_server.character_repository.equip_item("Alice", PICKAXE_ITEM_ID)
 
@@ -2624,6 +2756,7 @@ async def _forge_smelt_iron_ore_smoke(tmp_path: Path) -> None:
         random_source=random.Random(1),
     )
     multiplayer_server.character_repository.load_or_create("Alice", Vec2(32, 32))
+    _set_gathering_skills(multiplayer_server.character_repository, "Alice")
     multiplayer_server.character_repository.add_item("Alice", IRON_ORE_ITEM_ID, quantity=34)
 
     async with _running_test_server(multiplayer_server) as uri, connect(uri) as first_client:
@@ -2670,6 +2803,7 @@ async def _forge_failed_smelt_loses_ore_smoke(tmp_path: Path) -> None:
         random_source=random.Random(0),
     )
     multiplayer_server.character_repository.load_or_create("Alice", Vec2(32, 32))
+    _set_gathering_skills(multiplayer_server.character_repository, "Alice")
     multiplayer_server.character_repository.add_item("Alice", IRON_ORE_ITEM_ID, quantity=1)
 
     async with _running_test_server(multiplayer_server) as uri, connect(uri) as first_client:
@@ -3043,6 +3177,22 @@ def _server_for_test(
         snapshot_rate=20.0,
         random_source=random_source,
     )
+
+
+def _set_gathering_skills(
+    repository: CharacterRepository,
+    name: str,
+    *,
+    mining: int = 0,
+    lumberjacking: int = 0,
+    fishing: int = 0,
+) -> None:
+    """
+    Фиксирует значения gathering-скиллов для детерминированных websocket-тестов.
+    """
+    repository.set_skill_value(name, MINING_SKILL_ID, mining)
+    repository.set_skill_value(name, LUMBERJACKING_SKILL_ID, lumberjacking)
+    repository.set_skill_value(name, FISHING_SKILL_ID, fishing)
 
 
 class _FailingWebSocket:
