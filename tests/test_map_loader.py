@@ -26,6 +26,24 @@ def test_starter_map_loads() -> None:
     assert wooden_floor.name == "wooden floor"
     assert not wooden_floor.solid
     assert wooden_floor.color == (120, 98, 72)
+    assert tile_map.definitions["#"].sprites == (
+        "tiles/wall_00.png",
+        "tiles/wall_01.png",
+        "tiles/wall_02.png",
+        "tiles/wall_03.png",
+        "tiles/wall_04.png",
+        "tiles/wall_05.png",
+        "tiles/wall_06.png",
+        "tiles/wall_07.png",
+        "tiles/wall_08.png",
+        "tiles/wall_09.png",
+        "tiles/wall_10.png",
+        "tiles/wall_11.png",
+        "tiles/wall_12.png",
+        "tiles/wall_13.png",
+        "tiles/wall_14.png",
+        "tiles/wall_15.png",
+    )
     assert tile_map.definitions["T"].sprites == (
         "tiles/tree_deciduous_1.png",
         "tiles/tree_deciduous_2.png",

@@ -193,7 +193,7 @@ class MapEditorRenderer:
                 sprites = self.tile_sprites.get(tile_key, ())
                 if not sprites:
                     continue
-                sprite_index = self._sprite_index_for_tile(sprites, tile_x, tile_y)
+                sprite_index = self._sprite_index_for_tile(tile_key, sprites, tile_x, tile_y)
                 sprite = sprites[sprite_index]
                 sprite_offsets = self.tile_sprite_offsets.get(tile_key, ())
                 offset_x, offset_y = sprite_offsets[sprite_index]
@@ -555,6 +555,7 @@ class MapEditorRenderer:
 
     def _sprite_index_for_tile(
         self,
+        tile_key: str,
         sprites: Sequence[pygame.Surface],
         tile_x: int,
         tile_y: int,
@@ -562,7 +563,32 @@ class MapEditorRenderer:
         """
         Выбирает стабильный вариант спрайта по координатам тайла.
         """
+        if self.state.definitions[tile_key].name == "stone wall" and len(sprites) >= 16:
+            return self._wall_sprite_mask(tile_x, tile_y)
         return (tile_x * 73856093 ^ tile_y * 19349663) % len(sprites)
+
+    def _wall_sprite_mask(self, tile_x: int, tile_y: int) -> int:
+        """
+        Выбирает wall-вариант по соседям: N=1, E=2, S=4, W=8.
+        """
+        mask = 0
+        for bit, offset_x, offset_y in (
+            (1, 0, -1),
+            (2, 1, 0),
+            (4, 0, 1),
+            (8, -1, 0),
+        ):
+            neighbor_x = tile_x + offset_x
+            neighbor_y = tile_y + offset_y
+            if self._is_connected_wall_neighbor(neighbor_x, neighbor_y):
+                mask |= bit
+        return mask
+
+    def _is_connected_wall_neighbor(self, tile_x: int, tile_y: int) -> bool:
+        if not self.state.in_bounds(tile_x, tile_y):
+            return False
+        tile_key = self.state.tile_at(tile_x, tile_y)
+        return self.state.definitions[tile_key].name == "stone wall"
 
     def _scaled_sprite(self, sprite: pygame.Surface) -> pygame.Surface:
         if self.viewport.zoom == 1.0:

@@ -79,6 +79,10 @@ SLOT_BORDER = (92, 104, 118)
 EQUIPPED_BORDER = (225, 198, 104)
 DISABLED_SLOT_BACKGROUND = (31, 34, 39)
 TILE_SPRITE_ROOT = Path(__file__).resolve().parents[3] / "assets" / "sprites"
+ENTITY_SPRITE_ROOT = TILE_SPRITE_ROOT / "entities"
+ENTITY_SPRITE_PATHS = {
+    "training_dummy": "training_dummy.png",
+}
 
 
 class Renderer:
@@ -102,6 +106,10 @@ class Renderer:
         self.tile_sprite_offsets = {
             key: self._tile_sprite_offsets_for_definition(definition)
             for key, definition in tile_map.definitions.items()
+        }
+        self.entity_sprites = {
+            visual: self._load_entity_sprite(sprite_path)
+            for visual, sprite_path in ENTITY_SPRITE_PATHS.items()
         }
         self.font = pygame.font.SysFont("arial", 18)
         self.small_font = pygame.font.SysFont("arial", 15)
@@ -315,7 +323,7 @@ class Renderer:
                 sprites = self.tile_sprites.get(tile_key, ())
                 if not sprites:
                     continue
-                sprite_index = self._sprite_index_for_tile(sprites, tile_x, tile_y)
+                sprite_index = self._sprite_index_for_tile(tile_key, sprites, tile_x, tile_y)
                 sprite = sprites[sprite_index]
                 sprite_offsets = self.tile_sprite_offsets.get(tile_key, ())
                 offset_x, offset_y = sprite_offsets[sprite_index]
@@ -436,6 +444,17 @@ class Renderer:
             return
         if entity.kind == EntityKind.CREATURE:
             self._draw_creature(screen, body, entity, outline_color)
+            self._draw_health_bar(screen, body, entity, selected or attack_hovered)
+            if selected:
+                self._draw_target_crosshair(screen, body)
+            return
+        if entity.visual == "training_dummy" and self._draw_entity_sprite(
+            screen,
+            body,
+            entity.visual,
+            outline_color,
+            hovered or attack_hovered,
+        ):
             self._draw_health_bar(screen, body, entity, selected or attack_hovered)
             if selected:
                 self._draw_target_crosshair(screen, body)
@@ -682,6 +701,27 @@ class Renderer:
         pygame.draw.rect(screen, DUMMY_WOOD, arms, border_radius=2)
         pygame.draw.rect(screen, DUMMY_CLOTH, torso, border_radius=2)
         pygame.draw.rect(screen, DUMMY_BASE, base, border_radius=2)
+
+    def _draw_entity_sprite(
+        self,
+        screen: pygame.Surface,
+        body: pygame.Rect,
+        visual: str,
+        outline_color: tuple[int, int, int],
+        highlighted: bool,
+    ) -> bool:
+        """
+        Рисует PNG-спрайт world-entity, привязанный нижним центром к body.
+        """
+        sprite = self.entity_sprites.get(visual)
+        if sprite is None:
+            return False
+        sprite_x = body.centerx - sprite.get_width() // 2
+        sprite_y = body.bottom - sprite.get_height()
+        if highlighted:
+            pygame.draw.rect(screen, outline_color, body.inflate(6, 6), width=2, border_radius=3)
+        screen.blit(sprite, (sprite_x, sprite_y))
+        return True
 
     def _draw_floating_texts(
         self,
@@ -1479,6 +1519,16 @@ class Renderer:
                 continue
         return tuple(sprites)
 
+    def _load_entity_sprite(self, sprite_path: str) -> pygame.Surface | None:
+        """
+        Загружает PNG-спрайт entity.
+        """
+        path = ENTITY_SPRITE_ROOT / sprite_path
+        try:
+            return pygame.image.load(path).convert_alpha()
+        except (FileNotFoundError, pygame.error):
+            return None
+
     def _tile_sprite_offsets_for_definition(
         self,
         definition: TileDefinition,
@@ -1495,6 +1545,7 @@ class Renderer:
 
     def _sprite_index_for_tile(
         self,
+        tile_key: str,
         sprites: Sequence[pygame.Surface],
         tile_x: int,
         tile_y: int,
@@ -1502,4 +1553,29 @@ class Renderer:
         """
         Выбирает индекс варианта спрайта по координатам.
         """
+        if self.tile_map.definitions[tile_key].name == "stone wall" and len(sprites) >= 16:
+            return self._wall_sprite_mask(tile_x, tile_y)
         return (tile_x * 73856093 ^ tile_y * 19349663) % len(sprites)
+
+    def _wall_sprite_mask(self, tile_x: int, tile_y: int) -> int:
+        """
+        Выбирает wall-вариант по соседям: N=1, E=2, S=4, W=8.
+        """
+        mask = 0
+        for bit, offset_x, offset_y in (
+            (1, 0, -1),
+            (2, 1, 0),
+            (4, 0, 1),
+            (8, -1, 0),
+        ):
+            neighbor_x = tile_x + offset_x
+            neighbor_y = tile_y + offset_y
+            if self._is_connected_wall_neighbor(neighbor_x, neighbor_y):
+                mask |= bit
+        return mask
+
+    def _is_connected_wall_neighbor(self, tile_x: int, tile_y: int) -> bool:
+        if not self.tile_map.in_bounds(tile_x, tile_y):
+            return False
+        tile_key = self.tile_map.tile_at(tile_x, tile_y)
+        return self.tile_map.definitions[tile_key].name == "stone wall"

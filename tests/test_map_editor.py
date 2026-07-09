@@ -236,6 +236,24 @@ def test_save_editable_map_preserves_new_tile_metadata(tmp_path: Path) -> None:
         "tiles/tree_conifer_3.png",
         "tiles/tree_conifer_4.png",
     ]
+    assert saved_map["legend"]["#"]["sprites"] == [
+        "tiles/wall_00.png",
+        "tiles/wall_01.png",
+        "tiles/wall_02.png",
+        "tiles/wall_03.png",
+        "tiles/wall_04.png",
+        "tiles/wall_05.png",
+        "tiles/wall_06.png",
+        "tiles/wall_07.png",
+        "tiles/wall_08.png",
+        "tiles/wall_09.png",
+        "tiles/wall_10.png",
+        "tiles/wall_11.png",
+        "tiles/wall_12.png",
+        "tiles/wall_13.png",
+        "tiles/wall_14.png",
+        "tiles/wall_15.png",
+    ]
     assert saved_map["legend"]["T"]["collision_rect"] == [9, 18, 14, 14]
     assert saved_map["legend"]["R"]["sprites"] == [
         "tiles/rock_1.png",
@@ -271,6 +289,8 @@ def test_map_editor_renderer_loads_new_tile_sprites_without_window(
 
         renderer.draw(screen, hovered_tile=(1, 1))
 
+        assert len(renderer.tile_sprites["#"]) == 16
+        assert renderer._sprite_index_for_tile("#", renderer.tile_sprites["#"], 0, 0) == 6
         assert len(renderer.tile_sprites["T"]) == 8
         assert len(renderer.tile_sprites["R"]) == 3
         assert len(renderer.tile_sprites["C"]) == 1
@@ -319,6 +339,24 @@ def test_create_empty_map_from_template_writes_valid_map(tmp_path: Path) -> None
     assert raw_map["legend"]["W"]["name"] == "wooden floor"
     assert raw_map["legend"]["W"]["solid"] is False
     assert raw_map["legend"]["W"]["color"] == [120, 98, 72]
+    assert raw_map["legend"]["#"]["sprites"] == [
+        "tiles/wall_00.png",
+        "tiles/wall_01.png",
+        "tiles/wall_02.png",
+        "tiles/wall_03.png",
+        "tiles/wall_04.png",
+        "tiles/wall_05.png",
+        "tiles/wall_06.png",
+        "tiles/wall_07.png",
+        "tiles/wall_08.png",
+        "tiles/wall_09.png",
+        "tiles/wall_10.png",
+        "tiles/wall_11.png",
+        "tiles/wall_12.png",
+        "tiles/wall_13.png",
+        "tiles/wall_14.png",
+        "tiles/wall_15.png",
+    ]
     assert raw_map["legend"]["T"]["collision_rect"] == [9, 18, 14, 14]
     assert raw_map["legend"]["R"]["collision_rect"] == [5, 8, 22, 20]
     assert raw_map["legend"]["C"]["name"] == "cave wall"
