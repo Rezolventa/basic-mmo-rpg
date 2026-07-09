@@ -5,12 +5,14 @@ from dataclasses import replace
 
 from basic_mmo_rpg.domain.geometry import Vec2
 from basic_mmo_rpg.domain.inventory import LEATHER_ITEM_ID
-from basic_mmo_rpg.domain.movement import MovementIntent
+from basic_mmo_rpg.domain.movement import MovementIntent, PlayerState
 from basic_mmo_rpg.server.world import (
     CREATURE_COOLDOWN_JITTER_FRACTION,
     CREATURE_COOLDOWN_SECONDS,
     CREATURE_INITIAL_COOLDOWN_MAX_FRACTION,
+    CREATURE_LEASH_DISTANCE,
     CREATURE_MOVE_SECONDS,
+    CREATURE_RETURN_MOVE_SECONDS,
     MultiplayerWorld,
 )
 from basic_mmo_rpg.shared.protocol import (
@@ -544,6 +546,55 @@ def test_world_returns_neutral_creature_after_leash_distance() -> None:
     assert reserved_step == expected_step
     assert returned_sheep is not None
     assert returned_sheep.position == expected_step
+
+
+def test_world_ignores_reaggro_while_creature_returns_home() -> None:
+    """
+    Проверяет, что leash-возврат не сбивается повторным aggro после удара.
+    """
+    world = MultiplayerWorld(tile_map=tile_map_from_dict(_open_map_with_boar_and_respawn_cross()))
+    boar = world.get_entity("creature-boar")
+    assert boar is not None
+    motion = world.creature_motions[boar.entity_id]
+    displaced_position = Vec2(boar.position.x + world.tile_map.tile_size * 2, boar.position.y)
+    world.entity_states[boar.entity_id] = replace(
+        boar,
+        body=replace(boar.body, position=displaced_position),
+    )
+    world.add_player_state(
+        "p1",
+        "Alice",
+        PlayerState(
+            entity_id="p1",
+            position=Vec2(
+                motion.home_position.x + CREATURE_LEASH_DISTANCE + world.tile_map.tile_size,
+                motion.home_position.y,
+            ),
+        ),
+    )
+
+    world.aggro_creature(boar.entity_id, "p1")
+    world.tick(0.1)
+    first_return_step = Vec2(
+        displaced_position.x - world.tile_map.tile_size,
+        displaced_position.y,
+    )
+    assert motion.aggro_target_id is None
+    assert motion.returning_home is True
+    assert motion.target_position == first_return_step
+
+    world.tick(CREATURE_RETURN_MOVE_SECONDS)
+    stepped_boar = world.get_entity(boar.entity_id)
+    assert stepped_boar is not None
+    assert stepped_boar.position == first_return_step
+    assert motion.returning_home is True
+
+    world.aggro_creature(boar.entity_id, "p1")
+    world.tick(0.1)
+
+    assert motion.aggro_target_id is None
+    assert motion.returning_home is True
+    assert motion.target_position == motion.home_position
 
 
 def test_world_keeps_creature_in_place_when_target_is_blocked() -> None:

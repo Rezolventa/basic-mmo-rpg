@@ -292,6 +292,8 @@ class MultiplayerWorld:
             return
         if not entity.visible or not entity.is_attackable or not player.is_alive:
             return
+        if motion.returning_home and not self._is_creature_at_home(entity, motion):
+            return
         motion.aggro_target_id = player_id
         motion.returning_home = False
 
