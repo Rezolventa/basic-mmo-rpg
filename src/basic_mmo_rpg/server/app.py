@@ -8,6 +8,7 @@ import math
 import random
 import time
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from pathlib import Path
 
@@ -21,6 +22,8 @@ from basic_mmo_rpg.domain.equipment import (
     EquipmentError,
 )
 from basic_mmo_rpg.domain.inventory import (
+    BANDAGE_ITEM_ID,
+    CLOTH_ITEM_ID,
     FISH_ITEM_ID,
     FISHING_ROD_ITEM_ID,
     GOLD_ITEM_ID,
@@ -42,17 +45,24 @@ from basic_mmo_rpg.domain.inventory import (
 from basic_mmo_rpg.domain.movement import PlayerState
 from basic_mmo_rpg.domain.skills import (
     FISHING_SKILL_ID,
+    HEALING_SKILL_ID,
     LUMBERJACKING_SKILL_ID,
     MINING_SKILL_ID,
+    TAILORING_SKILL_ID,
     CharacterSkill,
     fishing_action_seconds,
     fishing_success_chance,
     format_skill_percent,
+    healing_action_seconds,
+    healing_max_points,
+    healing_min_points,
+    healing_success_chance,
     lumberjacking_double_log_chance,
     lumberjacking_success_chance,
     mining_iron_ore_chance,
     mining_success_chance,
     skill_gain_chance,
+    tailoring_cloth_success_chance,
 )
 from basic_mmo_rpg.server.world import MultiplayerWorld
 from basic_mmo_rpg.shared.protocol import (
@@ -115,10 +125,18 @@ FORGE_REQUIRED_IRON_ORE = 1
 FORGE_SMELTING_SUCCESS_CHANCE = 0.8
 ANVIL_ENTITY_ID = "object-anvil"
 ANVIL_REQUIRED_IRON_INGOTS = 35
+SPINNING_WHEEL_ENTITY_ID = "object-spinning-wheel"
+SPINNING_WHEEL_REQUIRED_WOOL = 1
+SPINNING_WHEEL_CLOTH_REWARD = 4
+SPINNING_WHEEL_REQUIRED_CLOTH = 1
+SPINNING_WHEEL_BANDAGE_REWARD = 1
 FOGU_REQUIRED_WOOL = 1
 FOGU_GOLD_REWARD = 1
 WOOL_REGROW_SECONDS = 30.0
 INVENTORY_FULL_TEXT = "Инвентарь полон"
+BANDAGE_NO_ITEM_TEXT = "Нет бинтов"
+BANDAGE_FULL_HEALTH_TEXT = "Вы не ранены"
+BANDAGE_FAILURE_TEXT = "Перевязка не удалась"
 ATTACK_DISTANCE = 64.0
 ATTACK_HIT_CHANCE = 0.85
 UNARMED_MIN_DAMAGE = 1
@@ -196,6 +214,18 @@ class PendingGatheringAction:
 
 
 @dataclass(frozen=True, slots=True)
+class PendingBandageAction:
+    """
+    Хранит запланированное server-authoritative применение бинта.
+    """
+
+    session_id: str
+    player_id: str
+    character_name: str
+    completes_at: float
+
+
+@dataclass(frozen=True, slots=True)
 class WeaponCombatRule:
     """
     Описывает server-authoritative параметры удара оружием.
@@ -263,6 +293,9 @@ class CraftingRecipeDefinition:
     consume_cost_on_failure: bool = False
     result_presentation: str = INTERACTION_PRESENTATION_FEED
     result_targets_player: bool = False
+    skill_id: str | None = None
+    success_chance_for_skill: Callable[[int], float] | None = None
+    improves_skill: bool = False
 
 
 OPTION_KIND_ACTION = "action"
@@ -427,6 +460,35 @@ CRAFTING_STATION_RECIPES: dict[str, tuple[CraftingRecipeDefinition, ...]] = {
             success_text="Вы выковали Железную кирасу",
         ),
     ),
+    SPINNING_WHEEL_ENTITY_ID: (
+        CraftingRecipeDefinition(
+            recipe_id="spin_wool_cloth",
+            option_id="craft:spin_wool_cloth",
+            cost_item_id=WOOL_ITEM_ID,
+            cost_quantity=SPINNING_WHEEL_REQUIRED_WOOL,
+            reward_item_id=CLOTH_ITEM_ID,
+            reward_quantity=SPINNING_WHEEL_CLOTH_REWARD,
+            success_text="Вы соткали ткань",
+            failure_text="Шерсть испортилась",
+            consume_cost_on_failure=True,
+            result_presentation=INTERACTION_PRESENTATION_FEED,
+            result_targets_player=True,
+            skill_id=TAILORING_SKILL_ID,
+            success_chance_for_skill=tailoring_cloth_success_chance,
+            improves_skill=True,
+        ),
+        CraftingRecipeDefinition(
+            recipe_id="craft_bandage",
+            option_id="craft:craft_bandage",
+            cost_item_id=CLOTH_ITEM_ID,
+            cost_quantity=SPINNING_WHEEL_REQUIRED_CLOTH,
+            reward_item_id=BANDAGE_ITEM_ID,
+            reward_quantity=SPINNING_WHEEL_BANDAGE_REWARD,
+            success_text="Вы сделали бинт",
+            result_presentation=INTERACTION_PRESENTATION_FEED,
+            result_targets_player=True,
+        ),
+    ),
 }
 
 UNARMED_COMBAT_RULE = WeaponCombatRule(
@@ -470,6 +532,7 @@ class MultiplayerServer:
         self.sessions: dict[str, PlayerSession] = {}
         self.active_character_sessions: dict[str, str] = {}
         self.pending_gathering_actions: dict[str, PendingGatheringAction] = {}
+        self.pending_bandage_actions: dict[str, PendingBandageAction] = {}
         self.combat_targets: dict[str, str] = {}
         self.next_combat_swing_at: dict[str, float] = {}
         self.enemy_damage_totals: dict[str, dict[str, int]] = {}
@@ -627,6 +690,7 @@ class MultiplayerServer:
         Удаляет runtime-состояние активной сессии из сервера и мира.
         """
         self.pending_gathering_actions.pop(session.player_id, None)
+        self.pending_bandage_actions.pop(session.player_id, None)
         self.world.remove_player(session.player_id)
         self.connections.pop(session.player_id, None)
         self.combat_targets.pop(session.player_id, None)
@@ -685,6 +749,12 @@ class MultiplayerServer:
                 await self._handle_chat_message(session, message.payload)
             elif self._is_player_busy(session.player_id):
                 return
+            elif message.type == ClientMessageType.ATTACK_REQUESTED:
+                await self._handle_attack_request(session, message.payload)
+            elif message.type == ClientMessageType.STOP_ATTACK_REQUESTED:
+                self._stop_attack(session)
+            elif self._is_player_bandaging(session.player_id):
+                return
             elif message.type == ClientMessageType.INTERACT_REQUESTED:
                 await self._handle_interaction(session, message.payload)
             elif message.type == ClientMessageType.INTERACTION_OPTION_SELECTED:
@@ -695,12 +765,10 @@ class MultiplayerServer:
                 await self._handle_unequip_item(session, message.payload)
             elif message.type == ClientMessageType.VENDOR_BUY_REQUESTED:
                 await self._handle_vendor_buy_request(session, message.payload)
-            elif message.type == ClientMessageType.ATTACK_REQUESTED:
-                await self._handle_attack_request(session, message.payload)
-            elif message.type == ClientMessageType.STOP_ATTACK_REQUESTED:
-                self._stop_attack(session)
             elif message.type == ClientMessageType.RESPAWN_REQUESTED:
                 await self._handle_respawn_request(session)
+            elif message.type == ClientMessageType.APPLY_BANDAGE_REQUESTED:
+                await self._handle_apply_bandage_request(session)
         except (ProtocolError, UnicodeDecodeError) as exc:
             await self._send_error(session.player_id, str(exc))
             logger.warning("Protocol error from %s: %s", session.character_name, exc)
@@ -744,6 +812,52 @@ class MultiplayerServer:
         self.combat_targets.pop(session.player_id, None)
         self.next_combat_swing_at.pop(session.player_id, None)
         logger.info("Attack stopped: name=%s", session.character_name)
+
+    async def _handle_apply_bandage_request(self, session: PlayerSession) -> None:
+        """
+        Запускает применение бинта без блокировки движения персонажа.
+        """
+        player = self.world.players.get(session.player_id)
+        if player is None or not player.is_alive:
+            return
+        if session.player_id in self.pending_bandage_actions:
+            return
+        if self.character_repository.item_quantity(session.character_name, BANDAGE_ITEM_ID) <= 0:
+            await self._send_interaction_result(
+                session=session,
+                target_id=session.player_id,
+                target_name=session.character_name,
+                text=BANDAGE_NO_ITEM_TEXT,
+                presentation=INTERACTION_PRESENTATION_FEED,
+            )
+            return
+        if player.hit_points >= player.max_hit_points:
+            await self._send_interaction_result(
+                session=session,
+                target_id=session.player_id,
+                target_name=session.character_name,
+                text=BANDAGE_FULL_HEALTH_TEXT,
+                presentation=INTERACTION_PRESENTATION_FEED,
+            )
+            return
+
+        inventory = self.character_repository.remove_item(
+            session.character_name,
+            BANDAGE_ITEM_ID,
+        )
+        skill_value = self.character_repository.skill_value(
+            session.character_name,
+            HEALING_SKILL_ID,
+        )
+        self.pending_bandage_actions[session.player_id] = PendingBandageAction(
+            session_id=session.session_id,
+            player_id=session.player_id,
+            character_name=session.character_name,
+            completes_at=time.monotonic() + healing_action_seconds(skill_value),
+        )
+        self._reset_combat_swing_for_bandage(session.player_id)
+        await self._send_inventory_update(session, inventory)
+        logger.info("Bandage started: name=%s", session.character_name)
 
     async def _handle_respawn_request(self, session: PlayerSession) -> None:
         """
@@ -1308,13 +1422,21 @@ class MultiplayerServer:
         recipe = self._crafting_recipe_definition(entity.entity_id, option_id)
         if recipe is None:
             return
-
         if (
-            recipe.success_chance < 1.0
-            and self.random.random() >= recipe.success_chance
+            self.character_repository.item_quantity(session.character_name, recipe.cost_item_id)
+            < recipe.cost_quantity
+        ):
+            return
+
+        success_chance = self._crafting_recipe_success_chance(session, recipe)
+        if (
+            success_chance < 1.0
+            and self.random.random() >= success_chance
             and recipe.consume_cost_on_failure
         ):
             await self._handle_failed_consuming_crafting_attempt(session, entity, recipe)
+            if recipe.improves_skill and recipe.skill_id is not None:
+                await self._try_improve_skill(session, recipe.skill_id)
             return
 
         try:
@@ -1345,6 +1467,8 @@ class MultiplayerServer:
         )
         await self._send_crafting_result(session, entity, recipe, recipe.success_text)
         await self._send_inventory_update(session, inventory)
+        if recipe.improves_skill and recipe.skill_id is not None:
+            await self._try_improve_skill(session, recipe.skill_id)
 
     async def _handle_failed_consuming_crafting_attempt(
         self,
@@ -1405,6 +1529,22 @@ class MultiplayerServer:
             if recipe.option_id == option_id:
                 return recipe
         return None
+
+    def _crafting_recipe_success_chance(
+        self,
+        session: PlayerSession,
+        recipe: CraftingRecipeDefinition,
+    ) -> float:
+        """
+        Возвращает шанс успеха рецепта с учетом привязанного скилла.
+        """
+        if recipe.skill_id is None or recipe.success_chance_for_skill is None:
+            return recipe.success_chance
+        skill_value = self.character_repository.skill_value(
+            session.character_name,
+            recipe.skill_id,
+        )
+        return recipe.success_chance_for_skill(skill_value)
 
     async def _handle_vendor_buy_request(
         self,
@@ -1826,8 +1966,77 @@ class MultiplayerServer:
             ):
                 await self._complete_gathering_action(session, action)
             self.world.clear_player_action(player_id)
+        for player_id, bandage_action in list(self.pending_bandage_actions.items()):
+            if now < bandage_action.completes_at:
+                continue
+            self.pending_bandage_actions.pop(player_id, None)
+            session = self.sessions.get(bandage_action.session_id)
+            if (
+                session is not None
+                and session.player_id == bandage_action.player_id
+                and session.character_name == bandage_action.character_name
+            ):
+                snapshot_needed = (
+                    await self._complete_bandage_action(session, now)
+                    or snapshot_needed
+                )
         if snapshot_needed:
             await self._broadcast_snapshot()
+
+    async def _complete_bandage_action(
+        self,
+        session: PlayerSession,
+        now: float,
+    ) -> bool:
+        """
+        Завершает применение бинта и возобновляет отсчет следующего удара.
+        """
+        player = self.world.players.get(session.player_id)
+        if player is None or not player.is_alive:
+            return False
+
+        skill_value = self.character_repository.skill_value(
+            session.character_name,
+            HEALING_SKILL_ID,
+        )
+        snapshot_needed = False
+        if self.random.random() < healing_success_chance(skill_value):
+            heal_amount = self.random.randint(
+                healing_min_points(skill_value),
+                healing_max_points(skill_value),
+            )
+            heal_result = self.world.heal_player(session.player_id, heal_amount)
+            if heal_result is not None:
+                _, healed = heal_result
+                if healed > 0:
+                    snapshot_needed = True
+                    await self._send_interaction_result(
+                        session=session,
+                        target_id=session.player_id,
+                        target_name=session.character_name,
+                        text=f"вылечил +{healed} бинтом",
+                        presentation=INTERACTION_PRESENTATION_FEED,
+                    )
+                else:
+                    await self._send_interaction_result(
+                        session=session,
+                        target_id=session.player_id,
+                        target_name=session.character_name,
+                        text=BANDAGE_FULL_HEALTH_TEXT,
+                        presentation=INTERACTION_PRESENTATION_FEED,
+                    )
+        else:
+            await self._send_interaction_result(
+                session=session,
+                target_id=session.player_id,
+                target_name=session.character_name,
+                text=BANDAGE_FAILURE_TEXT,
+                presentation=INTERACTION_PRESENTATION_FEED,
+            )
+
+        await self._try_improve_skill(session, HEALING_SKILL_ID)
+        self._resume_combat_swing_after_bandage(session, now)
+        return snapshot_needed
 
     async def _complete_gathering_action(
         self,
@@ -2104,6 +2313,8 @@ class MultiplayerServer:
             if not self._can_player_act(session.player_id):
                 self._stop_attack(session)
                 continue
+            if self._is_player_bandaging(session.player_id):
+                continue
 
             target_id = self.combat_targets.get(session.player_id)
             if target_id is None:
@@ -2291,6 +2502,12 @@ class MultiplayerServer:
         player = self.world.players.get(player_id)
         return player is not None and player.busy
 
+    def _is_player_bandaging(self, player_id: str) -> bool:
+        """
+        Проверяет, идет ли у персонажа отложенное применение бинта.
+        """
+        return player_id in self.pending_bandage_actions
+
     def _can_player_act(self, player_id: str) -> bool:
         """
         Проверяет, может ли персонаж принимать новые gameplay-команды.
@@ -2303,7 +2520,29 @@ class MultiplayerServer:
         Сбрасывает блокирующее действие персонажа и связанные pending-операции.
         """
         self.pending_gathering_actions.pop(player_id, None)
+        self.pending_bandage_actions.pop(player_id, None)
         self.world.clear_player_action(player_id)
+
+    def _reset_combat_swing_for_bandage(self, player_id: str) -> None:
+        """
+        Сбрасывает текущий отсчет удара, пока персонаж применяет бинт.
+        """
+        self.next_combat_swing_at.pop(player_id, None)
+
+    def _resume_combat_swing_after_bandage(
+        self,
+        session: PlayerSession,
+        now: float,
+    ) -> None:
+        """
+        Запускает новый полный отсчет удара после завершения перевязки.
+        """
+        if session.player_id not in self.combat_targets:
+            return
+        if not self._can_player_act(session.player_id):
+            return
+        rule = self._combat_rule_for_character(session.character_name)
+        self.next_combat_swing_at[session.player_id] = now + rule.swing_cooldown_seconds
 
     def _session_for_player_id(self, player_id: str) -> PlayerSession | None:
         """

@@ -167,6 +167,7 @@ class GameClient:
         self.chat_input_text = ""
         self.chat_journal_visible = False
         self.inventory_visible = False
+        self.hotkey_help_visible = False
         self.inventory_items: list[ItemStack] = []
         self.equipment = Equipment()
         self.skills_visible = False
@@ -264,6 +265,7 @@ class GameClient:
             inventory_visible=self.inventory_visible,
             character_skills=self.character_skills,
             skills_visible=self.skills_visible,
+            hotkey_help_visible=self.hotkey_help_visible,
             interaction_menu=self.interaction_menu,
             vendor_window=self.vendor_window,
             combat_mode_active=self.combat_mode_active,
@@ -287,6 +289,9 @@ class GameClient:
         """
         Обрабатывает нажатие клавиши с учетом режима ввода чата.
         """
+        if event.key == pygame.K_F1:
+            self.hotkey_help_visible = not self.hotkey_help_visible
+            return
         if self.chat_input_active:
             self._handle_chat_input_key(event)
             return
@@ -316,6 +321,8 @@ class GameClient:
             self._toggle_combat_mode()
         elif event.key == pygame.K_f:
             self._send_interaction_under_cursor()
+        elif event.key == pygame.K_h:
+            self.network_client.send_apply_bandage_request()
 
     def _toggle_combat_mode(self) -> None:
         """

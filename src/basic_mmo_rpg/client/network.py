@@ -13,6 +13,7 @@ from basic_mmo_rpg.shared.protocol import (
     ProtocolError,
     ProtocolMessage,
     ServerMessageType,
+    apply_bandage_requested_payload,
     attack_requested_payload,
     chat_sent_payload,
     decode_message,
@@ -198,6 +199,17 @@ class NetworkClient:
             ProtocolMessage(
                 type=ClientMessageType.RESPAWN_REQUESTED,
                 payload=respawn_requested_payload(),
+            )
+        )
+
+    def send_apply_bandage_request(self) -> None:
+        """
+        Ставит запрос применения бинта в очередь отправки на сервер.
+        """
+        self._outgoing.put(
+            ProtocolMessage(
+                type=ClientMessageType.APPLY_BANDAGE_REQUESTED,
+                payload=apply_bandage_requested_payload(),
             )
         )
 

@@ -16,6 +16,8 @@ from basic_mmo_rpg.domain.entities import WorldEntity
 from basic_mmo_rpg.domain.equipment import MAIN_HAND_SLOT, Equipment
 from basic_mmo_rpg.domain.geometry import Vec2
 from basic_mmo_rpg.domain.inventory import (
+    BANDAGE_ITEM_ID,
+    CLOTH_ITEM_ID,
     FISH_ITEM_ID,
     FISHING_ROD_ITEM_ID,
     GOLD_ITEM_ID,
@@ -34,8 +36,10 @@ from basic_mmo_rpg.domain.inventory import (
 from basic_mmo_rpg.domain.movement import MovementIntent, PlayerState
 from basic_mmo_rpg.domain.skills import (
     FISHING_SKILL_ID,
+    HEALING_SKILL_ID,
     LUMBERJACKING_SKILL_ID,
     MINING_SKILL_ID,
+    TAILORING_SKILL_ID,
 )
 from basic_mmo_rpg.server.app import MultiplayerServer, PlayerSession
 from basic_mmo_rpg.server.world import MultiplayerWorld
@@ -44,6 +48,7 @@ from basic_mmo_rpg.shared.protocol import (
     ClientMessageType,
     ProtocolMessage,
     ServerMessageType,
+    apply_bandage_requested_payload,
     attack_requested_payload,
     chat_sent_payload,
     decode_message,
@@ -325,7 +330,7 @@ def _open_map_with_bjorn() -> object:
 
 def _open_map_with_crafting_stations() -> object:
     """
-    Возвращает открытую карту с горном и наковальней рядом со spawn-ом.
+    Возвращает открытую карту со станциями крафта рядом со spawn-ом.
     """
     raw_map: dict[str, object] = {
         "tile_size": 32,
@@ -371,6 +376,25 @@ def _open_map_with_crafting_stations() -> object:
                     "body": {
                         "position": [64, 64],
                         "size": [28, 24],
+                        "solid": True,
+                    },
+                    "interaction": {
+                        "radius": 64,
+                        "dialogue": "",
+                    },
+                },
+            },
+            {
+                "id": "object-spinning-wheel",
+                "components": {
+                    "identity": {
+                        "kind": "object",
+                        "name": "Прядильный станок",
+                        "visual": "spinning_wheel",
+                    },
+                    "body": {
+                        "position": [32, 64],
+                        "size": [28, 28],
                         "solid": True,
                     },
                     "interaction": {
@@ -495,6 +519,71 @@ def _open_map_with_training_dummy() -> object:
             }
         ],
     }
+    return raw_map
+
+
+def _open_map_with_bandage_routing_entities() -> object:
+    """
+    Возвращает карту с целями для проверки routing-а во время перевязки.
+    """
+    raw_map = _open_map_with_training_dummy()
+    assert isinstance(raw_map, dict)
+    entities = raw_map["entities"]
+    assert isinstance(entities, list)
+    entities.extend(
+        [
+            {
+                "id": "lootable-training-dummy-2",
+                "components": {
+                    "identity": {
+                        "kind": "object",
+                        "name": "Второй тренировочный манекен",
+                        "visual": "training_dummy",
+                    },
+                    "body": {
+                        "position": [96, 32],
+                        "size": [24, 34],
+                        "solid": True,
+                    },
+                    "combat": {
+                        "hit_points": 20,
+                        "max_hit_points": 20,
+                        "attackable": True,
+                        "destroyed": False,
+                    },
+                },
+            },
+            {
+                "id": "npc-bjorn",
+                "kind": "npc",
+                "name": "Bjorn",
+                "position": [32, 64],
+                "size": [24, 30],
+                "interaction_radius": 64,
+                "dialogue": "",
+                "solid": True,
+            },
+            {
+                "id": "object-spinning-wheel",
+                "components": {
+                    "identity": {
+                        "kind": "object",
+                        "name": "Прядильный станок",
+                        "visual": "spinning_wheel",
+                    },
+                    "body": {
+                        "position": [64, 64],
+                        "size": [28, 28],
+                        "solid": True,
+                    },
+                    "interaction": {
+                        "radius": 64,
+                        "dialogue": "",
+                    },
+                },
+            },
+        ]
+    )
     return raw_map
 
 
@@ -682,6 +771,27 @@ def test_websocket_server_auto_attacks_training_dummy(tmp_path: Path) -> None:
     Проверяет базовый server-authoritative auto-attack по тренировочному манекену.
     """
     asyncio.run(_auto_attacks_training_dummy_smoke(tmp_path))
+
+
+def test_server_bandage_heals_and_pauses_auto_attack(tmp_path: Path) -> None:
+    """
+    Проверяет применение бинта, лечение и паузу auto-attack.
+    """
+    asyncio.run(_bandage_heals_and_pauses_auto_attack_smoke(tmp_path))
+
+
+def test_server_bandage_rejects_missing_or_full_health(tmp_path: Path) -> None:
+    """
+    Проверяет отказы применения бинта без бинтов и при полном здоровье.
+    """
+    asyncio.run(_bandage_rejects_missing_or_full_health_smoke(tmp_path))
+
+
+def test_server_pending_bandage_routes_only_allowed_messages(tmp_path: Path) -> None:
+    """
+    Проверяет разрешенные и заблокированные команды во время pending-перевязки.
+    """
+    asyncio.run(_pending_bandage_routes_only_allowed_messages_smoke(tmp_path))
 
 
 def test_websocket_server_does_not_send_dummy_destroyed_bubble(tmp_path: Path) -> None:
@@ -931,6 +1041,27 @@ def test_websocket_server_anvil_shows_ingredient_progress(tmp_path: Path) -> Non
     Проверяет отображение прогресса ингредиентов в опции наковальни.
     """
     asyncio.run(_anvil_shows_ingredient_progress_smoke(tmp_path))
+
+
+def test_websocket_server_spinning_wheel_spins_cloth(tmp_path: Path) -> None:
+    """
+    Проверяет крафт ткани из шерсти на прядильном станке.
+    """
+    asyncio.run(_spinning_wheel_spins_cloth_smoke(tmp_path))
+
+
+def test_websocket_server_spinning_wheel_can_lose_wool(tmp_path: Path) -> None:
+    """
+    Проверяет неудачный крафт ткани с потерей шерсти.
+    """
+    asyncio.run(_spinning_wheel_failed_cloth_loses_wool_smoke(tmp_path))
+
+
+def test_websocket_server_spinning_wheel_crafts_bandage(tmp_path: Path) -> None:
+    """
+    Проверяет крафт бинта из ткани на прядильном станке.
+    """
+    asyncio.run(_spinning_wheel_crafts_bandage_smoke(tmp_path))
 
 
 def test_websocket_server_fogu_grants_shears(tmp_path: Path) -> None:
@@ -1505,6 +1636,7 @@ async def _auto_attacks_training_dummy_smoke(tmp_path: Path) -> None:
         random_source=random.Random(0),
     )
     multiplayer_server.character_repository.load_or_create("Alice", Vec2(32, 32))
+    _set_gathering_skills(multiplayer_server.character_repository, "Alice")
     multiplayer_server.character_repository.add_item("Alice", RUSTY_SWORD_ITEM_ID)
     multiplayer_server.character_repository.equip_item("Alice", RUSTY_SWORD_ITEM_ID)
 
@@ -1543,6 +1675,277 @@ async def _auto_attacks_training_dummy_smoke(tmp_path: Path) -> None:
     assert entity.hit_points == 20 - damage
 
 
+async def _bandage_heals_and_pauses_auto_attack_smoke(tmp_path: Path) -> None:
+    """
+    Проверяет delayed-лечение бинтом и перезапуск swing cooldown.
+    """
+    multiplayer_server = _server_for_test(
+        tmp_path,
+        raw_map=_open_map_with_training_dummy(),
+        random_source=random.Random(1),
+    )
+    multiplayer_server.character_repository.load_or_create("Alice", Vec2(32, 32))
+    _set_gathering_skills(multiplayer_server.character_repository, "Alice", healing=400)
+    multiplayer_server.character_repository.add_item("Alice", RUSTY_SWORD_ITEM_ID)
+    multiplayer_server.character_repository.equip_item("Alice", RUSTY_SWORD_ITEM_ID)
+    multiplayer_server.character_repository.add_item("Alice", BANDAGE_ITEM_ID)
+    multiplayer_server.world.add_player("player-1", "Alice", Vec2(32, 32))
+    multiplayer_server.world.damage_player("player-1", 10)
+    recording_websocket = _RecordingWebSocket()
+    session = PlayerSession(
+        session_id="session-1",
+        player_id="player-1",
+        character_name="Alice",
+        websocket=recording_websocket,
+    )
+    multiplayer_server.sessions[session.session_id] = session
+
+    await multiplayer_server._handle_attack_request(
+        session,
+        attack_requested_payload("lootable-training-dummy"),
+    )
+    first_swing_at = multiplayer_server.next_combat_swing_at["player-1"]
+    await multiplayer_server._handle_raw_message(
+        session,
+        encode_message(
+            ProtocolMessage(
+                type=ClientMessageType.APPLY_BANDAGE_REQUESTED,
+                payload=apply_bandage_requested_payload(),
+            )
+        ),
+    )
+
+    assert "player-1" in multiplayer_server.pending_bandage_actions
+    assert "player-1" not in multiplayer_server.next_combat_swing_at
+    assert multiplayer_server.combat_targets["player-1"] == "lootable-training-dummy"
+    assert multiplayer_server.character_repository.item_quantity("Alice", BANDAGE_ITEM_ID) == 0
+
+    recording_websocket.sent_messages.clear()
+    await multiplayer_server._tick_combat(first_swing_at + 10.0)
+    assert recording_websocket.sent_messages == []
+
+    pending = multiplayer_server.pending_bandage_actions["player-1"]
+    await multiplayer_server._tick_player_actions(pending.completes_at)
+    player = multiplayer_server.world.players["player-1"]
+    messages = [decode_message(message) for message in recording_websocket.sent_messages]
+    result_messages = [
+        message
+        for message in messages
+        if message.type == ServerMessageType.INTERACTION_RESULT
+    ]
+
+    assert player.hit_points > 20
+    assert result_messages[0].payload["target_name"] == "Alice"
+    assert str(result_messages[0].payload["text"]).startswith("вылечил +")
+    assert str(result_messages[0].payload["text"]).endswith(" бинтом")
+    next_swing_at = multiplayer_server.next_combat_swing_at["player-1"]
+    assert next_swing_at > pending.completes_at
+
+    recording_websocket.sent_messages.clear()
+    await multiplayer_server._tick_combat(next_swing_at)
+    messages = [decode_message(message) for message in recording_websocket.sent_messages]
+    combat_events = [
+        message for message in messages if message.type == ServerMessageType.COMBAT_EVENT
+    ]
+    assert len(combat_events) == 1
+
+
+async def _bandage_rejects_missing_or_full_health_smoke(tmp_path: Path) -> None:
+    """
+    Проверяет отказы применения бинта без списания предмета.
+    """
+    multiplayer_server = _server_for_test(
+        tmp_path,
+        raw_map=_open_map_with_training_dummy(),
+    )
+    multiplayer_server.character_repository.load_or_create("Alice", Vec2(32, 32))
+    _set_gathering_skills(multiplayer_server.character_repository, "Alice", healing=0)
+    multiplayer_server.world.add_player("player-1", "Alice", Vec2(32, 32))
+    recording_websocket = _RecordingWebSocket()
+    session = PlayerSession(
+        session_id="session-1",
+        player_id="player-1",
+        character_name="Alice",
+        websocket=recording_websocket,
+    )
+    multiplayer_server.sessions[session.session_id] = session
+
+    await multiplayer_server._handle_raw_message(
+        session,
+        encode_message(
+            ProtocolMessage(
+                type=ClientMessageType.APPLY_BANDAGE_REQUESTED,
+                payload=apply_bandage_requested_payload(),
+            )
+        ),
+    )
+    multiplayer_server.character_repository.add_item("Alice", BANDAGE_ITEM_ID)
+    await multiplayer_server._handle_raw_message(
+        session,
+        encode_message(
+            ProtocolMessage(
+                type=ClientMessageType.APPLY_BANDAGE_REQUESTED,
+                payload=apply_bandage_requested_payload(),
+            )
+        ),
+    )
+
+    messages = [decode_message(message) for message in recording_websocket.sent_messages]
+    result_texts = [
+        str(message.payload["text"])
+        for message in messages
+        if message.type == ServerMessageType.INTERACTION_RESULT
+    ]
+    assert result_texts == ["Нет бинтов", "Вы не ранены"]
+    assert multiplayer_server.character_repository.item_quantity("Alice", BANDAGE_ITEM_ID) == 1
+    assert multiplayer_server.pending_bandage_actions == {}
+
+
+async def _pending_bandage_routes_only_allowed_messages_smoke(tmp_path: Path) -> None:
+    """
+    Проверяет контракт router-а сообщений во время применения бинта.
+    """
+    multiplayer_server = _server_for_test(
+        tmp_path,
+        raw_map=_open_map_with_bandage_routing_entities(),
+        random_source=random.Random(1),
+    )
+    multiplayer_server.character_repository.load_or_create("Alice", Vec2(32, 32))
+    _set_gathering_skills(multiplayer_server.character_repository, "Alice", healing=400)
+    multiplayer_server.character_repository.add_item("Alice", BANDAGE_ITEM_ID, quantity=2)
+    multiplayer_server.character_repository.add_item("Alice", FISHING_ROD_ITEM_ID)
+    multiplayer_server.character_repository.equip_item("Alice", FISHING_ROD_ITEM_ID)
+    multiplayer_server.character_repository.add_item("Alice", RUSTY_SWORD_ITEM_ID)
+    multiplayer_server.character_repository.add_item("Alice", CLOTH_ITEM_ID)
+    multiplayer_server.character_repository.add_item("Alice", GOLD_ITEM_ID, quantity=25)
+    multiplayer_server.world.add_player("player-1", "Alice", Vec2(32, 32))
+    multiplayer_server.world.damage_player("player-1", 10)
+    recording_websocket = _RecordingWebSocket()
+    session = PlayerSession(
+        session_id="session-1",
+        player_id="player-1",
+        character_name="Alice",
+        websocket=recording_websocket,
+    )
+    multiplayer_server.sessions[session.session_id] = session
+    multiplayer_server.connections[session.player_id] = recording_websocket
+
+    await multiplayer_server._handle_attack_request(
+        session,
+        attack_requested_payload("lootable-training-dummy"),
+    )
+    await multiplayer_server._handle_raw_message(
+        session,
+        encode_message(
+            ProtocolMessage(
+                type=ClientMessageType.APPLY_BANDAGE_REQUESTED,
+                payload=apply_bandage_requested_payload(),
+            )
+        ),
+    )
+    recording_websocket.sent_messages.clear()
+
+    await multiplayer_server._handle_raw_message(
+        session,
+        encode_message(
+            ProtocolMessage(
+                type=ClientMessageType.MOVE_REQUESTED,
+                payload=movement_intent_to_payload(MovementIntent(right=True)),
+            )
+        ),
+    )
+    assert multiplayer_server.world.intents["player-1"] == MovementIntent(right=True)
+
+    await multiplayer_server._handle_raw_message(
+        session,
+        encode_message(
+            ProtocolMessage(
+                type=ClientMessageType.CHAT_SENT,
+                payload=chat_sent_payload("Перевязываюсь"),
+            )
+        ),
+    )
+    messages = [decode_message(message) for message in recording_websocket.sent_messages]
+    assert any(
+        message.type == ServerMessageType.CHAT_MESSAGE
+        and message.payload["text"] == "Перевязываюсь"
+        for message in messages
+    )
+    recording_websocket.sent_messages.clear()
+
+    await multiplayer_server._handle_raw_message(
+        session,
+        encode_message(
+            ProtocolMessage(
+                type=ClientMessageType.ATTACK_REQUESTED,
+                payload=attack_requested_payload("lootable-training-dummy-2"),
+            )
+        ),
+    )
+    assert multiplayer_server.combat_targets["player-1"] == "lootable-training-dummy-2"
+
+    await multiplayer_server._handle_raw_message(
+        session,
+        encode_message(
+            ProtocolMessage(
+                type=ClientMessageType.STOP_ATTACK_REQUESTED,
+                payload={},
+            )
+        ),
+    )
+    assert "player-1" not in multiplayer_server.combat_targets
+    assert "player-1" not in multiplayer_server.next_combat_swing_at
+
+    blocked_messages = (
+        ProtocolMessage(
+            type=ClientMessageType.APPLY_BANDAGE_REQUESTED,
+            payload=apply_bandage_requested_payload(),
+        ),
+        ProtocolMessage(
+            type=ClientMessageType.INTERACT_REQUESTED,
+            payload=interact_requested_payload("npc-bjorn"),
+        ),
+        ProtocolMessage(
+            type=ClientMessageType.INTERACTION_OPTION_SELECTED,
+            payload=interaction_option_selected_payload("npc-bjorn", "vendor:open"),
+        ),
+        ProtocolMessage(
+            type=ClientMessageType.EQUIP_ITEM_REQUESTED,
+            payload=equip_item_requested_payload(RUSTY_SWORD_ITEM_ID),
+        ),
+        ProtocolMessage(
+            type=ClientMessageType.UNEQUIP_ITEM_REQUESTED,
+            payload=unequip_item_requested_payload(MAIN_HAND_SLOT),
+        ),
+        ProtocolMessage(
+            type=ClientMessageType.VENDOR_BUY_REQUESTED,
+            payload=vendor_buy_requested_payload("npc-bjorn", "iron_chest_armor"),
+        ),
+        ProtocolMessage(
+            type=ClientMessageType.INTERACTION_OPTION_SELECTED,
+            payload=interaction_option_selected_payload(
+                "object-spinning-wheel",
+                "craft:craft_bandage",
+            ),
+        ),
+    )
+    for message in blocked_messages:
+        await multiplayer_server._handle_raw_message(session, encode_message(message))
+
+    assert recording_websocket.sent_messages == []
+    assert multiplayer_server.character_repository.item_quantity("Alice", BANDAGE_ITEM_ID) == 1
+    assert multiplayer_server.character_repository.item_quantity("Alice", CLOTH_ITEM_ID) == 1
+    assert multiplayer_server.character_repository.item_quantity("Alice", GOLD_ITEM_ID) == 25
+    assert (
+        multiplayer_server.character_repository.item_quantity("Alice", IRON_CHEST_ARMOR_ITEM_ID)
+        == 0
+    )
+    assert multiplayer_server.character_repository.load_equipment("Alice") == Equipment(
+        main_hand=FISHING_ROD_ITEM_ID
+    )
+    assert "player-1" in multiplayer_server.pending_bandage_actions
+
+
 async def _dummy_destruction_uses_sprite_only_smoke(tmp_path: Path) -> None:
     """
     Запускает сервер и проверяет, что разрушение манекена показывается спрайтом.
@@ -1566,6 +1969,7 @@ async def _dummy_destruction_uses_sprite_only_smoke(tmp_path: Path) -> None:
         random_source=random.Random(0),
     )
     multiplayer_server.character_repository.load_or_create("Alice", Vec2(32, 32))
+    _set_gathering_skills(multiplayer_server.character_repository, "Alice")
     multiplayer_server.character_repository.add_item("Alice", RUSTY_SWORD_ITEM_ID)
     multiplayer_server.character_repository.equip_item("Alice", RUSTY_SWORD_ITEM_ID)
     multiplayer_server.world.add_player("player-1", "Alice", Vec2(32, 32))
@@ -3067,6 +3471,161 @@ async def _anvil_shows_ingredient_progress_smoke(tmp_path: Path) -> None:
     assert menu.options[0].disabled_reason == "Нужно: Железный слиток 34/35"
 
 
+async def _spinning_wheel_spins_cloth_smoke(tmp_path: Path) -> None:
+    """
+    Запускает сервер и проверяет крафт ткани из шерсти.
+    """
+    multiplayer_server = _server_for_test(
+        tmp_path,
+        raw_map=_open_map_with_crafting_stations(),
+    )
+    multiplayer_server.character_repository.load_or_create("Alice", Vec2(32, 32))
+    _set_gathering_skills(
+        multiplayer_server.character_repository,
+        "Alice",
+        tailoring=400,
+    )
+    multiplayer_server.character_repository.add_item("Alice", WOOL_ITEM_ID, quantity=2)
+
+    async with _running_test_server(multiplayer_server) as uri, connect(uri) as first_client:
+        await _send_join(first_client, "Alice")
+        first_id = await _recv_player_id(first_client)
+        await _recv_message_type(first_client, ServerMessageType.INVENTORY_UPDATED)
+
+        menu = await _open_npc_menu(first_client, "object-spinning-wheel")
+        assert menu.title == "Прядильный станок"
+        assert len(menu.options) == 2
+        assert menu.options[0].option_id == "craft:spin_wool_cloth"
+        assert menu.options[0].label == "Шерсть -> Ткань (2/1)"
+        assert menu.options[0].enabled is True
+        assert menu.options[1].option_id == "craft:craft_bandage"
+        assert menu.options[1].label == "Ткань -> Бинт (0/1)"
+        assert menu.options[1].enabled is False
+        await _select_interaction_option(
+            first_client,
+            "object-spinning-wheel",
+            "craft:spin_wool_cloth",
+        )
+        result_message = await _recv_message_type(
+            first_client,
+            ServerMessageType.INTERACTION_RESULT,
+        )
+        inventory_message = await _recv_message_type(
+            first_client,
+            ServerMessageType.INVENTORY_UPDATED,
+        )
+
+    inventory = inventory_items_from_payload(inventory_message.payload)
+    quantities = {item.item_id: item.quantity for item in inventory}
+    assert result_message.payload["actor_id"] == first_id
+    assert result_message.payload["target_id"] == first_id
+    assert result_message.payload["target_name"] == "Alice"
+    assert result_message.payload["text"] == "Вы соткали ткань"
+    assert result_message.payload["presentation"] == INTERACTION_PRESENTATION_FEED
+    assert quantities[WOOL_ITEM_ID] == 1
+    assert quantities[CLOTH_ITEM_ID] == 4
+    assert multiplayer_server.character_repository.item_quantity("Alice", WOOL_ITEM_ID) == 1
+    assert multiplayer_server.character_repository.item_quantity("Alice", CLOTH_ITEM_ID) == 4
+
+
+async def _spinning_wheel_failed_cloth_loses_wool_smoke(tmp_path: Path) -> None:
+    """
+    Запускает сервер и проверяет неудачную попытку сделать ткань.
+    """
+    multiplayer_server = _server_for_test(
+        tmp_path,
+        raw_map=_open_map_with_crafting_stations(),
+        random_source=random.Random(0),
+    )
+    multiplayer_server.character_repository.load_or_create("Alice", Vec2(32, 32))
+    _set_gathering_skills(multiplayer_server.character_repository, "Alice", tailoring=0)
+    multiplayer_server.character_repository.add_item("Alice", WOOL_ITEM_ID, quantity=1)
+
+    async with _running_test_server(multiplayer_server) as uri, connect(uri) as first_client:
+        await _send_join(first_client, "Alice")
+        first_id = await _recv_player_id(first_client)
+        await _recv_message_type(first_client, ServerMessageType.INVENTORY_UPDATED)
+
+        await _open_npc_menu(first_client, "object-spinning-wheel")
+        await _select_interaction_option(
+            first_client,
+            "object-spinning-wheel",
+            "craft:spin_wool_cloth",
+        )
+        result_message = await _recv_message_type(
+            first_client,
+            ServerMessageType.INTERACTION_RESULT,
+        )
+        inventory_message = await _recv_message_type(
+            first_client,
+            ServerMessageType.INVENTORY_UPDATED,
+        )
+
+    inventory = inventory_items_from_payload(inventory_message.payload)
+    quantities = {item.item_id: item.quantity for item in inventory}
+    assert result_message.payload["actor_id"] == first_id
+    assert result_message.payload["target_id"] == first_id
+    assert result_message.payload["target_name"] == "Alice"
+    assert result_message.payload["text"] == "Шерсть испортилась"
+    assert result_message.payload["presentation"] == INTERACTION_PRESENTATION_FEED
+    assert WOOL_ITEM_ID not in quantities
+    assert CLOTH_ITEM_ID not in quantities
+    assert multiplayer_server.character_repository.item_quantity("Alice", WOOL_ITEM_ID) == 0
+    assert multiplayer_server.character_repository.item_quantity("Alice", CLOTH_ITEM_ID) == 0
+    assert (
+        multiplayer_server.character_repository.skill_value("Alice", TAILORING_SKILL_ID)
+        == 1
+    )
+
+
+async def _spinning_wheel_crafts_bandage_smoke(tmp_path: Path) -> None:
+    """
+    Запускает сервер и проверяет крафт бинта из ткани.
+    """
+    multiplayer_server = _server_for_test(
+        tmp_path,
+        raw_map=_open_map_with_crafting_stations(),
+    )
+    multiplayer_server.character_repository.load_or_create("Alice", Vec2(32, 32))
+    _set_gathering_skills(multiplayer_server.character_repository, "Alice")
+    multiplayer_server.character_repository.add_item("Alice", CLOTH_ITEM_ID, quantity=2)
+
+    async with _running_test_server(multiplayer_server) as uri, connect(uri) as first_client:
+        await _send_join(first_client, "Alice")
+        first_id = await _recv_player_id(first_client)
+        await _recv_message_type(first_client, ServerMessageType.INVENTORY_UPDATED)
+
+        menu = await _open_npc_menu(first_client, "object-spinning-wheel")
+        assert menu.options[1].option_id == "craft:craft_bandage"
+        assert menu.options[1].label == "Ткань -> Бинт (2/1)"
+        assert menu.options[1].enabled is True
+        await _select_interaction_option(
+            first_client,
+            "object-spinning-wheel",
+            "craft:craft_bandage",
+        )
+        result_message = await _recv_message_type(
+            first_client,
+            ServerMessageType.INTERACTION_RESULT,
+        )
+        inventory_message = await _recv_message_type(
+            first_client,
+            ServerMessageType.INVENTORY_UPDATED,
+        )
+
+    inventory = inventory_items_from_payload(inventory_message.payload)
+    quantities = {item.item_id: item.quantity for item in inventory}
+    assert result_message.payload["actor_id"] == first_id
+    assert result_message.payload["target_id"] == first_id
+    assert result_message.payload["target_name"] == "Alice"
+    assert result_message.payload["text"] == "Вы сделали бинт"
+    assert result_message.payload["presentation"] == INTERACTION_PRESENTATION_FEED
+    assert quantities[CLOTH_ITEM_ID] == 1
+    assert quantities[BANDAGE_ITEM_ID] == 1
+    assert multiplayer_server.character_repository.item_quantity("Alice", CLOTH_ITEM_ID) == 1
+    assert multiplayer_server.character_repository.item_quantity("Alice", BANDAGE_ITEM_ID) == 1
+
+
 async def _fogu_grants_shears_smoke(tmp_path: Path) -> None:
     """
     Запускает сервер и проверяет выдачу ножниц NPC Fogu.
@@ -3336,13 +3895,17 @@ def _set_gathering_skills(
     mining: int = 0,
     lumberjacking: int = 0,
     fishing: int = 0,
+    tailoring: int = 0,
+    healing: int = 0,
 ) -> None:
     """
-    Фиксирует значения gathering-скиллов для детерминированных websocket-тестов.
+    Фиксирует значения скиллов для детерминированных websocket-тестов.
     """
     repository.set_skill_value(name, MINING_SKILL_ID, mining)
     repository.set_skill_value(name, LUMBERJACKING_SKILL_ID, lumberjacking)
     repository.set_skill_value(name, FISHING_SKILL_ID, fishing)
+    repository.set_skill_value(name, TAILORING_SKILL_ID, tailoring)
+    repository.set_skill_value(name, HEALING_SKILL_ID, healing)
 
 
 class _FailingWebSocket:

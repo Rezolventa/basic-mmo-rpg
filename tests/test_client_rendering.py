@@ -34,6 +34,8 @@ def test_renderer_loads_tile_sprites_independent_of_cwd(
         assert len(renderer.tile_sprites["T"]) == 8
         assert len(renderer.tile_sprites["R"]) == 3
         assert len(renderer.tile_sprites["C"]) == 1
+        assert renderer.entity_sprites["spinning_wheel"] is not None
+        assert renderer.entity_sprites["spinning_wheel"].get_size() == (32, 32)
         assert renderer.entity_sprites["training_dummy"] is not None
         assert renderer.entity_sprites["training_dummy"].get_size() == (32, 32)
         assert renderer.entity_sprites["training_dummy_broken"] is not None

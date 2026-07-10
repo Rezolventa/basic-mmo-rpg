@@ -34,6 +34,7 @@ from basic_mmo_rpg.shared.protocol import (
     VendorOffer,
     VendorPurchaseRequest,
     VendorWindow,
+    apply_bandage_requested_payload,
     attack_requested_payload,
     attack_target_from_payload,
     character_name_from_payload,
@@ -375,6 +376,7 @@ def test_combat_payloads_are_validated() -> None:
     assert event["add_to_journal"] is True
     assert event["destroyed"] is False
     assert respawn_requested_payload() == {}
+    assert apply_bandage_requested_payload() == {}
     with pytest.raises(ProtocolError):
         attack_target_from_payload({"target_id": ""})
 

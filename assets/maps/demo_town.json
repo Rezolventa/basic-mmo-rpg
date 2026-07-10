@@ -327,8 +327,8 @@
         },
         "body": {
           "position": [
-            1412,
-            865
+            1348,
+            1281
           ],
           "size": [
             24,
@@ -383,6 +383,31 @@
           "size": [
             28,
             24
+          ],
+          "solid": true
+        },
+        "interaction": {
+          "radius": 64,
+          "dialogue": ""
+        }
+      }
+    },
+    {
+      "id": "object-spinning-wheel",
+      "components": {
+        "identity": {
+          "kind": "object",
+          "name": "Прядильный станок",
+          "visual": "spinning_wheel"
+        },
+        "body": {
+          "position": [
+            1346,
+            866
+          ],
+          "size": [
+            28,
+            28
           ],
           "solid": true
         },

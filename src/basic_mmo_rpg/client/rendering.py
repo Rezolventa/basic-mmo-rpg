@@ -56,6 +56,8 @@ FORGE_FIRE = (213, 80, 42)
 FORGE_EMBER = (245, 162, 73)
 ANVIL_BODY = (92, 101, 112)
 ANVIL_TOP = (146, 156, 166)
+SPINNING_WHEEL_WOOD = (137, 93, 56)
+SPINNING_WHEEL_THREAD = (221, 214, 191)
 HOVER_OUTLINE = (238, 216, 112)
 WATER_HOVER_FILL = (112, 190, 235, 70)
 WATER_HOVER_BORDER = (178, 226, 250)
@@ -84,6 +86,7 @@ JOURNAL_PANEL_HEIGHT = 320
 TILE_SPRITE_ROOT = Path(__file__).resolve().parents[3] / "assets" / "sprites"
 ENTITY_SPRITE_ROOT = TILE_SPRITE_ROOT / "entities"
 ENTITY_SPRITE_PATHS = {
+    "spinning_wheel": "spinning_wheel.png",
     "training_dummy": "training_dummy.png",
     "training_dummy_broken": "training_dummy_broken.png",
 }
@@ -141,6 +144,7 @@ class Renderer:
         inventory_visible: bool = False,
         character_skills: Sequence[CharacterSkill] = (),
         skills_visible: bool = False,
+        hotkey_help_visible: bool = False,
         interaction_menu: InteractionMenu | None = None,
         vendor_window: VendorWindow | None = None,
         combat_mode_active: bool = False,
@@ -224,6 +228,8 @@ class Renderer:
             self._draw_chat_input(screen, chat_input_text)
         if system_message:
             self._draw_system_message(screen, system_message)
+        if hotkey_help_visible:
+            self._draw_hotkey_help(screen)
         if death_dialog_visible:
             self._draw_death_dialog(screen)
 
@@ -439,6 +445,12 @@ class Renderer:
             return
         if entity.visual == "anvil":
             self._draw_anvil(screen, body, outline_color)
+            return
+        if (
+            entity.visual == "spinning_wheel"
+            and self.entity_sprites.get(entity.visual) is None
+        ):
+            self._draw_spinning_wheel(screen, body, outline_color)
             return
         if entity.kind == EntityKind.GATE:
             self._draw_gate(screen, body, entity, outline_color)
@@ -660,6 +672,42 @@ class Renderer:
         pygame.draw.rect(screen, ANVIL_TOP, horn, border_radius=2)
         pygame.draw.rect(screen, ANVIL_BODY, waist, border_radius=2)
         pygame.draw.rect(screen, ANVIL_BODY, base, border_radius=2)
+
+    def _draw_spinning_wheel(
+        self,
+        screen: pygame.Surface,
+        body: pygame.Rect,
+        outline_color: tuple[int, int, int],
+    ) -> None:
+        """
+        Рисует прядильный станок простым деревянным силуэтом.
+        """
+        pygame.draw.rect(screen, outline_color, body.inflate(5, 5), border_radius=4)
+        wheel = pygame.Rect(body.left + 2, body.top + 3, body.width - 8, body.height - 8)
+        pygame.draw.ellipse(screen, SPINNING_WHEEL_WOOD, wheel, width=3)
+        pygame.draw.line(
+            screen,
+            SPINNING_WHEEL_WOOD,
+            wheel.center,
+            (body.right - 3, body.top + 5),
+            width=3,
+        )
+        pygame.draw.line(
+            screen,
+            SPINNING_WHEEL_WOOD,
+            (body.right - 4, body.top + 4),
+            (body.right - 4, body.bottom - 5),
+            width=3,
+        )
+        pygame.draw.line(
+            screen,
+            SPINNING_WHEEL_THREAD,
+            (wheel.centerx, wheel.centery),
+            (body.right - 5, body.centery),
+            width=1,
+        )
+        base = pygame.Rect(body.left + 4, body.bottom - 5, body.width - 8, 4)
+        pygame.draw.rect(screen, SPINNING_WHEEL_WOOD, base, border_radius=2)
 
     def _draw_health_bar(
         self,
@@ -949,6 +997,56 @@ class Renderer:
         text = f"{prefix}{visible_text}"
         surface = self.font.render(text, True, TEXT_COLOR)
         screen.blit(surface, (rect.left + 10, rect.centery - surface.get_height() // 2))
+
+    def _draw_hotkey_help(self, screen: pygame.Surface) -> None:
+        """
+        Рисует окно легенды горячих клавиш.
+        """
+        rows = (
+            ("WASD / стрелки", "движение"),
+            ("Enter", "чат"),
+            ("Esc", "отмена ввода / закрыть окно"),
+            ("J", "журнал"),
+            ("B", "инвентарь и paperdoll"),
+            ("K", "скиллы"),
+            ("Tab", "боевой режим"),
+            ("F", "взаимодействие под курсором"),
+            ("H", "применить бинт"),
+            ("F1", "горячие клавиши"),
+        )
+        width = min(390, screen.get_width() - 36)
+        if width <= 180:
+            return
+        row_height = self.small_font.get_linesize() + 7
+        height = 48 + len(rows) * row_height
+        rect = pygame.Rect(
+            screen.get_width() - width - 18,
+            18,
+            width,
+            min(height, screen.get_height() - 36),
+        )
+        panel = pygame.Surface(rect.size, pygame.SRCALPHA)
+        panel.fill(PANEL_BACKGROUND)
+        screen.blit(panel, rect.topleft)
+        pygame.draw.rect(screen, BUBBLE_BORDER, rect, width=1, border_radius=6)
+
+        title = self.font.render("Горячие клавиши", True, TEXT_COLOR)
+        screen.blit(title, (rect.left + 14, rect.top + 12))
+
+        key_width = min(145, rect.width // 2)
+        y = rect.top + 42
+        for key, description in rows:
+            if y + row_height > rect.bottom - 8:
+                break
+            key_surface = self.small_font.render(key, True, EQUIPPABLE_TEXT_COLOR)
+            description_surface = self.small_font.render(
+                self._tail_to_width(description, rect.width - key_width - 28, self.small_font),
+                True,
+                MUTED_TEXT_COLOR,
+            )
+            screen.blit(key_surface, (rect.left + 14, y))
+            screen.blit(description_surface, (rect.left + 14 + key_width, y))
+            y += row_height
 
     def _draw_interaction_menu(self, screen: pygame.Surface, menu: InteractionMenu) -> None:
         """

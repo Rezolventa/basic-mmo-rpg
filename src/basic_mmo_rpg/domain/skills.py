@@ -5,6 +5,8 @@ from dataclasses import dataclass
 MINING_SKILL_ID = "mining"
 LUMBERJACKING_SKILL_ID = "lumberjacking"
 FISHING_SKILL_ID = "fishing"
+TAILORING_SKILL_ID = "tailoring"
+HEALING_SKILL_ID = "healing"
 
 SKILL_VALUE_MIN = 0
 SKILL_VALUE_MAX = 1000
@@ -49,6 +51,8 @@ SKILL_DEFINITIONS: tuple[SkillDefinition, ...] = (
     SkillDefinition(skill_id=MINING_SKILL_ID, display_name="Горное дело"),
     SkillDefinition(skill_id=LUMBERJACKING_SKILL_ID, display_name="Рубка леса"),
     SkillDefinition(skill_id=FISHING_SKILL_ID, display_name="Рыбалка"),
+    SkillDefinition(skill_id=TAILORING_SKILL_ID, display_name="Портняжное дело"),
+    SkillDefinition(skill_id=HEALING_SKILL_ID, display_name="Медицина"),
 )
 SKILL_DEFINITIONS_BY_ID = {
     definition.skill_id: definition for definition in SKILL_DEFINITIONS
@@ -165,6 +169,92 @@ def fishing_action_seconds(value_tenths: int) -> float:
         start_result=2.0,
         end_result=1.5,
     )
+
+
+def tailoring_cloth_success_chance(value_tenths: int) -> float:
+    """
+    Возвращает шанс сделать ткань из шерсти для Tailoring.
+    """
+    effective_value = min(max(value_tenths, SKILL_VALUE_MIN), DEMO_SKILL_CAP)
+    if effective_value <= FULL_SPEED_SKILL_VALUE:
+        return 0.5
+    return _linear(
+        value=effective_value,
+        start_value=FULL_SPEED_SKILL_VALUE,
+        end_value=DEMO_SKILL_CAP,
+        start_result=0.5,
+        end_result=1.0,
+    )
+
+
+def healing_success_chance(value_tenths: int) -> float:
+    """
+    Возвращает шанс успешного применения бинта для Healing.
+    """
+    effective_value = min(max(value_tenths, SKILL_VALUE_MIN), DEMO_SKILL_CAP)
+    if effective_value <= FULL_SPEED_SKILL_VALUE:
+        return 0.3
+    return _linear(
+        value=effective_value,
+        start_value=FULL_SPEED_SKILL_VALUE,
+        end_value=DEMO_SKILL_CAP,
+        start_result=0.3,
+        end_result=0.8,
+    )
+
+
+def healing_action_seconds(value_tenths: int) -> float:
+    """
+    Возвращает длительность перевязки с учетом Healing.
+    """
+    effective_value = min(max(value_tenths, SKILL_VALUE_MIN), DEMO_SKILL_CAP)
+    if effective_value <= FULL_SPEED_SKILL_VALUE:
+        return 2.0
+    return _linear(
+        value=effective_value,
+        start_value=FULL_SPEED_SKILL_VALUE,
+        end_value=DEMO_SKILL_CAP,
+        start_result=2.0,
+        end_result=1.5,
+    )
+
+
+def healing_min_points(value_tenths: int) -> int:
+    """
+    Возвращает нижнюю границу лечения бинтом по ступеням Healing.
+    """
+    effective_value = min(max(value_tenths, SKILL_VALUE_MIN), SKILL_VALUE_MAX)
+    return 1 + effective_value // 100
+
+
+def healing_max_points(value_tenths: int) -> int:
+    """
+    Возвращает верхнюю границу лечения бинтом по кусочно-линейной шкале Healing.
+    """
+    effective_value = min(max(value_tenths, SKILL_VALUE_MIN), DEMO_SKILL_CAP)
+    if effective_value < 100:
+        return 3
+    if effective_value < 200:
+        return round(
+            _linear(
+                value=effective_value,
+                start_value=100,
+                end_value=200,
+                start_result=6,
+                end_result=10,
+            )
+        )
+    if effective_value < 300:
+        return round(
+            _linear(
+                value=effective_value,
+                start_value=200,
+                end_value=300,
+                start_result=10,
+                end_result=15,
+            )
+        )
+    return 15
 
 
 def skill_gain_chance(value_tenths: int) -> float:

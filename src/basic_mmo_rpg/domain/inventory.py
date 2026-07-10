@@ -18,6 +18,8 @@ LEATHER_ITEM_ID = "leather"
 IRON_ORE_ITEM_ID = "iron_ore"
 IRON_INGOT_ITEM_ID = "iron_ingot"
 IRON_CHEST_ARMOR_ITEM_ID = "iron_chest_armor"
+CLOTH_ITEM_ID = "cloth"
+BANDAGE_ITEM_ID = "bandage"
 
 
 class InventoryError(ValueError):
@@ -133,6 +135,16 @@ ITEM_DEFINITIONS: dict[str, ItemDefinition] = {
         stack_limit=999,
         equipment_slot=CHEST_SLOT,
         armor=2,
+    ),
+    CLOTH_ITEM_ID: ItemDefinition(
+        item_id=CLOTH_ITEM_ID,
+        display_name="Ткань",
+        stack_limit=999,
+    ),
+    BANDAGE_ITEM_ID: ItemDefinition(
+        item_id=BANDAGE_ITEM_ID,
+        display_name="Бинт",
+        stack_limit=999,
     ),
 }
 

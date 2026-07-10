@@ -217,6 +217,24 @@ class MultiplayerWorld:
             self.intents[player_id] = MovementIntent()
         return updated, killed
 
+    def heal_player(self, player_id: str, amount: int) -> tuple[PlayerState, int] | None:
+        """
+        Лечит персонажа и возвращает фактически восстановленное здоровье.
+        """
+        if amount <= 0:
+            msg = "heal amount must be positive"
+            raise ValueError(msg)
+
+        player = self.players.get(player_id)
+        if player is None or not player.is_alive:
+            return None
+
+        next_hit_points = min(player.max_hit_points, player.hit_points + amount)
+        healed = next_hit_points - player.hit_points
+        updated = replace(player, hit_points=next_hit_points)
+        self.players[player_id] = updated
+        return updated, healed
+
     def respawn_player(self, player_id: str) -> PlayerState | None:
         """
         Возрождает мертвого персонажа у runtime-точки респауна.

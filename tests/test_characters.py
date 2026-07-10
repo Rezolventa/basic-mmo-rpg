@@ -19,8 +19,10 @@ from basic_mmo_rpg.domain.inventory import (
 from basic_mmo_rpg.domain.skills import (
     DEMO_SKILL_CAP,
     FISHING_SKILL_ID,
+    HEALING_SKILL_ID,
     LUMBERJACKING_SKILL_ID,
     MINING_SKILL_ID,
+    TAILORING_SKILL_ID,
 )
 from basic_mmo_rpg.storage.characters import CharacterRepository
 
@@ -57,6 +59,8 @@ def test_character_repository_initializes_and_persists_skills(tmp_path: Path) ->
         MINING_SKILL_ID,
         LUMBERJACKING_SKILL_ID,
         FISHING_SKILL_ID,
+        TAILORING_SKILL_ID,
+        HEALING_SKILL_ID,
     ]
     assert skills == loaded_skills
     assert all(0 <= skill.value_tenths <= 99 for skill in skills)
@@ -79,7 +83,9 @@ def test_character_repository_increases_skill_until_demo_cap(tmp_path: Path) -> 
     assert capped_changed is False
     assert capped_skill.value_tenths == DEMO_SKILL_CAP
     assert repository.skill_value("Alice", FISHING_SKILL_ID) == DEMO_SKILL_CAP
-    assert skills[-1].value_tenths == DEMO_SKILL_CAP
+    assert next(skill for skill in skills if skill.skill_id == FISHING_SKILL_ID).value_tenths == (
+        DEMO_SKILL_CAP
+    )
 
 
 def test_character_repository_persists_inventory_items(tmp_path: Path) -> None:

@@ -52,23 +52,28 @@
    восстанавливает 50% HP. Дальше нужно решить persistent-состояние смерти,
    penalties, invulnerability после respawn-а и правила восстановления здоровья.
 
-10. `src/basic_mmo_rpg/server/app.py`, `assets/maps/*.json`
+10. `src/basic_mmo_rpg/server/app.py`
+    Усложнить interrupt-модель бинтов: сейчас получение урона во время перевязки
+    не сбивает применение бинта. Нужно добавить шанс сбития от входящего урона и
+    сделать его зависимым от Healing.
+
+11. `src/basic_mmo_rpg/server/app.py`, `assets/maps/*.json`
     Сделать vendor/NPC-опции data-driven. Сейчас Bjorn, список vendor-offers и
     случайные реплики торговца заданы server-side таблицами по entity id, а в
     JSON-карте хранится только обычный NPC. Лучше перенести торговые офферы и
     набор фраз в component-based описание карты.
 
-11. `src/basic_mmo_rpg/client/rendering.py`
+12. `src/basic_mmo_rpg/client/rendering.py`
     Улучшить UI vendor-окна: добавить явную кнопку покупки, состояние hover,
     отображение текущего количества Gold и более аккуратное отображение disabled
     reason. Сейчас покупка выполняется кликом по строке оффера.
 
-12. `src/basic_mmo_rpg/domain/skills.py`, `src/basic_mmo_rpg/storage/characters.py`
+13. `src/basic_mmo_rpg/domain/skills.py`, `src/basic_mmo_rpg/storage/characters.py`
     Сделать отдельный алгоритм стартовой рандомизации скиллов с фиксированной
     суммой значений, чтобы персонажи получали разное распределение, но одинаковый
     общий стартовый бюджет.
 
-13. `src/basic_mmo_rpg/server/app.py`, `src/basic_mmo_rpg/server/world.py`
+14. `src/basic_mmo_rpg/server/app.py`, `src/basic_mmo_rpg/server/world.py`
     Если добытый предмет нельзя положить в инвентарь из-за будущих ограничений
     вместимости, создавать loot/drop на земле рядом с персонажем. Сейчас stack-limit
     остается инвариантом предмета, а полноценной вместимости инвентаря еще нет.

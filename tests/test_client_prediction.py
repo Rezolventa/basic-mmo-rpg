@@ -209,6 +209,39 @@ def test_inventory_hotkey_toggles_inventory_panel() -> None:
     assert client.inventory_visible is False
 
 
+def test_hotkey_help_toggles_with_f1() -> None:
+    """
+    Проверяет, что F1 показывает и скрывает окно горячих клавиш.
+    """
+    client = object.__new__(GameClient)
+    client.chat_input_active = False
+    client.hotkey_help_visible = False
+
+    client._handle_key_down(SimpleNamespace(key=pygame.K_F1, unicode=""))
+    assert client.hotkey_help_visible is True
+
+    client._handle_key_down(SimpleNamespace(key=pygame.K_F1, unicode=""))
+    assert client.hotkey_help_visible is False
+
+
+def test_bandage_hotkey_sends_apply_request() -> None:
+    """
+    Проверяет, что H отправляет server-authoritative запрос применения бинта.
+    """
+    client = object.__new__(GameClient)
+    network = _NetworkRecorder()
+    client.chat_input_active = False
+    client.death_dialog_visible = False
+    client.interaction_menu = None
+    client.vendor_window = None
+    client.player = PlayerState(entity_id="p1", position=Vec2(0, 0), hit_points=10)
+    client.network_client = network
+
+    client._handle_key_down(SimpleNamespace(key=pygame.K_h, unicode=""))
+
+    assert network.apply_bandage_requests == 1
+
+
 def test_combat_hotkey_toggles_mode_and_stops_attack() -> None:
     """
     Проверяет, что Tab включает боевой режим и при выключении сбрасывает auto-attack.
@@ -945,6 +978,7 @@ class _NetworkRecorder:
         self.vendor_purchases: list[tuple[str, str]] = []
         self.stop_attack_requests = 0
         self.respawn_requests = 0
+        self.apply_bandage_requests = 0
 
     def send_equip_item_request(self, item_id: str) -> None:
         """
@@ -987,3 +1021,9 @@ class _NetworkRecorder:
         Запоминает запрос возрождения персонажа.
         """
         self.respawn_requests += 1
+
+    def send_apply_bandage_request(self) -> None:
+        """
+        Запоминает запрос применения бинта.
+        """
+        self.apply_bandage_requests += 1

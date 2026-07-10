@@ -71,7 +71,7 @@ def test_starter_map_loads() -> None:
     assert tile_map.definitions["C"].sprite_offsets == ()
     assert tile_map.definitions["C"].collision_rect is None
     entities = {entity.entity_id: entity for entity in tile_map.entities}
-    assert len(entities) == 12
+    assert len(entities) == 13
     assert entities["npc-funday"].kind == EntityKind.NPC
     assert entities["npc-funday"].name == "Funday"
     assert entities["npc-funday"].dialogue == "Иди и поймай мне рыбу"
@@ -99,6 +99,10 @@ def test_starter_map_loads() -> None:
     assert entities["object-anvil"].name == "Наковальня"
     assert entities["object-anvil"].visual == "anvil"
     assert entities["object-anvil"].solid
+    assert entities["object-spinning-wheel"].kind == EntityKind.OBJECT
+    assert entities["object-spinning-wheel"].name == "Прядильный станок"
+    assert entities["object-spinning-wheel"].visual == "spinning_wheel"
+    assert entities["object-spinning-wheel"].solid
     assert entities["gate-sheep-pen"].kind == EntityKind.GATE
     assert entities["gate-sheep-pen"].name == "Калитка"
     assert entities["gate-sheep-pen"].solid

@@ -52,6 +52,7 @@ class ClientMessageType(StrEnum):
     ATTACK_REQUESTED = "attack_requested"
     STOP_ATTACK_REQUESTED = "stop_attack_requested"
     RESPAWN_REQUESTED = "respawn_requested"
+    APPLY_BANDAGE_REQUESTED = "apply_bandage_requested"
 
 
 class ServerMessageType(StrEnum):
@@ -703,6 +704,13 @@ def stop_attack_requested_payload() -> dict[str, Any]:
 def respawn_requested_payload() -> dict[str, Any]:
     """
     Создает payload клиентского запроса возрождения персонажа.
+    """
+    return {}
+
+
+def apply_bandage_requested_payload() -> dict[str, Any]:
+    """
+    Создает payload клиентского запроса применения бинта.
     """
     return {}
 

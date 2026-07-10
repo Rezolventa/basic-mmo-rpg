@@ -333,6 +333,31 @@
       }
     },
     {
+      "id": "object-spinning-wheel",
+      "components": {
+        "identity": {
+          "kind": "object",
+          "name": "Прядильный станок",
+          "visual": "spinning_wheel"
+        },
+        "body": {
+          "position": [
+            672,
+            225
+          ],
+          "size": [
+            28,
+            28
+          ],
+          "solid": true
+        },
+        "interaction": {
+          "radius": 64,
+          "dialogue": ""
+        }
+      }
+    },
+    {
       "id": "gate-sheep-pen",
       "components": {
         "identity": {
