@@ -201,6 +201,7 @@ def test_world_snapshot_payload_round_trips_dynamic_entity_state() -> None:
             name="Тренировочный манекен",
             destroyed_name="Разрушенный тренировочный манекен",
             visual="training_dummy",
+            destroyed_visual="training_dummy_broken",
         ),
         body=BodyComponent(position=Vec2(128, 32), width=24, height=34, solid=True),
         interaction=InteractionComponent(radius=64, dialogue=""),
@@ -211,7 +212,7 @@ def test_world_snapshot_payload_round_trips_dynamic_entity_state() -> None:
             claim_policy=LootClaimPolicy.ALWAYS,
         ),
         combat=CombatComponent(hit_points=20, max_hit_points=20),
-        respawn=RespawnComponent(seconds=10),
+        respawn=RespawnComponent(seconds=60),
     )
 
     payload = world_snapshot_payload(

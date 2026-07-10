@@ -190,6 +190,7 @@ def _open_map_with_training_dummy() -> object:
                         "name": "Тренировочный манекен",
                         "destroyed_name": "Разрушенный тренировочный манекен",
                         "visual": "training_dummy",
+                        "destroyed_visual": "training_dummy_broken",
                     },
                     "body": {
                         "position": [64, 32],
@@ -203,7 +204,7 @@ def _open_map_with_training_dummy() -> object:
                         "destroyed": False,
                     },
                     "respawn": {
-                        "seconds": 10,
+                        "seconds": 60,
                     },
                 },
             }
@@ -647,15 +648,17 @@ def test_world_destroys_and_respawns_training_dummy() -> None:
     assert result[1] is True
     assert destroyed_dummy is not None
     assert destroyed_dummy.name == "Разрушенный тренировочный манекен"
+    assert destroyed_dummy.visual == "training_dummy_broken"
     assert destroyed_dummy.hit_points == 0
     assert destroyed_dummy.is_attackable is False
     assert destroyed_dummy.solid is True
 
-    world.tick(10.0)
+    world.tick(60.0)
     restored_dummy = world.get_entity("lootable-training-dummy")
 
     assert restored_dummy is not None
     assert restored_dummy.name == "Тренировочный манекен"
+    assert restored_dummy.visual == "training_dummy"
     assert restored_dummy.hit_points == 20
     assert restored_dummy.is_attackable is True
 

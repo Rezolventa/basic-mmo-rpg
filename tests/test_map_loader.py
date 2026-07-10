@@ -127,13 +127,14 @@ def test_starter_map_loads() -> None:
     assert entities["creature-boar"].respawn.seconds == 60
     assert entities["lootable-training-dummy"].kind == EntityKind.OBJECT
     assert entities["lootable-training-dummy"].name == "Тренировочный манекен"
+    assert entities["lootable-training-dummy"].identity.destroyed_visual == "training_dummy_broken"
     assert entities["lootable-training-dummy"].solid
     assert entities["lootable-training-dummy"].lootable is not None
     assert entities["lootable-training-dummy"].is_attackable
     assert entities["lootable-training-dummy"].hit_points == 20
     assert entities["lootable-training-dummy"].max_hit_points == 20
     assert entities["lootable-training-dummy"].respawn is not None
-    assert entities["lootable-training-dummy"].respawn.seconds == 10
+    assert entities["lootable-training-dummy"].respawn.seconds == 60
     assert tile_map.is_water_tile(8, 14)
     assert tile_map.is_tree_tile(5, 3)
     assert tile_map.is_rock_tile(4, 17)

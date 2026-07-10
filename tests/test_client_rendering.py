@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+from basic_mmo_rpg.client.ui import ChatLine
 from basic_mmo_rpg.storage.map_loader import load_tile_map
 
 
@@ -35,5 +36,67 @@ def test_renderer_loads_tile_sprites_independent_of_cwd(
         assert len(renderer.tile_sprites["C"]) == 1
         assert renderer.entity_sprites["training_dummy"] is not None
         assert renderer.entity_sprites["training_dummy"].get_size() == (32, 32)
+        assert renderer.entity_sprites["training_dummy_broken"] is not None
+        assert renderer.entity_sprites["training_dummy_broken"].get_size() == (32, 32)
+    finally:
+        pygame.quit()
+
+
+def test_renderer_chat_journal_draws_latest_visible_lines(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    Проверяет, что журнал показывает последние строки, которые помещаются в панель.
+    """
+    monkeypatch.setenv("SDL_VIDEODRIVER", "dummy")
+
+    import pygame
+
+    from basic_mmo_rpg.client.rendering import Renderer
+
+    class RecordingJournalFont:
+        def __init__(self) -> None:
+            self.texts: list[str] = []
+
+        def get_linesize(self) -> int:
+            return 10
+
+        def render(
+            self,
+            text: str,
+            _antialias: bool,
+            _color: tuple[int, int, int],
+        ) -> pygame.Surface:
+            self.texts.append(text)
+            return pygame.Surface((1, 1), pygame.SRCALPHA)
+
+    tile_map = load_tile_map(Path("assets/maps/starter_map.json"))
+    pygame.init()
+    try:
+        pygame.display.set_mode((1, 1))
+        renderer = Renderer(tile_map)
+        recording_font = RecordingJournalFont()
+        renderer.small_font = recording_font
+        monkeypatch.setattr(
+            renderer,
+            "_wrap_text",
+            lambda text, max_width, font: [text],
+        )
+        screen = pygame.Surface((800, 600), pygame.SRCALPHA)
+        chat_lines = [
+            ChatLine(
+                player_id="player-1",
+                name="Alice",
+                text=f"msg-{index}",
+                created_at=float(index),
+            )
+            for index in range(30)
+        ]
+
+        renderer._draw_chat_journal(screen, chat_lines)
+
+        assert len(recording_font.texts) > 12
+        assert recording_font.texts[0] == "Alice: msg-3"
+        assert recording_font.texts[-1] == "Alice: msg-29"
     finally:
         pygame.quit()

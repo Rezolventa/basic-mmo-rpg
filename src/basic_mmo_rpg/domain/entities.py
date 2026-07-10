@@ -38,6 +38,7 @@ class IdentityComponent:
     name: str
     destroyed_name: str | None = None
     visual: str = ""
+    destroyed_visual: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -219,6 +220,8 @@ class WorldEntity:
         """
         Возвращает визуальный вариант отрисовки объекта.
         """
+        if self.is_destroyed and self.identity.destroyed_visual:
+            return self.identity.destroyed_visual
         return self.identity.visual
 
     @property

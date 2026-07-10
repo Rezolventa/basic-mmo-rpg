@@ -27,6 +27,7 @@ from basic_mmo_rpg.domain.inventory import FISHING_ROD_ITEM_ID, IRON_CHEST_ARMOR
 from basic_mmo_rpg.domain.movement import MovementIntent, PlayerState
 from basic_mmo_rpg.domain.skills import FISHING_SKILL_ID, CharacterSkill
 from basic_mmo_rpg.shared.protocol import (
+    INTERACTION_PRESENTATION_BUBBLE,
     INTERACTION_PRESENTATION_FEED,
     InteractionMenu,
     InteractionMenuOption,
@@ -520,7 +521,7 @@ def test_vendor_escape_closes_window() -> None:
     assert client.vendor_window is None
 
 
-def test_client_applies_interaction_result_to_log_and_entity_bubble() -> None:
+def test_client_applies_dialogue_interaction_result_to_log_and_entity_bubble() -> None:
     """
     Проверяет, что клиент показывает результат взаимодействия в журнале и над объектом.
     """
@@ -545,6 +546,7 @@ def test_client_applies_interaction_result_to_log_and_entity_bubble() -> None:
             "target_name": "Funday",
             "text": "Hello, developer",
             "created_at": 123.0,
+            "presentation": INTERACTION_PRESENTATION_BUBBLE,
         }
     )
 
@@ -615,12 +617,13 @@ def test_client_applies_combat_event_to_log_and_entity_bubble() -> None:
     assert client.selected_attack_target_id is None
 
 
-def test_client_can_show_interaction_bubble_without_journal_entry() -> None:
+def test_client_shows_action_result_in_feed_without_journal_entry() -> None:
     """
-    Проверяет, что результат взаимодействия может показываться пузырем без записи в журнал.
+    Проверяет, что результат действия может попасть в нижний feed без записи в журнал.
     """
     client = object.__new__(GameClient)
     client.chat_lines = deque(maxlen=50)
+    client.event_feed = deque(maxlen=8)
     client.entity_speech_bubbles = {}
     client.speech_bubbles = {}
     client.player_names = {}
@@ -634,12 +637,15 @@ def test_client_can_show_interaction_bubble_without_journal_entry() -> None:
             "text": "Нужна удочка",
             "created_at": 123.0,
             "add_to_journal": False,
+            "presentation": INTERACTION_PRESENTATION_FEED,
         }
     )
 
     assert list(client.chat_lines) == []
-    assert client.player_names["p1"] == "Alice"
-    assert client.speech_bubbles["p1"].text == "Нужна удочка"
+    assert client.event_feed[-1].text == "Нужна удочка"
+    assert client.player_names == {}
+    assert client.speech_bubbles == {}
+    assert client.entity_speech_bubbles == {}
 
 
 def test_client_finds_entity_strictly_under_cursor() -> None:

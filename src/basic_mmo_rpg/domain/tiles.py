@@ -313,6 +313,7 @@ def _entity_fingerprint_payload(entity: WorldEntity) -> dict[str, object]:
             "name": entity.identity.name,
             "destroyed_name": entity.identity.destroyed_name,
             "visual": entity.identity.visual,
+            "destroyed_visual": entity.identity.destroyed_visual,
         },
         "body": {
             "position": [entity.body.position.x, entity.body.position.y],

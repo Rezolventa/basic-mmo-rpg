@@ -261,7 +261,7 @@ class CraftingRecipeDefinition:
     success_chance: float = 1.0
     failure_text: str | None = None
     consume_cost_on_failure: bool = False
-    result_presentation: str = INTERACTION_PRESENTATION_BUBBLE
+    result_presentation: str = INTERACTION_PRESENTATION_FEED
     result_targets_player: bool = False
 
 
@@ -957,6 +957,7 @@ class MultiplayerServer:
                     target_name=entity.name,
                     text=entity.dialogue,
                     created_at=time.time(),
+                    presentation=INTERACTION_PRESENTATION_BUBBLE,
                 ),
             ),
         )
@@ -2155,19 +2156,15 @@ class MultiplayerServer:
             if destroyed:
                 self._stop_attacks_against(target.entity_id)
                 self._clear_enemy_state(target.entity_id)
-                destroyed_text = f"{target_name} разрушен"
-                destroyed_floating_text = "Разрушен"
                 if target.kind == EntityKind.CREATURE:
-                    destroyed_text = f"{target_name} погиб"
-                    destroyed_floating_text = "Погиб"
-                await self._send_combat_event(
-                    session=session,
-                    target_id=target.entity_id,
-                    target_name=target_name,
-                    text=destroyed_text,
-                    floating_text=destroyed_floating_text,
-                    destroyed=True,
-                )
+                    await self._send_combat_event(
+                        session=session,
+                        target_id=target.entity_id,
+                        target_name=target_name,
+                        text=f"{target_name} погиб",
+                        floating_text="Погиб",
+                        destroyed=True,
+                    )
             await self._broadcast_snapshot()
 
     async def _tick_enemy_combat(self, now: float) -> None:
@@ -2447,7 +2444,7 @@ class MultiplayerServer:
         target_name: str,
         text: str,
         add_to_journal: bool = True,
-        presentation: str = INTERACTION_PRESENTATION_BUBBLE,
+        presentation: str = INTERACTION_PRESENTATION_FEED,
     ) -> None:
         """
         Отправляет результат взаимодействия одному клиенту.
@@ -2526,7 +2523,7 @@ class MultiplayerServer:
         target_id: str,
         target_name: str,
         error: InventoryLimitError,
-        presentation: str = INTERACTION_PRESENTATION_BUBBLE,
+        presentation: str = INTERACTION_PRESENTATION_FEED,
     ) -> None:
         """
         Логирует переполнение инвентаря и отправляет игровой отказ игроку.

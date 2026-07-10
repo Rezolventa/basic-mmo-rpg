@@ -78,10 +78,14 @@ SLOT_BACKGROUND = (29, 32, 38, 230)
 SLOT_BORDER = (92, 104, 118)
 EQUIPPED_BORDER = (225, 198, 104)
 DISABLED_SLOT_BACKGROUND = (31, 34, 39)
+JOURNAL_PANEL_MARGIN = 20
+JOURNAL_PANEL_WIDTH = 520
+JOURNAL_PANEL_HEIGHT = 320
 TILE_SPRITE_ROOT = Path(__file__).resolve().parents[3] / "assets" / "sprites"
 ENTITY_SPRITE_ROOT = TILE_SPRITE_ROOT / "entities"
 ENTITY_SPRITE_PATHS = {
     "training_dummy": "training_dummy.png",
+    "training_dummy_broken": "training_dummy_broken.png",
 }
 
 
@@ -448,7 +452,7 @@ class Renderer:
             if selected:
                 self._draw_target_crosshair(screen, body)
             return
-        if entity.visual == "training_dummy" and self._draw_entity_sprite(
+        if entity.visual in self.entity_sprites and self._draw_entity_sprite(
             screen,
             body,
             entity.visual,
@@ -459,7 +463,7 @@ class Renderer:
             if selected:
                 self._draw_target_crosshair(screen, body)
             return
-        if entity.kind == EntityKind.LOOTABLE or entity.visual == "training_dummy":
+        if entity.kind == EntityKind.LOOTABLE or entity.lootable is not None:
             self._draw_lootable(screen, body, outline_color)
             self._draw_health_bar(screen, body, entity, selected or attack_hovered)
             if selected:
@@ -855,24 +859,35 @@ class Renderer:
         """
         Рисует журнал последних сообщений чата.
         """
-        width = min(520, screen.get_width() - 40)
-        height = min(320, screen.get_height() - 90)
+        width = min(JOURNAL_PANEL_WIDTH, screen.get_width() - JOURNAL_PANEL_MARGIN * 2)
+        height = min(JOURNAL_PANEL_HEIGHT, screen.get_height() - 90)
+        if width <= 80 or height <= 80:
+            return
         panel = pygame.Surface((width, height), pygame.SRCALPHA)
         panel.fill(PANEL_BACKGROUND)
-        screen.blit(panel, (20, 20))
+        screen.blit(panel, (JOURNAL_PANEL_MARGIN, JOURNAL_PANEL_MARGIN))
 
-        title = self.font.render("Журнал чата", True, TEXT_COLOR)
+        title = self.font.render("Журнал", True, TEXT_COLOR)
         screen.blit(title, (32, 30))
-        visible_lines = list(chat_lines)[-12:]
         y = 58
-        for line in visible_lines:
-            text = f"{line.name}: {line.text}"
-            for wrapped_line in self._wrap_text(text, max_width=width - 28, font=self.small_font):
-                surface = self.small_font.render(wrapped_line, True, MUTED_TEXT_COLOR)
-                screen.blit(surface, (32, y))
-                y += self.small_font.get_linesize()
-                if y > 20 + height - self.small_font.get_linesize():
-                    return
+        line_height = self.small_font.get_linesize()
+        content_bottom = JOURNAL_PANEL_MARGIN + height - 10
+        max_visible_lines = max(0, (content_bottom - y) // line_height)
+        if max_visible_lines == 0:
+            return
+        wrapped_lines = [
+            wrapped_line
+            for line in chat_lines
+            for wrapped_line in self._wrap_text(
+                f"{line.name}: {line.text}",
+                max_width=width - 28,
+                font=self.small_font,
+            )
+        ]
+        for wrapped_line in wrapped_lines[-max_visible_lines:]:
+            surface = self.small_font.render(wrapped_line, True, MUTED_TEXT_COLOR)
+            screen.blit(surface, (32, y))
+            y += line_height
 
     def _draw_event_feed(
         self,

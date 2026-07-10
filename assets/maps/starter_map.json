@@ -455,7 +455,8 @@
           "kind": "object",
           "name": "Тренировочный манекен",
           "destroyed_name": "Разрушенный тренировочный манекен",
-          "visual": "training_dummy"
+          "visual": "training_dummy",
+          "destroyed_visual": "training_dummy_broken"
         },
         "body": {
           "position": [
@@ -485,7 +486,7 @@
           "destroyed": false
         },
         "respawn": {
-          "seconds": 10
+          "seconds": 60
         }
       }
     }

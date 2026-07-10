@@ -1040,6 +1040,8 @@ def entity_to_payload(entity: WorldEntity) -> dict[str, Any]:
         components["identity"]["destroyed_name"] = entity.identity.destroyed_name
     if entity.identity.visual:
         components["identity"]["visual"] = entity.identity.visual
+    if entity.identity.destroyed_visual:
+        components["identity"]["destroyed_visual"] = entity.identity.destroyed_visual
     if entity.interaction is not None:
         components["interaction"] = {
             "radius": entity.interaction.radius,
@@ -1178,6 +1180,7 @@ def _identity_component_from_payload(payload: Mapping[str, Any]) -> IdentityComp
         name=_string_field(payload, "name"),
         destroyed_name=_optional_string_field(payload, "destroyed_name"),
         visual=_optional_string_field(payload, "visual") or "",
+        destroyed_visual=_optional_string_field(payload, "destroyed_visual") or "",
     )
 
 

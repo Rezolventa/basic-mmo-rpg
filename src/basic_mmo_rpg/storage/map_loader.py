@@ -155,6 +155,7 @@ def _parse_identity_component(raw_component: dict[str, Any]) -> IdentityComponen
         name=_str_field(raw_component, "name"),
         destroyed_name=_optional_str_field(raw_component, "destroyed_name"),
         visual=_optional_str_field(raw_component, "visual") or "",
+        destroyed_visual=_optional_str_field(raw_component, "destroyed_visual") or "",
     )
 
 

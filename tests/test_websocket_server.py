@@ -465,6 +465,7 @@ def _open_map_with_training_dummy() -> object:
                         "name": "Тренировочный манекен",
                         "destroyed_name": "Разрушенный тренировочный манекен",
                         "visual": "training_dummy",
+                        "destroyed_visual": "training_dummy_broken",
                     },
                     "body": {
                         "position": [64, 32],
@@ -488,7 +489,7 @@ def _open_map_with_training_dummy() -> object:
                         "destroyed": False,
                     },
                     "respawn": {
-                        "seconds": 10,
+                        "seconds": 60,
                     },
                 },
             }
@@ -681,6 +682,13 @@ def test_websocket_server_auto_attacks_training_dummy(tmp_path: Path) -> None:
     Проверяет базовый server-authoritative auto-attack по тренировочному манекену.
     """
     asyncio.run(_auto_attacks_training_dummy_smoke(tmp_path))
+
+
+def test_websocket_server_does_not_send_dummy_destroyed_bubble(tmp_path: Path) -> None:
+    """
+    Проверяет, что разрушение манекена не отправляет отдельный floating text.
+    """
+    asyncio.run(_dummy_destruction_uses_sprite_only_smoke(tmp_path))
 
 
 def test_server_aggroes_boar_on_swing_not_on_target_selection(tmp_path: Path) -> None:
@@ -1469,6 +1477,7 @@ async def _training_dummy_grants_rusty_sword_once_smoke(tmp_path: Path) -> None:
     assert result_message.payload["target_name"] == "Alice"
     assert result_message.payload["text"] == "Вы вытащили Ржавый меч из манекена"
     assert result_message.payload["add_to_journal"] is True
+    assert result_message.payload["presentation"] == INTERACTION_PRESENTATION_FEED
     assert len(inventory) == 1
     assert inventory[0].item_id == RUSTY_SWORD_ITEM_ID
     assert inventory[0].display_name == "Ржавый меч"
@@ -1532,6 +1541,63 @@ async def _auto_attacks_training_dummy_smoke(tmp_path: Path) -> None:
     entity = multiplayer_server.world.get_entity("lootable-training-dummy")
     assert entity is not None
     assert entity.hit_points == 20 - damage
+
+
+async def _dummy_destruction_uses_sprite_only_smoke(tmp_path: Path) -> None:
+    """
+    Запускает сервер и проверяет, что разрушение манекена показывается спрайтом.
+    """
+    raw_map = _open_map_with_training_dummy()
+    assert isinstance(raw_map, dict)
+    raw_entities = raw_map["entities"]
+    assert isinstance(raw_entities, list)
+    raw_dummy = raw_entities[0]
+    assert isinstance(raw_dummy, dict)
+    raw_components = raw_dummy["components"]
+    assert isinstance(raw_components, dict)
+    raw_combat = raw_components["combat"]
+    assert isinstance(raw_combat, dict)
+    raw_combat["hit_points"] = 3
+    raw_combat["max_hit_points"] = 3
+
+    multiplayer_server = _server_for_test(
+        tmp_path,
+        raw_map=raw_map,
+        random_source=random.Random(0),
+    )
+    multiplayer_server.character_repository.load_or_create("Alice", Vec2(32, 32))
+    multiplayer_server.character_repository.add_item("Alice", RUSTY_SWORD_ITEM_ID)
+    multiplayer_server.character_repository.equip_item("Alice", RUSTY_SWORD_ITEM_ID)
+    multiplayer_server.world.add_player("player-1", "Alice", Vec2(32, 32))
+    recording_websocket = _RecordingWebSocket()
+    session = PlayerSession(
+        session_id="session-1",
+        player_id="player-1",
+        character_name="Alice",
+        websocket=recording_websocket,
+    )
+    multiplayer_server.sessions[session.session_id] = session
+
+    await multiplayer_server._handle_attack_request(
+        session,
+        attack_requested_payload("lootable-training-dummy"),
+    )
+    first_swing_at = multiplayer_server.next_combat_swing_at["player-1"]
+    recording_websocket.sent_messages.clear()
+    await multiplayer_server._tick_combat(now=first_swing_at)
+
+    messages = [decode_message(message) for message in recording_websocket.sent_messages]
+    combat_events = [
+        message for message in messages if message.type == ServerMessageType.COMBAT_EVENT
+    ]
+    entity = multiplayer_server.world.get_entity("lootable-training-dummy")
+
+    assert len(combat_events) == 1
+    assert combat_events[0].payload["destroyed"] is True
+    assert str(combat_events[0].payload["floating_text"]).startswith("-")
+    assert "разруш" not in str(combat_events[0].payload["text"]).lower()
+    assert entity is not None
+    assert entity.visual == "training_dummy_broken"
 
 
 async def _boar_aggroes_on_swing_not_on_target_selection(tmp_path: Path) -> None:
@@ -2962,6 +3028,7 @@ async def _anvil_forge_chest_armor_smoke(tmp_path: Path) -> None:
     assert result_message.payload["target_id"] == "object-anvil"
     assert result_message.payload["target_name"] == "Наковальня"
     assert result_message.payload["text"] == "Вы выковали Железную кирасу"
+    assert result_message.payload["presentation"] == INTERACTION_PRESENTATION_FEED
     assert IRON_INGOT_ITEM_ID not in quantities
     assert quantities[IRON_CHEST_ARMOR_ITEM_ID] == 1
     assert multiplayer_server.character_repository.item_quantity("Alice", IRON_INGOT_ITEM_ID) == 0
@@ -3055,6 +3122,7 @@ async def _shearing_requires_equipped_shears_smoke(tmp_path: Path) -> None:
     assert result_message.payload["target_id"] == first_id
     assert result_message.payload["text"] == "Нужны ножницы в руке"
     assert result_message.payload["add_to_journal"] is False
+    assert result_message.payload["presentation"] == INTERACTION_PRESENTATION_FEED
     assert multiplayer_server.character_repository.item_quantity("Alice", WOOL_ITEM_ID) == 0
 
 
@@ -3100,6 +3168,7 @@ async def _shearing_success_smoke(tmp_path: Path) -> None:
     assert result_message.payload["target_id"] == first_id
     assert result_message.payload["text"] == "Вы состригли шерсть с овцы"
     assert result_message.payload["add_to_journal"] is True
+    assert result_message.payload["presentation"] == INTERACTION_PRESENTATION_FEED
     assert quantities[SHEARS_ITEM_ID] == 1
     assert quantities[WOOL_ITEM_ID] == 1
     assert sheep.has_wool is False
