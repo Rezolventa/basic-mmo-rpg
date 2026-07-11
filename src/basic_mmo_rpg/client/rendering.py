@@ -1421,7 +1421,7 @@ class Renderer:
         Возвращает прямоугольник панели скиллов персонажа.
         """
         width = min(300, max(240, screen.get_width() - 40))
-        height = 176
+        height = 244
         left = max(20, screen.get_width() - width - 20)
         top = 20
         if inventory_visible:

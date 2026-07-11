@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from basic_mmo_rpg.client.ui import ChatLine
+from basic_mmo_rpg.domain.skills import SKILL_DEFINITIONS, CharacterSkill
 from basic_mmo_rpg.storage.map_loader import load_tile_map
 
 
@@ -100,5 +101,57 @@ def test_renderer_chat_journal_draws_latest_visible_lines(
         assert len(recording_font.texts) > 12
         assert recording_font.texts[0] == "Alice: msg-3"
         assert recording_font.texts[-1] == "Alice: msg-29"
+    finally:
+        pygame.quit()
+
+
+def test_renderer_skills_panel_draws_all_current_skills(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    Проверяет, что K-панель помещает все текущие игровые скиллы.
+    """
+    monkeypatch.setenv("SDL_VIDEODRIVER", "dummy")
+
+    import pygame
+
+    from basic_mmo_rpg.client.rendering import Renderer
+
+    class RecordingSkillFont:
+        def __init__(self) -> None:
+            self.texts: list[str] = []
+
+        def size(self, text: str) -> tuple[int, int]:
+            return len(text) * 6, 12
+
+        def render(
+            self,
+            text: str,
+            _antialias: bool,
+            _color: tuple[int, int, int],
+        ) -> pygame.Surface:
+            self.texts.append(text)
+            return pygame.Surface((max(1, len(text) * 6), 12), pygame.SRCALPHA)
+
+    pygame.init()
+    try:
+        pygame.display.set_mode((1, 1))
+        renderer = object.__new__(Renderer)
+        renderer.font = RecordingSkillFont()
+        renderer.small_font = RecordingSkillFont()
+        screen = pygame.Surface((800, 600), pygame.SRCALPHA)
+        skills = [
+            CharacterSkill(
+                skill_id=definition.skill_id,
+                display_name=definition.display_name,
+                value_tenths=100,
+            )
+            for definition in SKILL_DEFINITIONS
+        ]
+
+        renderer._draw_skills(screen, skills, inventory_visible=False)
+
+        for definition in SKILL_DEFINITIONS:
+            assert definition.display_name in renderer.small_font.texts
     finally:
         pygame.quit()
