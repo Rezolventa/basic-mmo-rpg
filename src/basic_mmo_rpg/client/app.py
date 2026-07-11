@@ -55,6 +55,8 @@ EVENT_FEED_SECONDS = 12.0
 MAX_EVENT_FEED_MESSAGES = 8
 MAX_CHAT_LOG_MESSAGES = 50
 MAX_CHAT_INPUT_LENGTH = 160
+RIGHT_MOUSE_BUTTON_INDEX = 2
+MOUSE_MOVEMENT_DEAD_ZONE = 8.0
 
 
 @dataclass(slots=True)
@@ -468,7 +470,7 @@ class GameClient:
 
     def _read_movement_intent(self) -> MovementIntent:
         """
-        Читает состояние клавиатуры и преобразует его в намерение движения.
+        Читает удержание правой кнопки мыши и преобразует курсор в намерение движения.
         """
         if (
             self.chat_input_active
@@ -478,12 +480,25 @@ class GameClient:
         ):
             return MovementIntent()
 
-        pressed = pygame.key.get_pressed()
+        pressed = pygame.mouse.get_pressed(num_buttons=3)
+        if len(pressed) <= RIGHT_MOUSE_BUTTON_INDEX or not pressed[RIGHT_MOUSE_BUTTON_INDEX]:
+            return MovementIntent()
+        return self._movement_intent_toward_screen_position(pygame.mouse.get_pos())
+
+    def _movement_intent_toward_screen_position(
+        self,
+        position: tuple[int, int],
+    ) -> MovementIntent:
+        """
+        Преобразует экранную позицию курсора в направление движения от центра игрока.
+        """
+        cursor_world_position = self.camera.screen_to_world(position)
+        offset = cursor_world_position - self.player.center
         return MovementIntent(
-            up=pressed[pygame.K_w] or pressed[pygame.K_UP],
-            down=pressed[pygame.K_s] or pressed[pygame.K_DOWN],
-            left=pressed[pygame.K_a] or pressed[pygame.K_LEFT],
-            right=pressed[pygame.K_d] or pressed[pygame.K_RIGHT],
+            up=offset.y < -MOUSE_MOVEMENT_DEAD_ZONE,
+            down=offset.y > MOUSE_MOVEMENT_DEAD_ZONE,
+            left=offset.x < -MOUSE_MOVEMENT_DEAD_ZONE,
+            right=offset.x > MOUSE_MOVEMENT_DEAD_ZONE,
         )
 
     def _apply_network_messages(self) -> None:

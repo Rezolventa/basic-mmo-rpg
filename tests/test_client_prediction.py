@@ -324,6 +324,51 @@ def test_busy_player_does_not_create_movement_intent() -> None:
     assert client._read_movement_intent() == MovementIntent()
 
 
+def test_right_mouse_hold_creates_movement_intent_toward_cursor(monkeypatch) -> None:
+    """
+    Проверяет, что удержанная ПКМ направляет движение от персонажа к курсору.
+    """
+    client = object.__new__(GameClient)
+    client.chat_input_active = False
+    client.death_dialog_visible = False
+    client.interaction_menu = None
+    client.vendor_window = None
+    client.player = PlayerState(entity_id="p1", position=Vec2(32, 32))
+    client.camera = SimpleNamespace(screen_to_world=lambda position: Vec2(*position))
+    monkeypatch.setattr(
+        pygame.mouse,
+        "get_pressed",
+        lambda num_buttons=3: (False, False, True),
+    )
+    monkeypatch.setattr(pygame.mouse, "get_pos", lambda: (80, 15))
+
+    assert client._read_movement_intent() == MovementIntent(up=True, right=True)
+
+
+def test_keyboard_state_no_longer_creates_movement_intent(monkeypatch) -> None:
+    """
+    Проверяет, что движение персонажа больше не читается с WASD или стрелок.
+    """
+    client = object.__new__(GameClient)
+    client.chat_input_active = False
+    client.death_dialog_visible = False
+    client.interaction_menu = None
+    client.vendor_window = None
+    client.player = PlayerState(entity_id="p1", position=Vec2(32, 32))
+    monkeypatch.setattr(
+        pygame.mouse,
+        "get_pressed",
+        lambda num_buttons=3: (False, False, False),
+    )
+    monkeypatch.setattr(
+        pygame.key,
+        "get_pressed",
+        lambda: (_ for _ in ()).throw(AssertionError("keyboard movement is disabled")),
+    )
+
+    assert client._read_movement_intent() == MovementIntent()
+
+
 def test_dead_authoritative_player_opens_death_dialog_and_clears_attack() -> None:
     """
     Проверяет, что snapshot смерти включает окно смерти и сбрасывает боевую цель.
