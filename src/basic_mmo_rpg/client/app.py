@@ -5,6 +5,7 @@ import time
 from collections import deque
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
+from math import atan2, degrees
 from pathlib import Path
 
 import pygame
@@ -57,6 +58,7 @@ MAX_CHAT_LOG_MESSAGES = 50
 MAX_CHAT_INPUT_LENGTH = 160
 RIGHT_MOUSE_BUTTON_INDEX = 2
 MOUSE_MOVEMENT_DEAD_ZONE = 8.0
+MOUSE_MOVEMENT_SECTOR_DEGREES = 45.0
 
 
 @dataclass(slots=True)
@@ -490,16 +492,19 @@ class GameClient:
         position: tuple[int, int],
     ) -> MovementIntent:
         """
-        Преобразует экранную позицию курсора в направление движения от центра игрока.
+        Преобразует экранную позицию курсора в один из восьми секторов движения.
         """
         cursor_world_position = self.camera.screen_to_world(position)
         offset = cursor_world_position - self.player.center
-        return MovementIntent(
-            up=offset.y < -MOUSE_MOVEMENT_DEAD_ZONE,
-            down=offset.y > MOUSE_MOVEMENT_DEAD_ZONE,
-            left=offset.x < -MOUSE_MOVEMENT_DEAD_ZONE,
-            right=offset.x > MOUSE_MOVEMENT_DEAD_ZONE,
-        )
+        if offset.length <= MOUSE_MOVEMENT_DEAD_ZONE:
+            return MovementIntent()
+
+        angle = (degrees(atan2(offset.y, offset.x)) + 360.0) % 360.0
+        sector = int(
+            (angle + MOUSE_MOVEMENT_SECTOR_DEGREES / 2)
+            // MOUSE_MOVEMENT_SECTOR_DEGREES
+        ) % 8
+        return _movement_intent_for_mouse_sector(sector)
 
     def _apply_network_messages(self) -> None:
         """
@@ -1019,6 +1024,22 @@ class GameClient:
             for entity in self.world_entities.values()
             if entity.visible and entity.solid
         )
+
+
+def _movement_intent_for_mouse_sector(sector: int) -> MovementIntent:
+    """
+    Возвращает намерение движения для одного из восьми угловых секторов курсора.
+    """
+    return (
+        MovementIntent(right=True),
+        MovementIntent(right=True, down=True),
+        MovementIntent(down=True),
+        MovementIntent(left=True, down=True),
+        MovementIntent(left=True),
+        MovementIntent(left=True, up=True),
+        MovementIntent(up=True),
+        MovementIntent(right=True, up=True),
+    )[sector]
 
 
 def _smooth_player_toward(

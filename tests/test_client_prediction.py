@@ -345,6 +345,40 @@ def test_right_mouse_hold_creates_movement_intent_toward_cursor(monkeypatch) -> 
     assert client._read_movement_intent() == MovementIntent(up=True, right=True)
 
 
+def test_mouse_movement_uses_eight_direction_sectors() -> None:
+    """
+    Проверяет, что курсор выбирает ровно один из восьми секторов движения.
+    """
+    client = object.__new__(GameClient)
+    client.player = PlayerState(entity_id="p1", position=Vec2(32, 32))
+    client.camera = SimpleNamespace(screen_to_world=lambda position: Vec2(*position))
+
+    cases = (
+        ((100, 46), MovementIntent(right=True)),
+        ((83, 86), MovementIntent(right=True, down=True)),
+        ((43, 100), MovementIntent(down=True)),
+        ((3, 86), MovementIntent(left=True, down=True)),
+        ((-10, 46), MovementIntent(left=True)),
+        ((3, 6), MovementIntent(left=True, up=True)),
+        ((43, -10), MovementIntent(up=True)),
+        ((83, 6), MovementIntent(right=True, up=True)),
+    )
+
+    for position, expected_intent in cases:
+        assert client._movement_intent_toward_screen_position(position) == expected_intent
+
+
+def test_mouse_movement_dead_zone_stops_character() -> None:
+    """
+    Проверяет, что курсор рядом с центром персонажа не создает движение.
+    """
+    client = object.__new__(GameClient)
+    client.player = PlayerState(entity_id="p1", position=Vec2(32, 32))
+    client.camera = SimpleNamespace(screen_to_world=lambda position: Vec2(*position))
+
+    assert client._movement_intent_toward_screen_position((47, 49)) == MovementIntent()
+
+
 def test_keyboard_state_no_longer_creates_movement_intent(monkeypatch) -> None:
     """
     Проверяет, что движение персонажа больше не читается с WASD или стрелок.
